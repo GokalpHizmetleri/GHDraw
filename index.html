@@ -304,7 +304,7 @@ function drawArrowHead(c,e,r){
 function drawEl(c,e){
   if(e===editing)return;
   c.save();c.globalAlpha=(e.opacity??100)/100;
-  if(e.type==='image'){const im=getImage(mediaSource(e));if(im.complete&&im.naturalWidth)c.drawImage(im,e.x,e.y,e.w,e.h);c.restore();return}
+  if(e.type==='image'){const fo=window.__apngFrames&&window.__apngFrames.get(e.id);if(fo){c.drawImage(fo,e.x,e.y,e.w,e.h);c.restore();return}const im=getImage(mediaSource(e));if(im.complete&&im.naturalWidth)c.drawImage(im,e.x,e.y,e.w,e.h);c.restore();return}
   if(e.type==='video'){const v=sceneNodes.get(e.id)?.node;if(v?.readyState>=2)c.drawImage(v,e.x,e.y,e.w,e.h);else{c.fillStyle='#f1f0ff';c.fillRect(e.x,e.y,e.w,e.h);c.fillStyle='#4a47b1';c.font='16px Nunito,system-ui';c.fillText('▶ '+(e.name||'Video'),e.x+12,e.y+30)}c.restore();return}
   c.globalAlpha=(e.opacity??100)/100;c.lineCap='round';c.lineJoin='round';
   c.strokeStyle=col(e.stroke);c.fillStyle=col(e.stroke);c.lineWidth=e.sw;
@@ -541,18 +541,67 @@ $('#fileIn').onchange=e=>{
   r.onload=()=>{try{const d=JSON.parse(r.result);els=d.elements||[];els.forEach(x=>{if(x.type==='text')measure(x)});sel=new Set();commit();render()}catch(_){toast('Invalid file')}};
   r.readAsText(f);e.target.value='';
 };
+const CRC_T=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0}return t})();
+function crc32(b){let c=0xFFFFFFFF;for(let i=0;i<b.length;i++)c=CRC_T[(c^b[i])&255]^(c>>>8);return(c^0xFFFFFFFF)>>>0}
+function pngChunk(type,data){const o=new Uint8Array(12+data.length),v=new DataView(o.buffer);v.setUint32(0,data.length);for(let i=0;i<4;i++)o[4+i]=type.charCodeAt(i);o.set(data,8);v.setUint32(8+data.length,crc32(o.subarray(4,8+data.length)));return o}
+function pngParts(buf){const u=new Uint8Array(buf),v=new DataView(buf);let p=8,ihdr=null;const idat=[];while(p<u.length){const n=v.getUint32(p),t=String.fromCharCode(u[p+4],u[p+5],u[p+6],u[p+7]);if(t==='IHDR')ihdr=u.slice(p+8,p+8+n);else if(t==='IDAT')idat.push(u.subarray(p+8,p+8+n));p+=12+n}return{ihdr,idat}}
+function cat(a){let n=0;for(const x of a)n+=x.length;const o=new Uint8Array(n);let p=0;for(const x of a){o.set(x,p);p+=x.length}return o}
+function buildAPNG(pngs,delayMs){
+  const ps=pngs.map(pngParts),w=new DataView(ps[0].ihdr.buffer).getUint32(0),h=new DataView(ps[0].ihdr.buffer).getUint32(4);
+  const out=[new Uint8Array([137,80,78,71,13,10,26,10]),pngChunk('IHDR',ps[0].ihdr)];
+  const ac=new DataView(new ArrayBuffer(8));ac.setUint32(0,ps.length);ac.setUint32(4,0);out.push(pngChunk('acTL',new Uint8Array(ac.buffer)));
+  let seq=0;
+  ps.forEach((p,i)=>{const f=new DataView(new ArrayBuffer(26));f.setUint32(0,seq++);f.setUint32(4,w);f.setUint32(8,h);f.setUint32(12,0);f.setUint32(16,0);f.setUint16(20,delayMs);f.setUint16(22,1000);f.setUint8(24,0);f.setUint8(25,0);out.push(pngChunk('fcTL',new Uint8Array(f.buffer)));
+    const data=cat(p.idat);
+    if(i===0)out.push(pngChunk('IDAT',data));else{const d=new Uint8Array(4+data.length);new DataView(d.buffer).setUint32(0,seq++);d.set(data,4);out.push(pngChunk('fdAT',d))}});
+  out.push(pngChunk('IEND',new Uint8Array(0)));
+  return new Blob(out,{type:'image/png'});
+}
+async function decodeGifFrames(e){
+  if(typeof ImageDecoder==='undefined'||!/^data:image\/gif/i.test(e.src||''))return null;
+  try{
+    const buf=await (await fetch(e.src)).arrayBuffer();
+    const dec=new ImageDecoder({data:buf,type:'image/gif'});await dec.completed.catch(()=>{});await dec.tracks.ready;
+    const n=dec.tracks.selectedTrack.frameCount;if(n<2){dec.close();return null}
+    const fr=[];let total=0;
+    for(let i=0;i<n;i++){const r=await dec.decode({frameIndex:i,completeFramesOnly:true});const d=Math.max(20,Math.round((r.image.duration||100000)/1000));const bmp=await createImageBitmap(r.image);r.image.close();fr.push({bmp,d});total+=d}
+    dec.close();return{fr,total};
+  }catch(_){return null}
+}
+function frameAt(g,t){t=t%g.total;let a=0;for(const f of g.fr){a+=f.d;if(t<a)return f.bmp}return g.fr[g.fr.length-1].bmp}
 async function exportPNG(){
- if(els.some(e=>e.giphyId)){toast(L2('GIPHY GIFleri PNG olarak kopyalanamaz. .ghdraw kaydet veya GIPHY GIFlerini kaldır.','GIPHY GIFs cannot be copied into PNG. Save as .ghdraw or remove GIPHY GIFs.'));return}
+  if(els.some(e=>e.giphyId)){toast(L2('GIPHY GIFleri dışa aktarılamaz (GIPHY kuralı). .ghdraw kaydet veya GIPHY GIFlerini kaldır.','GIPHY GIFs cannot be exported (GIPHY terms). Save as .ghdraw or remove the GIPHY GIFs.'));return}
   await Promise.all(els.filter(e=>e.type==='image').map(e=>new Promise(resolve=>{const im=getImage(mediaSource(e));if(im.complete)resolve();else{im.addEventListener('load',resolve,{once:true});im.addEventListener('error',resolve,{once:true})}})));
   if(editing)finishEdit();
-  const b=els.length?unionBox(els):{x:0,y:0,w:400,h:300},pad=24,sc=2;
-  const c=document.createElement('canvas');c.width=Math.ceil((b.w+pad*2)*sc);c.height=Math.ceil((b.h+pad*2)*sc);
-  const x=c.getContext('2d');const wasDark=dark;dark=false;
-  x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.scale(sc,sc);x.translate(-b.x+pad,-b.y+pad);
+  const b=els.length?unionBox(els):{x:0,y:0,w:400,h:300},pad=24;
+  const gifs=new Map();
+  for(const e of els.filter(e=>e.type==='image'&&!e.giphyId)){const g=await decodeGifFrames(e);if(g)gifs.set(e.id,g)}
+  const wasDark=dark;
+  const make=sc=>{const c=document.createElement('canvas');c.width=Math.ceil((b.w+pad*2)*sc);c.height=Math.ceil((b.h+pad*2)*sc);const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.scale(sc,sc);x.translate(-b.x+pad,-b.y+pad);return[c,x]};
+  const dl=(bl,name)=>{const a=document.createElement('a');a.href=URL.createObjectURL(bl);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2000);toast(t('saved'))};
+  if(gifs.size){
+    const total=Math.min(10000,Math.max(...[...gifs.values()].map(g=>g.total)));
+    let step=50,N=Math.ceil(total/step);if(N>100){N=100;step=Math.ceil(total/N)}
+    const sc=Math.max(.5,Math.min(2,Math.sqrt(1.5e6/((b.w+pad*2)*(b.h+pad*2)))));
+    toast(L2('Animasyonlu PNG hazırlanıyor...','Preparing animated PNG...'));
+    const pngs=[];dark=false;
+    try{
+      for(let k=0;k<N;k++){
+        window.__apngFrames=new Map([...gifs].map(([id,g])=>[id,frameAt(g,k*step)]));
+        const[c,x]=make(sc);for(const e of els)drawEl(x,e);
+        const bl=await new Promise(r=>c.toBlob(r,'image/png'));pngs.push(await bl.arrayBuffer());
+      }
+    }catch(_){dark=wasDark;window.__apngFrames=null;toast(L2('Animasyonlu PNG oluşturulamadı.','Could not build the animated PNG.'));return}
+    dark=wasDark;window.__apngFrames=null;render();
+    dl(buildAPNG(pngs,step),'ghdraw-animated.png');return;
+  }
+  const[c,x]=make(2);dark=false;
   for(const e of els)drawEl(x,e);dark=wasDark;
-  try{c.toBlob(bl=>{const a=document.createElement('a');a.href=URL.createObjectURL(bl);a.download='ghdraw.png';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2000);toast(t('saved'))});}catch(_){toast(L2('Bu uzak resim PNG dışa aktarımına izin vermiyor. .ghdraw olarak kaydet.','This remote image blocks PNG export. Save as .ghdraw instead.'))}
+  try{c.toBlob(bl=>dl(bl,'ghdraw.png'));}catch(_){toast(L2('Bu uzak resim PNG dışa aktarımına izin vermiyor. .ghdraw olarak kaydet.','This remote image blocks PNG export. Save as .ghdraw instead.'))}
 }
 
+addEventListener('pagehide',()=>{if(collabOn&&isHost){clearTimeout(remoteSaveT);save()}});
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'&&collabOn&&isHost){clearTimeout(remoteSaveT);save()}});
 const ed=$('#editor');
 function applyEditorStyle(){
   if(!editing)return;
@@ -920,7 +969,9 @@ function collabPush(){
   bcast(m);
 }
 function setLast(){lastSent.clear();for(const e of els)if(!('__bak' in e))lastSent.set(e.id,ser(e));lastOrd=els.map(e=>e.id).join(',')}
+let remoteSaveT=0;
 function applyUpd(m){
+  if(isHost){clearTimeout(remoteSaveT);remoteSaveT=setTimeout(()=>{if(collabOn&&isHost)save()},400)}
   if(m.del&&m.del.length){const d=new Set(m.del);els=els.filter(e=>!d.has(e.id));d.forEach(id=>{sel.delete(id);lastSent.delete(id);foreign.delete(id)})}
   for(const r of m.els||[]){
     const i=els.findIndex(e=>e.id===r.id);
