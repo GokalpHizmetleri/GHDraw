@@ -172,6 +172,14 @@ body.viewer #tools,body.viewer #props,body.viewer #lib,body.viewer #menuBtn,body
 }
 
 .videoField{display:flex;flex-direction:column;gap:4px;margin:10px 0;font-size:13px}.videoField select{min-height:44px;border:1px solid var(--border);border-radius:8px;background:var(--panel);color:var(--text);padding:0 10px;font:inherit}#modal .videoField input{min-height:44px}
+
+#menu{max-width:calc(100vw - 24px);max-height:calc(100dvh - 76px);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}
+#menu .mi,#menu .msep{flex-shrink:0}
+#menu .mi span:not(.sc){min-width:0;overflow-wrap:anywhere}
+#modal .box{max-height:calc(100dvh - 24px);overscroll-behavior:contain}
+#props,#lib{overscroll-behavior:contain}
+@media(pointer:coarse){#menu .mi{min-height:44px}}
+@media(max-height:480px) and (max-width:820px){#props,#lib{max-height:calc(100dvh - 180px);bottom:100px}}
 </style>
 </head>
 <body>
@@ -1750,4 +1758,4 @@ window.__ghdraw={get els(){return els},set els(v){els=v;remeasure()},render,comm
 
 </script>
 </body>
-                                                                                                                                            </html>
+ </html>
