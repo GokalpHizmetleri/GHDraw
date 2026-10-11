@@ -23,11 +23,35 @@ export default async ({req,res,error})=>{
   const path=req.path.split('/').filter(Boolean),id=path[1];
   if(req.method==='GET'&&req.path==='/health')return reply({ok:true});
   if(req.method==='GET'&&['view','room'].includes(path[0])){const d=await read(id);if(d.kind!==path[0])throw {code:404};const {owner,...publicData}=d;return reply(publicData)}
+  if(req.method==='POST'&&path[0]==='live'){
+   // Presence and chat live in one small side document per room; same expiry as the room.
+   const room=await read(id);if(room.kind!=='room')throw {code:404};
+   const b=req.bodyJson||{};if(typeof b.cid!=='string'||!/^[a-z0-9]{6,24}$/.test(b.cid))throw {code:400};
+   const pid='p'+id.slice(0,31),now=Date.now();
+   const num=v=>typeof v==='number'&&isFinite(v)&&Math.abs(v)<1e7?v:null;
+   const me={n:String(b.n||'?').slice(0,20),c:/^#[0-9a-fA-F]{6}$/.test(b.c||'')?b.c:'#6965db',x:num(b.x),y:num(b.y),pg:typeof b.pg==='string'?b.pg.slice(0,128):'',ts:now};
+   const msg=typeof b.msg==='string'?b.msg.trim().slice(0,500):'';const after=num(b.after)||0;
+   for(let attempt=0;attempt<4;attempt++){
+    const tx=await db.createTransaction({ttl:60});
+    try{
+     let data,exists=true;
+     try{const doc=await db.getDocument({databaseId:DB,collectionId:COL,documentId:pid,transactionId:tx.$id});data=JSON.parse(doc.payload)}catch(e){if(e.code!==404)throw e;exists=false;data={kind:'live',expires:room.expires,presence:{},chat:[]}}
+     data.presence[b.cid]=me;for(const k of Object.keys(data.presence))if(data.presence[k].ts<now-15000)delete data.presence[k];
+     if(msg){data.chat.push({id:randomBytes(6).toString('hex'),cid:b.cid,n:me.n,c:me.c,m:msg,ts:now});data.chat=data.chat.slice(-100)}
+     const payload=JSON.stringify(data);
+     if(exists)await db.updateDocument({databaseId:DB,collectionId:COL,documentId:pid,data:{payload},transactionId:tx.$id});
+     else await db.createDocument({databaseId:DB,collectionId:COL,documentId:pid,data:{payload},permissions:[],transactionId:tx.$id});
+     await db.updateTransaction({transactionId:tx.$id,commit:true});
+     const peers=Object.entries(data.presence).filter(([k,v])=>k!==b.cid&&v.ts>=now-12000).map(([k,v])=>({cid:k,...v}));
+     return reply({peers,chat:data.chat.filter(m=>m.ts>after),now});
+    }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});if(e.code!==409||attempt===3)throw e}
+   }
+  }
   if(req.method==='POST'&&req.path==='/create'){
    if(Buffer.byteLength(req.bodyText||'')>MAX)return reply({error:'Board exceeds 12 MB'},413);
    const b=req.bodyJson;if(!['view','room'].includes(b.kind)||!validBoard(b.board))return reply({error:'Invalid board'},400);
    // A project-wide bound stops anonymous creation from exhausting free storage.
-   const count=await db.listDocuments({databaseId:DB,collectionId:COL,queries:[Query.limit(1)]});if(count.total>=150)return reply({error:'Free storage is full; ask the project owner to remove old links.'},429);
+   const count=await db.listDocuments({databaseId:DB,collectionId:COL,queries:[Query.select(['$id']),Query.limit(500)]});if(count.documents.filter(d=>!d.$id.startsWith('p')).length>=150)return reply({error:'Free storage is full; ask the project owner to remove old links.'},429);
    const id=randomBytes(16).toString('hex'),owner=randomBytes(24).toString('hex'),expires=Date.now()+(b.kind==='view'?7*24:48)*3600000;
    const d={kind:b.kind,expires,board:b.board,room:b.room||null,owner};
    await db.createDocument({databaseId:DB,collectionId:COL,documentId:id,data:{payload:JSON.stringify(d)},permissions:[]});
@@ -56,7 +80,7 @@ export default async ({req,res,error})=>{
     }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});if(e.code!==409||attempt===2)throw e}
    }
   }
-  if(req.method==='DELETE' &&path[0]==='owner'){const d=await read(id);if(req.bodyJson.owner!==d.owner)return reply({error:'Not authorized'},403);await db.deleteDocument({databaseId:DB,collectionId:COL,documentId:id});return reply({ok:true})}
+  if(req.method==='DELETE' &&path[0]==='owner'){const d=await read(id);if(req.bodyJson.owner!==d.owner)return reply({error:'Not authorized'},403);await db.deleteDocument({databaseId:DB,collectionId:COL,documentId:id});await db.deleteDocument({databaseId:DB,collectionId:COL,documentId:'p'+id.slice(0,31)}).catch(()=>{});return reply({ok:true})}
   return reply({error:'Not found'},404);
  }catch(e){const code=[400,404,410,413,429].includes(e.code)?e.code:500;if(code===500)error('Backend request failed: '+(e.type||e.code||'unknown')+' '+(e.message||''));return reply({error:code===410?'This link has expired':code===404?'Link not found':code===400?'Invalid board':code===413?'Board exceeds 12 MB':'Service unavailable'},code)}
 };
