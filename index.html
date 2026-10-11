@@ -686,6 +686,7 @@ async function exportGIF_(){
 
 let videoOptions={all:true,seconds:3,transition:'fade'};
 function openVideoExport(){
+ if(pages.length<=1){videoOptions={all:false,seconds:3,transition:'none'};exportVideo();return}
  collabModal=false;const b=$('#modalBox');b.innerHTML='';$('#modal').classList.add('open');
  const h=mk('h3');h.textContent=L2('Video ayarları','Video settings');b.appendChild(h);
  const field=(label,node)=>{const l=mk('label','videoField');const t=mk('span');t.textContent=label;l.append(t,node);b.appendChild(l)};
@@ -1749,4 +1750,4 @@ window.__ghdraw={get els(){return els},set els(v){els=v;remeasure()},render,comm
 
 </script>
 </body>
- </html>
+                                                                                                                                            </html>
