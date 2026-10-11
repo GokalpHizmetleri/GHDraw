@@ -26,7 +26,7 @@ A hand-drawn style whiteboard for the browser, inspired by Excalidraw. No build 
 
 **Everything else**
 - Dark mode, optional grid, Turkish and English interface (switch in the menu)
-- Export to PNG (2x), save and open `.ghdraw` files
+- Export to PNG (2x), or to an animated PNG (APNG) when the board has animated GIFs; save and open `.ghdraw` files
 - Autosave to `localStorage`
 - Zero build: a single `index.html` with vanilla JS. Works from `file://`, any static host, or Vercel
 
@@ -86,7 +86,7 @@ Every push to `main` after that redeploys automatically.
 - Every shape, stroke and text block is a plain JSON element in an ordered list (the order is the layer order).
 - Rendering draws that list onto a `<canvas>` through a pan/zoom transform. Undo and redo move through snapshots of the list, and export draws the same list onto an offscreen canvas.
 - The hand-drawn look comes from drawing each shape twice with small seeded offsets, so lines wobble without flickering between frames.
-- Autosave serializes the element list, view and style defaults to `localStorage` on every change.
+- Autosave serializes the element list, view and style defaults to `localStorage` on every change. During a collaboration session the host also saves edits received from guests (debounced 400 ms, and on tab hide/close), so a host reload keeps them. Guests do not autosave.
 
 ## Files
 
@@ -114,7 +114,7 @@ MIT - see [LICENSE](LICENSE).
 - **Media / GIF** (the picture button or menu): upload photos, PNG, JPEG, WebP or GIF. Move, resize, duplicate, delete, set opacity, and reorder mixed media and shapes. GIFs animate on the board. MP4/WebM uploads have been removed. Existing videos in older boards still render, so this update does not discard old work.
 - **Online GIF browser:** GIPHY meme/reaction search with quick meme, reaction, funny, facepalm and lol queries. Search results stay in provider order, with source/creator links and official Powered By GIPHY attribution. The API key is a public browser integration key; do not use a private backend credential here. The beta plan allows 100 API calls per hour across searches and GIF resolution, not 100 per visitor.
 - Local PNG/JPEG/WebP/GIF uploads are embedded in board data and remain limited to **4 MB** each. GIPHY elements store only their GIF ID, name, creator credit and layout; media URLs and bytes are neither saved nor shared. Each participant resolves the ID directly with GIPHY when opening/joining. This needs internet and a working API key; removed GIFs may no longer load. No media proxy or persistent cache is used.
-- PNG export remains available for drawings and local images/GIFs (one animation frame). If GIPHY GIFs are on the board, PNG export is disabled to avoid storing copies of provider media without approval. Save a `.ghdraw` board instead, or remove those GIFs before PNG export.
+- PNG export is available for drawings and local images/GIFs. If the board has animated local GIFs, export produces `ghdraw-animated.png` (APNG, animated in browsers and most viewers; up to 10 s and 100 frames, so long GIFs are sampled). This needs a browser with the `ImageDecoder` API (Chrome/Edge, recent Safari/Firefox); otherwise the GIF exports as a single frame. If GIPHY GIFs are on the board, PNG export is disabled to avoid storing copies of provider media without approval. Save a `.ghdraw` board instead, or remove those GIFs before PNG export.
 
 Media uploads stay in your browser or travel directly to collaborators. GIPHY searches, GIF-ID resolution and GIF loads contact GIPHY from each participant's browser. No automatic polling. Collaboration still requires the host page to remain open; existing public PeerJS/no-TURN limits apply.
 
