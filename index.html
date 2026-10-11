@@ -144,6 +144,34 @@ body.viewer #tools,body.viewer #props,body.viewer #lib,body.viewer #menuBtn,body
 @media(pointer:coarse){.tile .tx{display:block}}
 .lsave{height:32px;border-radius:8px;background:var(--hover);font-weight:700;font-size:13px}.lsave:hover{background:var(--sel)}
 @media(max-width:820px){#pagebar{bottom:auto;top:60px;max-width:calc(100vw - 16px)}#hint{bottom:128px}#prog{top:112px}}
+
+/* Compact tool popups: keep controls readable and phone targets easy to tap. */
+#props{width:200px;padding:36px 8px 8px;gap:6px;max-height:calc(100dvh - 150px)}
+#props h4{margin-bottom:4px;font-size:11px}
+#props .row{gap:4px}
+#props #fontBtn{height:32px;font-size:16px}
+#props #fontList{max-height:180px}
+#props .fo{font-size:15px;padding:4px 8px}
+#props .panelClose{top:4px;right:4px;min-width:28px;min-height:28px;font-size:21px}
+#lib{width:240px;padding:6px;gap:6px}
+@media(max-width:820px){
+ #props{left:8px;right:auto;width:min(292px,calc(100vw - 16px));bottom:120px;max-height:32dvh}
+ #lib{left:auto;right:8px;width:min(280px,calc(100vw - 16px));max-height:32dvh}
+ #lib .lg{grid-template-columns:repeat(3,1fr)}
+}
+@media(pointer:coarse){
+ #props{padding-top:52px}
+ #props .row{gap:2px}
+ #props .sw,#props .ob{min-width:44px;min-height:44px}
+ #props .ob.t{padding:0 6px}
+ #props #fontBtn,#props .fo,#props #fsz,#props .panelClose{min-height:44px}
+ #props .panelClose{min-width:44px}
+ #props #fsz{width:52px}
+ #props #opac{height:44px}
+ #lib .tab,#lib .lsave{min-height:44px}
+}
+
+.videoField{display:flex;flex-direction:column;gap:4px;margin:10px 0;font-size:13px}.videoField select{min-height:44px;border:1px solid var(--border);border-radius:8px;background:var(--panel);color:var(--text);padding:0 10px;font:inherit}#modal .videoField input{min-height:44px}
 </style>
 </head>
 <body>
@@ -473,8 +501,8 @@ function buildProps(){
     const row=mk('div','row');
     if(s.type==='color'){
       const cur=curVal(s.key,sl);
-      for(const c of s.pal){const b=mk('button','sw'+(c==='transparent'?' tr':'')+(cur===c?' on':''));if(c!=='transparent')b.style.background=c;b.onclick=()=>setProp(s.key,c);row.appendChild(b)}
-      const cu=mk('label','sw cu'+(!s.pal.includes(cur)?' on':''));const inp=mk('input');inp.type='color';inp.value=/^#[0-9a-f]{6}$/i.test(cur)?cur:'#888888';inp.onchange=()=>setProp(s.key,inp.value);cu.appendChild(inp);row.appendChild(cu);
+      for(const c of s.pal){const b=mk('button','sw'+(c==='transparent'?' tr':'')+(cur===c?' on':''));b.setAttribute('aria-label',t(s.id)+' '+c);if(c!=='transparent')b.style.background=c;b.onclick=()=>setProp(s.key,c);row.appendChild(b)}
+      const cu=mk('label','sw cu'+(!s.pal.includes(cur)?' on':''));const inp=mk('input');inp.type='color';inp.setAttribute('aria-label',L2('Özel renk','Custom color')+' '+t(s.id));inp.value=/^#[0-9a-f]{6}$/i.test(cur)?cur:'#888888';inp.onchange=()=>setProp(s.key,inp.value);cu.appendChild(inp);row.appendChild(cu);
     }else if(s.type==='opts'){
       const cur=curVal(s.key,sl);
       for(const[v,ic,tt]of s.opts){const b=mk('button','ob'+(cur===v?' on':''));b.title=t(tt||v);b.innerHTML=svg(ic);b.onclick=()=>setProp(s.key,v);row.appendChild(b)}
@@ -656,26 +684,37 @@ async function exportGIF_(){
   finally{dark=wasDark;window.__apngFrames=null;render();for(const g of gifs.values())for(const f of g.fr)f.bmp.close?.()}
 }
 
+let videoOptions={all:true,seconds:3,transition:'fade'};
+function openVideoExport(){
+ collabModal=false;const b=$('#modalBox');b.innerHTML='';$('#modal').classList.add('open');
+ const h=mk('h3');h.textContent=L2('Video ayarları','Video settings');b.appendChild(h);
+ const field=(label,node)=>{const l=mk('label','videoField');const t=mk('span');t.textContent=label;l.append(t,node);b.appendChild(l)};
+ const scope=mk('select');scope.id='videoScope';for(const[v,t]of[['all',L2('Tüm sayfalar','All pages')],['current',L2('Şu anki sayfa','Current page')]]){const o=mk('option');o.value=v;o.textContent=t;scope.appendChild(o)}scope.value=videoOptions.all?'all':'current';field(L2('Sayfalar','Pages'),scope);
+ const sec=mk('input');sec.id='videoSeconds';sec.type='number';sec.min=1;sec.max=10;sec.step=1;sec.value=videoOptions.seconds;field(L2('Sayfa başına saniye (1-10)','Seconds per page (1-10)'),sec);
+ const tr=mk('select');tr.id='videoTransition';for(const[v,t]of[['none',L2('Yok','None')],['fade',L2('Yumuşak geçiş','Fade')],['slide',L2('Kaydırma','Slide')]]){const o=mk('option');o.value=v;o.textContent=t;tr.appendChild(o)}tr.value=videoOptions.transition;field(L2('Sayfa geçişi','Page transition'),tr);
+ const note=mk('p','cn');note.textContent=L2('Geçişler 0,5 saniye. En fazla 120 saniye; daha uzun videolar için sayfa sayısını veya süreyi azalt. Sessiz video: çizimler, görseller ve hareketli GIFler dahil; gömülü video/ses dahil değil. MP4 desteklenmezse WebM indirilir. Hazırlanırken sekmeyi açık tut.','Transitions take 0.5 seconds. Maximum 120 seconds; reduce pages or duration for longer boards. Silent video: drawings, images and animated GIFs included; embedded video/audio excluded. WebM is downloaded when MP4 is unsupported. Keep this tab open while recording.');b.appendChild(note);
+ const go=mk('button','pbtn');go.textContent=L2('Videoyu oluştur','Create video');go.onclick=()=>{const seconds=Number(sec.value);if(!Number.isInteger(seconds)||seconds<1||seconds>10){sec.reportValidity();return}const n=scope.value==='all'?pages.length:1;if(n*seconds+(tr.value==='none'?0:(n-1)*.5)>120){toast(L2('Toplam süre 120 saniyeyi aşıyor. Süreyi veya sayfa sayısını azalt.','Total exceeds 120 seconds. Reduce duration or page count.'));return}videoOptions={all:scope.value==='all',seconds,transition:tr.value};closeModal();exportVideo()};b.appendChild(go);
+}
 async function exportVideo_(){
-  if(editing)finishEdit();await document.fonts.ready;
-  if(!window.MediaRecorder||!HTMLCanvasElement.prototype.captureStream){toast(L2('Bu tarayıcı video dışa aktarmayı desteklemiyor.','This browser does not support video export.'));return}
-  const candidates=['video/mp4;codecs=avc1.42E01E','video/mp4','video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm'];
-  const mime=candidates.find(m=>MediaRecorder.isTypeSupported(m));if(!mime){toast(L2('Desteklenen video biçimi bulunamadı. GIF kullan.','No supported video format. Use GIF.'));return}
-  const isMP4=mime.startsWith('video/mp4');
-  const gifs=new Map();for(const e of els.filter(e=>e.type==='image')){const g=await decodeGifFrames(e);if(g)gifs.set(e.id,g)}
-  if(!gifs.size){toast(L2('Video dışa aktarmak için tahtaya hareketli GIF yükle.','Upload an animated GIF to export video.'));return}
-  await Promise.all(els.filter(e=>e.type==='image').map(e=>new Promise(resolve=>{const im=getImage(mediaSource(e));if(im.complete)resolve();else{im.addEventListener('load',resolve,{once:true});im.addEventListener('error',resolve,{once:true})}})));
-  const b=unionBox(els),pad=24,sc=Math.min(1,1280/Math.max(b.w+pad*2,b.h+pad*2)),c=document.createElement('canvas');c.width=Math.max(2,Math.ceil((b.w+pad*2)*sc/2)*2);c.height=Math.max(2,Math.ceil((b.h+pad*2)*sc/2)*2);
-  const x=c.getContext('2d'),total=Math.min(10000,Math.max(...[...gifs.values()].map(g=>g.total))),chunks=[];let stream,rec;
-  const frame=t=>{const wasDark=dark;try{dark=false;window.__apngFrames=new Map([...gifs].map(([id,g])=>[id,frameAt(g,t)]));x.setTransform(1,0,0,1,0,0);x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.scale(sc,sc);x.translate(-b.x+pad,-b.y+pad);for(const e of els)drawEl(x,e)}finally{dark=wasDark;window.__apngFrames=null}};
-  try{
-    toast(isMP4?L2('MP4 hazırlanıyor; bu sekmeyi açık tut.','Preparing MP4; keep this tab open.'):L2('MP4 desteklenmiyor; WebM hazırlanıyor.','MP4 is not supported; preparing WebM.'));
-    frame(0);stream=c.captureStream(20);rec=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:4000000});rec.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
-    const stopped=new Promise((res,rej)=>{rec.onstop=res;rec.onerror=rej});rec.start();
-    const start=performance.now();let elapsed=0;while(elapsed<total){frame(elapsed);Prog.set(Math.min(.95,elapsed/total));await new Promise(r=>setTimeout(r,50));elapsed=performance.now()-start}
-    rec.stop();await stopped;const blob=new Blob(chunks,{type:rec.mimeType||mime}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=isMP4?'ghdraw-animated.mp4':'ghdraw-animated.webm';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2000);toast(isMP4?t('saved'):L2('WebM kaydedildi (bu tarayıcı MP4 desteklemiyor).','WebM saved (this browser does not support MP4).'));
-  }catch(_){if(rec&&rec.state!=='inactive')rec.stop();toast(L2('Video oluşturulamadı. GIF dışa aktarmayı dene.','Could not create video. Try GIF export.'))}
-  finally{stream?.getTracks().forEach(t=>t.stop());window.__apngFrames=null;render();for(const g of gifs.values())for(const f of g.fr)f.bmp.close?.()}
+ if(editing)finishEdit();syncPage();await document.fonts.ready;
+ if(!window.MediaRecorder||!HTMLCanvasElement.prototype.captureStream){toast(L2('Bu tarayıcı video dışa aktarmayı desteklemiyor.','This browser does not support video export.'));return}
+ const mime=['video/mp4;codecs=avc1.42E01E','video/mp4','video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm'].find(m=>MediaRecorder.isTypeSupported(m));if(!mime){toast(L2('Desteklenen video biçimi bulunamadı.','No supported video format.'));return}
+ const opt={...videoOptions},lists=(opt.all?pages:[pages[pi]]).map(p=>p.els.filter(e=>!e.frame&&!['video','audio'].includes(e.type)).map(e=>JSON.parse(ser(e)))),all=lists.flat();
+ const hold=opt.seconds*1000,trans=opt.transition==='none'?0:500,total=lists.length*hold+(lists.length-1)*trans;
+ if(total>120000){toast(L2('Video en fazla 120 saniye olabilir.','Video is limited to 120 seconds.'));return}
+ const gifs=new Map();let stream,rec;const chunks=[];
+ try{
+  await Promise.all(all.filter(e=>e.type==='image').map(e=>new Promise(resolve=>{const im=getImage(mediaSource(e));if(im.complete)resolve();else{im.addEventListener('load',resolve,{once:true});im.addEventListener('error',resolve,{once:true})}})));
+  for(const e of all.filter(e=>e.type==='image')){const g=await decodeGifFrames(e);if(g)gifs.set(e.id,g)}
+  const c=document.createElement('canvas');c.width=1280;c.height=720;const x=c.getContext('2d');const frames=lists.map(()=>{const q=document.createElement('canvas');q.width=c.width;q.height=c.height;return q});
+  const paint=(i,t)=>{const q=frames[i],z=q.getContext('2d'),L=lists[i],b=L.length?unionBox(L):{x:0,y:0,w:960,h:540},sc=Math.min((q.width-48)/Math.max(b.w,1),(q.height-48)/Math.max(b.h,1)),wasDark=dark;try{dark=false;window.__apngFrames=new Map([...gifs].map(([id,g])=>[id,frameAt(g,t)]));z.setTransform(1,0,0,1,0,0);z.fillStyle='#fff';z.fillRect(0,0,q.width,q.height);z.translate((q.width-b.w*sc)/2,(q.height-b.h*sc)/2);z.scale(sc,sc);z.translate(-b.x,-b.y);for(const e of L)drawEl(z,e)}finally{dark=wasDark;window.__apngFrames=null}return q};
+  const frame=t=>{const i=Math.min(lists.length-1,Math.floor(t/(hold+trans))),local=t-i*(hold+trans);x.globalAlpha=1;x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);const old=paint(i,Math.min(local,hold));if(local>=hold&&i<lists.length-1&&trans){const k=Math.min(1,(local-hold)/trans),next=paint(i+1,0);if(opt.transition==='fade'){x.drawImage(old,0,0);x.globalAlpha=k;x.drawImage(next,0,0);x.globalAlpha=1}else{x.drawImage(old,-k*c.width,0);x.drawImage(next,(1-k)*c.width,0)}}else x.drawImage(old,0,0)};
+  const isMP4=mime.startsWith('video/mp4');toast(isMP4?L2('MP4 hazırlanıyor; bu sekmeyi açık tut.','Preparing MP4; keep this tab open.'):L2('MP4 desteklenmiyor; WebM hazırlanıyor.','MP4 is not supported; preparing WebM.'));
+  frame(0);stream=c.captureStream(20);rec=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:4000000});rec.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
+  const stopped=new Promise((res,rej)=>{rec.onstop=res;rec.onerror=rej});rec.start();const start=performance.now();let elapsed=0;while(elapsed<total){frame(elapsed);Prog.set(Math.min(.95,elapsed/total));await new Promise(r=>setTimeout(r,50));elapsed=performance.now()-start}frame(total-1);rec.stop();await stopped;
+  const blob=new Blob(chunks,{type:rec.mimeType||mime});dlBlob(blob,isMP4?'ghdraw-pages.mp4':'ghdraw-pages.webm');toast(isMP4?t('saved'):L2('WebM kaydedildi (bu tarayıcı MP4 desteklemiyor).','WebM saved (this browser does not support MP4).'));
+ }catch(err){console.error(err);if(rec&&rec.state!=='inactive')rec.stop();toast(L2('Video oluşturulamadı.','Could not create video.'))}
+ finally{stream?.getTracks().forEach(t=>t.stop());window.__apngFrames=null;render();for(const g of gifs.values())for(const f of g.fr)f.bmp.close?.()}
 }
 
 /* ===== GHDraw v7: pages, smart arrows, own library, presentation, share link, progress ===== */
@@ -1006,7 +1045,7 @@ function viewKey(e){
   else if(k==='+'||k==='='){zoomAt(W/2,H/2,cam.z*1.2)}else if(k==='-'){zoomAt(W/2,H/2,cam.z/1.2)}else if(k==='0'){fitPage();render()}
 }
 
-/* ===== exports: PDF (all pages), SVG, PPTX, export menu ===== */
+/* ===== exports: PDF (all pages), SVG, export menu ===== */
 function imagePDF(pgs){
   const enc=new TextEncoder(),parts=[],offsets=[0];let length=0;
   const put=v=>{const bytes=typeof v==='string'?enc.encode(v):v;parts.push(bytes);length+=bytes.length};
@@ -1087,133 +1126,17 @@ async function exportSVG_(){
   dlBlob(new Blob([out],{type:'image/svg+xml'}),'ghdraw.svg');
 }
 
-/* ---- PPTX: editable shapes, written without any library ---- */
-function zipStore(files){
-  const enc=new TextEncoder(),parts=[],cen=[];let off=0;
-  for(const f of files){
-    const nb=enc.encode(f.n),crc=crc32(f.d),len=f.d.length,h=new Uint8Array(30+nb.length),v=new DataView(h.buffer);
-    v.setUint32(0,0x04034b50,true);v.setUint16(4,20,true);v.setUint16(6,0x0800,true);v.setUint16(8,0,true);v.setUint16(10,0,true);v.setUint16(12,0x21,true);v.setUint32(14,crc,true);v.setUint32(18,len,true);v.setUint32(22,len,true);v.setUint16(26,nb.length,true);v.setUint16(28,0,true);h.set(nb,30);
-    parts.push(h,f.d);
-    const c=new Uint8Array(46+nb.length),w=new DataView(c.buffer);
-    w.setUint32(0,0x02014b50,true);w.setUint16(4,20,true);w.setUint16(6,20,true);w.setUint16(8,0x0800,true);w.setUint16(10,0,true);w.setUint16(12,0,true);w.setUint16(14,0x21,true);w.setUint32(16,crc,true);w.setUint32(20,len,true);w.setUint32(24,len,true);w.setUint16(28,nb.length,true);w.setUint32(42,off,true);c.set(nb,46);cen.push(c);
-    off+=h.length+len;
-  }
-  let cs=0;for(const c of cen)cs+=c.length;
-  const end=new Uint8Array(22),ev=new DataView(end.buffer);ev.setUint32(0,0x06054b50,true);ev.setUint16(8,files.length,true);ev.setUint16(10,files.length,true);ev.setUint32(12,cs,true);ev.setUint32(16,off,true);
-  return new Blob([...parts,...cen,end],{type:'application/vnd.openxmlformats-officedocument.presentationml.presentation'});
-}
-const PPTX_NS='xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"';
-const XH='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n';
-const PPTX_THEME="<a:theme xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" name=\"Office Theme\"><a:themeElements><a:clrScheme name=\"Office\"><a:dk1><a:sysClr val=\"windowText\" lastClr=\"000000\"/></a:dk1><a:lt1><a:sysClr val=\"window\" lastClr=\"FFFFFF\"/></a:lt1><a:dk2><a:srgbClr val=\"44546A\"/></a:dk2><a:lt2><a:srgbClr val=\"E7E6E6\"/></a:lt2><a:accent1><a:srgbClr val=\"4472C4\"/></a:accent1><a:accent2><a:srgbClr val=\"ED7D31\"/></a:accent2><a:accent3><a:srgbClr val=\"A5A5A5\"/></a:accent3><a:accent4><a:srgbClr val=\"FFC000\"/></a:accent4><a:accent5><a:srgbClr val=\"5B9BD5\"/></a:accent5><a:accent6><a:srgbClr val=\"70AD47\"/></a:accent6><a:hlink><a:srgbClr val=\"0563C1\"/></a:hlink><a:folHlink><a:srgbClr val=\"954F72\"/></a:folHlink></a:clrScheme><a:fontScheme name=\"Office\"><a:majorFont><a:latin typeface=\"Calibri Light\" panose=\"020F0302020204030204\"/><a:ea typeface=\"\"/><a:cs typeface=\"\"/><a:font script=\"Jpan\" typeface=\"\u6e38\u30b4\u30b7\u30c3\u30af Light\"/><a:font script=\"Hang\" typeface=\"\ub9d1\uc740 \uace0\ub515\"/><a:font script=\"Hans\" typeface=\"\u7b49\u7ebf Light\"/><a:font script=\"Hant\" typeface=\"\u65b0\u7d30\u660e\u9ad4\"/><a:font script=\"Arab\" typeface=\"Times New Roman\"/><a:font script=\"Hebr\" typeface=\"Times New Roman\"/><a:font script=\"Thai\" typeface=\"Angsana New\"/><a:font script=\"Ethi\" typeface=\"Nyala\"/><a:font script=\"Beng\" typeface=\"Vrinda\"/><a:font script=\"Gujr\" typeface=\"Shruti\"/><a:font script=\"Khmr\" typeface=\"MoolBoran\"/><a:font script=\"Knda\" typeface=\"Tunga\"/><a:font script=\"Guru\" typeface=\"Raavi\"/><a:font script=\"Cans\" typeface=\"Euphemia\"/><a:font script=\"Cher\" typeface=\"Plantagenet Cherokee\"/><a:font script=\"Yiii\" typeface=\"Microsoft Yi Baiti\"/><a:font script=\"Tibt\" typeface=\"Microsoft Himalaya\"/><a:font script=\"Thaa\" typeface=\"MV Boli\"/><a:font script=\"Deva\" typeface=\"Mangal\"/><a:font script=\"Telu\" typeface=\"Gautami\"/><a:font script=\"Taml\" typeface=\"Latha\"/><a:font script=\"Syrc\" typeface=\"Estrangelo Edessa\"/><a:font script=\"Orya\" typeface=\"Kalinga\"/><a:font script=\"Mlym\" typeface=\"Kartika\"/><a:font script=\"Laoo\" typeface=\"DokChampa\"/><a:font script=\"Sinh\" typeface=\"Iskoola Pota\"/><a:font script=\"Mong\" typeface=\"Mongolian Baiti\"/><a:font script=\"Viet\" typeface=\"Times New Roman\"/><a:font script=\"Uigh\" typeface=\"Microsoft Uighur\"/><a:font script=\"Geor\" typeface=\"Sylfaen\"/><a:font script=\"Armn\" typeface=\"Arial\"/><a:font script=\"Bugi\" typeface=\"Leelawadee UI\"/><a:font script=\"Bopo\" typeface=\"Microsoft JhengHei\"/><a:font script=\"Java\" typeface=\"Javanese Text\"/><a:font script=\"Lisu\" typeface=\"Segoe UI\"/><a:font script=\"Mymr\" typeface=\"Myanmar Text\"/><a:font script=\"Nkoo\" typeface=\"Ebrima\"/><a:font script=\"Olck\" typeface=\"Nirmala UI\"/><a:font script=\"Osma\" typeface=\"Ebrima\"/><a:font script=\"Phag\" typeface=\"Phagspa\"/><a:font script=\"Syrn\" typeface=\"Estrangelo Edessa\"/><a:font script=\"Syrj\" typeface=\"Estrangelo Edessa\"/><a:font script=\"Syre\" typeface=\"Estrangelo Edessa\"/><a:font script=\"Sora\" typeface=\"Nirmala UI\"/><a:font script=\"Tale\" typeface=\"Microsoft Tai Le\"/><a:font script=\"Talu\" typeface=\"Microsoft New Tai Lue\"/><a:font script=\"Tfng\" typeface=\"Ebrima\"/></a:majorFont><a:minorFont><a:latin typeface=\"Calibri\" panose=\"020F0502020204030204\"/><a:ea typeface=\"\"/><a:cs typeface=\"\"/><a:font script=\"Jpan\" typeface=\"\u6e38\u30b4\u30b7\u30c3\u30af\"/><a:font script=\"Hang\" typeface=\"\ub9d1\uc740 \uace0\ub515\"/><a:font script=\"Hans\" typeface=\"\u7b49\u7ebf\"/><a:font script=\"Hant\" typeface=\"\u65b0\u7d30\u660e\u9ad4\"/><a:font script=\"Arab\" typeface=\"Arial\"/><a:font script=\"Hebr\" typeface=\"Arial\"/><a:font script=\"Thai\" typeface=\"Cordia New\"/><a:font script=\"Ethi\" typeface=\"Nyala\"/><a:font script=\"Beng\" typeface=\"Vrinda\"/><a:font script=\"Gujr\" typeface=\"Shruti\"/><a:font script=\"Khmr\" typeface=\"DaunPenh\"/><a:font script=\"Knda\" typeface=\"Tunga\"/><a:font script=\"Guru\" typeface=\"Raavi\"/><a:font script=\"Cans\" typeface=\"Euphemia\"/><a:font script=\"Cher\" typeface=\"Plantagenet Cherokee\"/><a:font script=\"Yiii\" typeface=\"Microsoft Yi Baiti\"/><a:font script=\"Tibt\" typeface=\"Microsoft Himalaya\"/><a:font script=\"Thaa\" typeface=\"MV Boli\"/><a:font script=\"Deva\" typeface=\"Mangal\"/><a:font script=\"Telu\" typeface=\"Gautami\"/><a:font script=\"Taml\" typeface=\"Latha\"/><a:font script=\"Syrc\" typeface=\"Estrangelo Edessa\"/><a:font script=\"Orya\" typeface=\"Kalinga\"/><a:font script=\"Mlym\" typeface=\"Kartika\"/><a:font script=\"Laoo\" typeface=\"DokChampa\"/><a:font script=\"Sinh\" typeface=\"Iskoola Pota\"/><a:font script=\"Mong\" typeface=\"Mongolian Baiti\"/><a:font script=\"Viet\" typeface=\"Arial\"/><a:font script=\"Uigh\" typeface=\"Microsoft Uighur\"/><a:font script=\"Geor\" typeface=\"Sylfaen\"/><a:font script=\"Armn\" typeface=\"Arial\"/><a:font script=\"Bugi\" typeface=\"Leelawadee UI\"/><a:font script=\"Bopo\" typeface=\"Microsoft JhengHei\"/><a:font script=\"Java\" typeface=\"Javanese Text\"/><a:font script=\"Lisu\" typeface=\"Segoe UI\"/><a:font script=\"Mymr\" typeface=\"Myanmar Text\"/><a:font script=\"Nkoo\" typeface=\"Ebrima\"/><a:font script=\"Olck\" typeface=\"Nirmala UI\"/><a:font script=\"Osma\" typeface=\"Ebrima\"/><a:font script=\"Phag\" typeface=\"Phagspa\"/><a:font script=\"Syrn\" typeface=\"Estrangelo Edessa\"/><a:font script=\"Syrj\" typeface=\"Estrangelo Edessa\"/><a:font script=\"Syre\" typeface=\"Estrangelo Edessa\"/><a:font script=\"Sora\" typeface=\"Nirmala UI\"/><a:font script=\"Tale\" typeface=\"Microsoft Tai Le\"/><a:font script=\"Talu\" typeface=\"Microsoft New Tai Lue\"/><a:font script=\"Tfng\" typeface=\"Ebrima\"/></a:minorFont></a:fontScheme><a:fmtScheme name=\"Office\"><a:fillStyleLst><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill><a:gradFill rotWithShape=\"1\"><a:gsLst><a:gs pos=\"0\"><a:schemeClr val=\"phClr\"><a:lumMod val=\"110000\"/><a:satMod val=\"105000\"/><a:tint val=\"67000\"/></a:schemeClr></a:gs><a:gs pos=\"50000\"><a:schemeClr val=\"phClr\"><a:lumMod val=\"105000\"/><a:satMod val=\"103000\"/><a:tint val=\"73000\"/></a:schemeClr></a:gs><a:gs pos=\"100000\"><a:schemeClr val=\"phClr\"><a:lumMod val=\"105000\"/><a:satMod val=\"109000\"/><a:tint val=\"81000\"/></a:schemeClr></a:gs></a:gsLst><a:lin ang=\"5400000\" scaled=\"0\"/></a:gradFill><a:gradFill rotWithShape=\"1\"><a:gsLst><a:gs pos=\"0\"><a:schemeClr val=\"phClr\"><a:satMod val=\"103000\"/><a:lumMod val=\"102000\"/><a:tint val=\"94000\"/></a:schemeClr></a:gs><a:gs pos=\"50000\"><a:schemeClr val=\"phClr\"><a:satMod val=\"110000\"/><a:lumMod val=\"100000\"/><a:shade val=\"100000\"/></a:schemeClr></a:gs><a:gs pos=\"100000\"><a:schemeClr val=\"phClr\"><a:lumMod val=\"99000\"/><a:satMod val=\"120000\"/><a:shade val=\"78000\"/></a:schemeClr></a:gs></a:gsLst><a:lin ang=\"5400000\" scaled=\"0\"/></a:gradFill></a:fillStyleLst><a:lnStyleLst><a:ln w=\"6350\" cap=\"flat\" cmpd=\"sng\" algn=\"ctr\"><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill><a:prstDash val=\"solid\"/><a:miter lim=\"800000\"/></a:ln><a:ln w=\"12700\" cap=\"flat\" cmpd=\"sng\" algn=\"ctr\"><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill><a:prstDash val=\"solid\"/><a:miter lim=\"800000\"/></a:ln><a:ln w=\"19050\" cap=\"flat\" cmpd=\"sng\" algn=\"ctr\"><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill><a:prstDash val=\"solid\"/><a:miter lim=\"800000\"/></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst><a:outerShdw blurRad=\"57150\" dist=\"19050\" dir=\"5400000\" algn=\"ctr\" rotWithShape=\"0\"><a:srgbClr val=\"000000\"><a:alpha val=\"63000\"/></a:srgbClr></a:outerShdw></a:effectLst></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill><a:solidFill><a:schemeClr val=\"phClr\"><a:tint val=\"95000\"/><a:satMod val=\"170000\"/></a:schemeClr></a:solidFill><a:gradFill rotWithShape=\"1\"><a:gsLst><a:gs pos=\"0\"><a:schemeClr val=\"phClr\"><a:tint val=\"93000\"/><a:satMod val=\"150000\"/><a:shade val=\"98000\"/><a:lumMod val=\"102000\"/></a:schemeClr></a:gs><a:gs pos=\"50000\"><a:schemeClr val=\"phClr\"><a:tint val=\"98000\"/><a:satMod val=\"130000\"/><a:shade val=\"90000\"/><a:lumMod val=\"103000\"/></a:schemeClr></a:gs><a:gs pos=\"100000\"><a:schemeClr val=\"phClr\"><a:shade val=\"63000\"/><a:satMod val=\"120000\"/></a:schemeClr></a:gs></a:gsLst><a:lin ang=\"5400000\" scaled=\"0\"/></a:gradFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements><a:objectDefaults/><a:extraClrSchemeLst/><a:extLst><a:ext uri=\"{05A4C25C-085E-4340-85A3-A5531E510DB2}\"><thm15:themeFamily xmlns:thm15=\"http://schemas.microsoft.com/office/thememl/2012/main\" name=\"Office Theme\" id=\"{62F939B6-93AF-4DB8-9C6B-D6C7DFDC589F}\" vid=\"{4A3C46E8-61CC-4603-A589-7422A47A8E4A}\"/></a:ext></a:extLst></a:theme>";
-function dataBytes(src){const m=/^data:image\/(png|gif|jpeg);base64,(.*)$/.exec(src||'');if(!m)return null;const b=atob(m[2]),u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return{ext:m[1]==='jpeg'?'jpeg':m[1],bytes:u}}
-/* Capture the same seeded curves used by the canvas, not straightened points. */
-function pptxPaths(e){
-  const paths=[];let cmds=[],width=e.sw||2;
-  const c={save(){},restore(){},setLineDash(){},beginPath(){cmds=[]},moveTo(x,y){cmds.push(['M',x,y])},lineTo(x,y){cmds.push(['L',x,y])},quadraticCurveTo(x,y,a,b){cmds.push(['Q',x,y,a,b])},closePath(){cmds.push(['Z'])},stroke(){if(cmds.length)paths.push({cmds:cmds.slice(),width})},fill(){},clip(){},fillRect(){},strokeRect(){},arc(){}};
-  Object.defineProperty(c,'lineWidth',{set(v){width=v}});
-  // Background/pattern is represented separately; capture only the visible outline.
-  drawEl(c,Object.assign({},e,{bg:'transparent'}));
-  return paths;
-}
-function pptxSlide(L,rect,media,fixedFrame){
-  const SW=12192000,SH=6858000;
-  const s=Math.min(SW/rect.w,SH/rect.h),ox=(SW-rect.w*s)/2,oy=(SH-rect.h*s)/2;
-  const X=x=>Math.round(ox+(x-rect.x)*s),Y=y=>Math.round(oy+(y-rect.y)*s),S=v=>Math.round(v*s);
-  let id=2;const rels=[];let out='';
-  const hexc=c=>{if(!c||c==='transparent')return null;let m=/^#([0-9a-f]{6})$/i.exec(c);if(m)return m[1].toUpperCase();m=/^#([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(c);if(m)return(m[1]+m[1]+m[2]+m[2]+m[3]+m[3]).toUpperCase();return'000000'};
-  const clr=(c,op)=>`<a:srgbClr val="${hexc(c)||'000000'}">${(op??100)<100?`<a:alpha val="${Math.round(op*1000)}"/>`:''}</a:srgbClr>`;
-  const fillX=e=>{const c=hexc(e.bg);if(!c)return'<a:noFill/>';if(e.fill==='solid'||!e.fill)return`<a:solidFill>${clr(e.bg,e.opacity)}</a:solidFill>`;return`<a:pattFill prst="${e.fill==='cross'?'diagCross':'wdUpDiag'}"><a:fgClr>${clr(e.bg,e.opacity)}</a:fgClr><a:bgClr><a:srgbClr val="FFFFFF"/></a:bgClr></a:pattFill>`};
-  const lnX=(e,tail)=>`<a:ln w="${Math.max(6350,S(e.sw||2))}" cap="rnd"><a:solidFill>${clr(e.stroke,e.opacity)}</a:solidFill>${e.style==='dashed'?'<a:prstDash val="dash"/>':e.style==='dotted'?'<a:prstDash val="sysDot"/>':''}<a:round/>${tail?'<a:tailEnd type="triangle" w="med" len="med"/>':''}</a:ln>`;
-  const xf=(x,y,w,h,fl)=>`<a:xfrm${fl||''}><a:off x="${x}" y="${y}"/><a:ext cx="${Math.max(0,w)}" cy="${Math.max(0,h)}"/></a:xfrm>`;
-  const nm=(n)=>`<p:cNvPr id="${id++}" name="${n} ${id}"/>`;
-  for(const e of L){
-    if(e.frame||'__bak' in e)continue;
-    const bb=bbox(e);
-    if(bb.x>rect.x+rect.w||bb.y>rect.y+rect.h||bb.x+bb.w<rect.x||bb.y+bb.h<rect.y)continue;
-    if((e.rough>0||e.type==='pen'||(isLin(e)&&e.pts.length>2))&&!(e.type==='pen'&&e.pts.length<2)&&!['text','image','video'].includes(e.type)){
-      const paths=pptxPaths(e),coords=paths.flatMap(p=>p.cmds.flatMap(c=>c.slice(1)));
-      const xs=[],ys=[];for(const p of paths)for(const c of p.cmds)for(let i=1;i<c.length;i+=2){xs.push(c[i]);ys.push(c[i+1])}
-      const bx=Math.min(bb.x,...xs),by=Math.min(bb.y,...ys),bw=Math.max(1,Math.max(bb.x+bb.w,...xs)-bx),bh=Math.max(1,Math.max(bb.y+bb.h,...ys)-by),pw=Math.max(1,S(bw)),ph=Math.max(1,S(bh));
-      const pt=(x,y)=>`<a:pt x="${S(x-bx)}" y="${S(y-by)}"/>`;
-      const geom=path=>`<a:custGeom><a:avLst/><a:gdLst/><a:ahLst/><a:cxnLst/><a:rect l="0" t="0" r="r" b="b"/><a:pathLst><a:path w="${pw}" h="${ph}" fill="none">${path.cmds.map(c=>c[0]==='M'?`<a:moveTo>${pt(c[1],c[2])}</a:moveTo>`:c[0]==='L'?`<a:lnTo>${pt(c[1],c[2])}</a:lnTo>`:c[0]==='Q'?`<a:quadBezTo>${pt(c[1],c[2])}${pt(c[3],c[4])}</a:quadBezTo>`:'<a:close/>').join('')}</a:path></a:pathLst></a:custGeom>`;
-      if(e.bg&&e.bg!=='transparent'&&!['pen','line','arrow'].includes(e.type)){
-        const poly=e.type==='poly'?e.pts:polyFor(e,null),path={cmds:[['M',...poly[0]],...poly.slice(1).map(p=>['L',...p]),['Z']]};
-        out+=`<p:sp><p:nvSpPr>${nm('Fill')}<p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr>${xf(X(bx),Y(by),pw,ph)}${geom(path).replace('fill="none"','fill="norm"')}${fillX(e)}<a:ln><a:noFill/></a:ln></p:spPr></p:sp>`;
-      }
-      for(const path of paths)out+=`<p:sp><p:nvSpPr>${nm('Hand-drawn path')}<p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr>${xf(X(bx),Y(by),pw,ph)}${geom(path)}<a:noFill/>${lnX(Object.assign({},e,{sw:path.width}))}</p:spPr></p:sp>`;
-    }else if(e.type==='rect'||e.type==='diamond'||e.type==='ellipse'){
-      const geom=e.type==='diamond'?'diamond':e.type==='ellipse'?'ellipse':(e.round!==false?'roundRect':'rect');
-      const adj=geom==='roundRect'?`<a:avLst><a:gd name="adj" fmla="val ${Math.round(Math.min(50000,Math.min(Math.min(e.w,e.h)*.25,32)/Math.max(1,Math.min(e.w,e.h))*100000))}"/></a:avLst>`:'<a:avLst/>';
-      out+=`<p:sp><p:nvSpPr>${nm('Shape')}<p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr>${xf(X(e.x),Y(e.y),S(e.w),S(e.h))}<a:prstGeom prst="${geom}">${adj}</a:prstGeom>${fillX(e)}${lnX(e)}</p:spPr></p:sp>`;
-    }else if(e.type==='text'){
-      const lines=(e.text||'').split('\n'),sz=Math.max(100,Math.round(e.size*s/127)),lsp=Math.round(e.size*1.25*s/127),al=e.align==='center'?'ctr':e.align==='right'?'r':'l';
-      const tf=hexc(e.stroke)||'000000';
-      const paras=lines.map(l=>l?`<a:p><a:pPr algn="${al}"><a:lnSpc><a:spcPts val="${lsp}"/></a:lnSpc></a:pPr><a:r><a:rPr lang="en-US" sz="${sz}" b="0" dirty="0"><a:solidFill>${clr(e.stroke,e.opacity)}</a:solidFill><a:latin typeface="${xe(e.font||'Calibri')}"/><a:cs typeface="${xe(e.font||'Calibri')}"/></a:rPr><a:t>${xe(l)}</a:t></a:r></a:p>`:`<a:p><a:pPr algn="${al}"><a:lnSpc><a:spcPts val="${lsp}"/></a:lnSpc></a:pPr><a:endParaRPr lang="en-US" sz="${sz}"/></a:p>`).join('');
-      out+=`<p:sp><p:nvSpPr>${nm('Text')}<p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr>${xf(X(e.x),Y(e.y),S(e.w),S(e.h))}<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr><p:txBody><a:bodyPr wrap="none" lIns="0" tIns="0" rIns="0" bIns="0" anchor="t"><a:noAutofit/></a:bodyPr><a:lstStyle/>${paras}</p:txBody></p:sp>`;
-    }else if((e.type==='line'||e.type==='arrow')&&e.pts.length===2){
-      const[a,b]=e.pts,fl=(b[0]<a[0]?' flipH="1"':'')+(b[1]<a[1]?' flipV="1"':'');
-      out+=`<p:cxnSp><p:nvCxnSpPr>${nm('Connector')}<p:cNvCxnSpPr/><p:nvPr/></p:nvCxnSpPr><p:spPr>${xf(X(Math.min(a[0],b[0])),Y(Math.min(a[1],b[1])),S(Math.abs(b[0]-a[0])),S(Math.abs(b[1]-a[1])),fl)}<a:prstGeom prst="line"><a:avLst/></a:prstGeom>${lnX(e,e.type==='arrow')}</p:spPr></p:cxnSp>`;
-    }else if(isLin(e)){
-      if(e.pts.length<2){const r=Math.max(2,e.sw||2);out+=`<p:sp><p:nvSpPr>${nm('Dot')}<p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr>${xf(X(e.pts[0][0]-r/2),Y(e.pts[0][1]-r/2),S(r),S(r))}<a:prstGeom prst="ellipse"><a:avLst/></a:prstGeom><a:solidFill>${clr(e.stroke,e.opacity)}</a:solidFill><a:ln><a:noFill/></a:ln></p:spPr></p:sp>`;continue}
-      const W2=Math.max(1,S(bb.w)),H2=Math.max(1,S(bb.h)),pt=p=>`<a:pt x="${Math.max(0,S(p[0]-bb.x))}" y="${Math.max(0,S(p[1]-bb.y))}"/>`;
-      const closed=e.type==='poly';
-      const path=`<a:path w="${W2}" h="${H2}"${closed?'':' fill="none"'}><a:moveTo>${pt(e.pts[0])}</a:moveTo>${e.pts.slice(1).map(p=>`<a:lnTo>${pt(p)}</a:lnTo>`).join('')}${closed?'<a:close/>':''}</a:path>`;
-      const fl=closed?fillX(Object.assign({},e,{})):'<a:noFill/>';
-      out+=`<p:sp><p:nvSpPr>${nm('Freeform')}<p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr>${xf(X(bb.x),Y(bb.y),W2,H2)}<a:custGeom><a:avLst/><a:gdLst/><a:ahLst/><a:cxnLst/><a:rect l="0" t="0" r="r" b="b"/><a:pathLst>${path}</a:pathLst></a:custGeom>${fl}${lnX(e)}</p:spPr></p:sp>`;
-    }else if(e.type==='image'){
-      const m=media.get(e.src)||(()=>{const d=dataBytes(e.src);if(!d)return null;const r={name:`image${media.size+1}.${d.ext}`,bytes:d.bytes};media.set(e.src,r);return r})();
-      if(!m)continue;const rid='rId'+(rels.length+2);rels.push({rid,target:'../media/'+m.name});
-      out+=`<p:pic><p:nvPicPr>${nm('Picture')}<p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="${rid}">${(e.opacity??100)<100?`<a:alphaModFix amt="${Math.round(e.opacity*1000)}"/>`:''}</a:blip><a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr>${xf(X(e.x),Y(e.y),S(e.w),S(e.h))}<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>`;
-    }
-  }
-  const xml=`${XH}<p:sld ${PPTX_NS}><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>${out}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>`;
-  return{xml,rels};
-}
-const xe=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-async function exportPPTX_(){
-  if(editing)finishEdit();syncPage();
-  const enc=new TextEncoder(),media=new Map(),slides=[];
-  const list=pages.map((p,i)=>({p,i})).filter(o=>o.p.els.some(e=>!e.frame&&e.type!=='video'));
-  if(!list.length){toast(L2('Tahta boş.','The board is empty.'));return}
-  try{
-    for(let k=0;k<list.length;k++){
-      const L=list[k].p.els,fr=L.filter(e=>e.frame);
-      const regions=fr.length?fr.map(f=>({x:f.x,y:f.y,w:f.w,h:f.h})):[(()=>{const b=unionBox(L.filter(e=>!e.frame&&e.type!=='video'));const pad=Math.max(24,Math.max(b.w,b.h)*.04);return{x:b.x-pad,y:b.y-pad,w:b.w+pad*2,h:b.h+pad*2}})()];
-      for(const r of regions){slides.push(pptxSlide(L,r,media))}
-      Prog.set((k+1)/list.length*.85);await tick();
-    }
-    const n=slides.length,files=[];const F=(name,txt)=>files.push({n:name,d:typeof txt==='string'?enc.encode(txt):txt});
-    const exts=new Set([...media.values()].map(m=>m.name.split('.').pop()));
-    F('[Content_Types].xml',`${XH}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>${[...exts].map(x=>`<Default Extension="${x}" ContentType="image/${x}"/>`).join('')}<Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/><Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/><Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/><Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>${slides.map((_,i)=>`<Override PartName="/ppt/slides/slide${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>`).join('')}</Types>`);
-    F('_rels/.rels',`${XH}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/></Relationships>`);
-    F('ppt/presentation.xml',`${XH}<p:presentation ${PPTX_NS}><p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/></p:sldMasterIdLst><p:sldIdLst>${slides.map((_,i)=>`<p:sldId id="${256+i}" r:id="rId${i+2}"/>`).join('')}</p:sldIdLst><p:sldSz cx="12192000" cy="6858000"/><p:notesSz cx="6858000" cy="9144000"/></p:presentation>`);
-    F('ppt/_rels/presentation.xml.rels',`${XH}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="slideMasters/slideMaster1.xml"/>${slides.map((_,i)=>`<Relationship Id="rId${i+2}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide${i+1}.xml"/>`).join('')}<Relationship Id="rId${n+2}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/></Relationships>`);
-    F('ppt/slideMasters/slideMaster1.xml',`${XH}<p:sldMaster ${PPTX_NS}><p:cSld><p:bg><p:bgRef idx="1001"><a:schemeClr val="bg1"/></p:bgRef></p:bg><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr></p:spTree></p:cSld><p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/><p:sldLayoutIdLst><p:sldLayoutId id="2147483649" r:id="rId1"/></p:sldLayoutIdLst></p:sldMaster>`);
-    F('ppt/slideMasters/_rels/slideMaster1.xml.rels',`${XH}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="../theme/theme1.xml"/></Relationships>`);
-    F('ppt/slideLayouts/slideLayout1.xml',`${XH}<p:sldLayout ${PPTX_NS} type="blank" preserve="1"><p:cSld name="Blank"><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr></p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sldLayout>`);
-    F('ppt/slideLayouts/_rels/slideLayout1.xml.rels',`${XH}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="../slideMasters/slideMaster1.xml"/></Relationships>`);
-    F('ppt/theme/theme1.xml',XH+PPTX_THEME);
-    slides.forEach((s,i)=>{
-      F(`ppt/slides/slide${i+1}.xml`,s.xml);
-      F(`ppt/slides/_rels/slide${i+1}.xml.rels`,`${XH}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>${s.rels.map(r=>`<Relationship Id="${r.rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="${r.target}"/>`).join('')}</Relationships>`);
-    });
-    for(const m of media.values())F('ppt/media/'+m.name,m.bytes);
-    Prog.set(.95);await tick();
-    dlBlob(zipStore(files),'ghdraw.pptx');
-  }catch(err){console.error(err);toast(L2('PPTX oluşturulamadı.','Could not create PPTX.'))}
-}
 const exportPNG=withProg(()=>L2('PNG hazırlanıyor','Preparing PNG'),exportPNG_);
 const exportGIF=withProg(()=>L2('GIF hazırlanıyor','Preparing GIF'),exportGIF_);
 const exportVideo=withProg(()=>L2('Video hazırlanıyor','Preparing video'),exportVideo_);
 const exportPDF=withProg(()=>L2('PDF hazırlanıyor','Preparing PDF'),exportPDF_);
 const exportSVG=withProg(()=>L2('SVG hazırlanıyor','Preparing SVG'),exportSVG_);
-const exportPPTX=withProg(()=>L2('PPTX hazırlanıyor','Preparing PPTX'),exportPPTX_);
 function openExport(){
   collabModal=false;$('#modal').classList.add('open');const b=$('#modalBox');b.innerHTML='';
   const title=mk('h3');title.textContent=t('export');b.appendChild(title);
   const row=mk('div','cact');
-  for(const[label,fn]of[[L2('PNG / Animasyonlu PNG','PNG / Animated PNG'),exportPNG],[L2('Animasyonlu GIF','Animated GIF'),exportGIF],['MP4 / Video',exportVideo],[L2('PDF','PDF'),exportPDF],['SVG',exportSVG],['PPTX',exportPPTX]]){const btn=mk('button','pbtn');btn.textContent=label;btn.onclick=()=>{closeModal();fn()};row.appendChild(btn)}
-  b.appendChild(row);const note=mk('p','cn');note.textContent=L2('Her dışa aktarmada ilerleme çubuğu görünür. PNG, GIF, MP4 ve SVG şu anki sayfayı verir; PDF ve PPTX tüm sayfaları içerir. Sunum karelerin varsa PPTX\'te her kare bir slayt olur. SVG vektördür; yazı tipleri internet varsa yüklenir. PPTX düzenlenebilir şekil ve metin içerir, el çizimi eğrileri korunur; taramalı dolgular desen dolgusuna dönüşür. GIF: en fazla 10 sn, 480 px, 256 renk. MP4 desteklenmezse WebM indirilir; video hazırlanırken sekmeyi açık tut.','Each export shows a progress bar. PNG, GIF, MP4 and SVG export the current page; PDF and PPTX include all pages. With presentation frames, each frame becomes one PPTX slide. SVG is vector; fonts load when online. PPTX has editable shapes and text, hand-drawn curves are preserved; hatching becomes a pattern fill. GIF: up to 10 s, 480 px, 256 colors. If MP4 is not supported a WebM is saved; keep the tab open while video is prepared.');b.appendChild(note);
+  for(const[label,fn]of[[L2('PNG / Animasyonlu PNG','PNG / Animated PNG'),exportPNG],[L2('Animasyonlu GIF','Animated GIF'),exportGIF],['MP4 / Video',openVideoExport],[L2('PDF','PDF'),exportPDF],['SVG',exportSVG]]){const btn=mk('button','pbtn');btn.textContent=label;btn.onclick=()=>{closeModal();fn()};row.appendChild(btn)}
+  b.appendChild(row);const note=mk('p','cn');note.textContent=L2('Her dışa aktarmada ilerleme çubuğu görünür. PNG, GIF ve SVG şu anki sayfayı verir; PDF tüm sayfaları içerir. Videoda sayfaları ve geçişleri seçebilirsin. SVG vektördür; yazı tipleri internet varsa yüklenir. GIF: en fazla 10 sn, 480 px, 256 renk. MP4 desteklenmezse WebM indirilir; video hazırlanırken sekmeyi açık tut.','Each export shows a progress bar. PNG, GIF and SVG export the current page; PDF includes all pages. Choose pages and transitions in video settings. SVG is vector; fonts load when online. GIF: up to 10 s, 480 px, 256 colors. If MP4 is not supported a WebM is saved; keep the tab open while video is prepared.');b.appendChild(note);
 }
 
 addEventListener('pagehide',()=>{if(collabOn&&isHost){clearTimeout(remoteSaveT);save()}});
