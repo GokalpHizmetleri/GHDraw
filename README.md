@@ -8,7 +8,7 @@ A hand-drawn style whiteboard for the browser, inspired by Excalidraw. No build 
 
 **Excalidraw-style interface**
 - Floating top toolbar, a left properties panel, zoom and undo/redo controls at the bottom, and a hamburger menu
-- Tools: selection, hand (pan), rectangle, diamond, ellipse, arrow, line, pen, text and eraser, with a "keep tool active" lock
+- Tools: selection, hand (pan), rectangle, diamond, ellipse, arrow, line, pen, text and eraser. Drawing tools always stay active until you choose another tool or press Esc
 - Select, move, resize (with Shift to keep proportions) and multi-select with a marquee or Shift+click
 - Infinite canvas: pan with the mouse wheel, `Space` + drag or the hand tool; zoom with `Ctrl` + wheel or the +/- buttons
 
@@ -26,7 +26,7 @@ A hand-drawn style whiteboard for the browser, inspired by Excalidraw. No build 
 
 **Everything else**
 - Dark mode, optional grid, Turkish and English interface (switch in the menu)
-- Export to PNG (2x), or to an animated PNG (APNG) when the board has animated GIFs; save and open `.ghdraw` files
+- Export to a single-page PDF (raster, white background, static GIF frame), PNG (2x), or to an animated PNG (APNG) when the board has animated GIFs; save and open `.ghdraw` files
 - Autosave to `localStorage`
 - Zero build: a single `index.html` with vanilla JS. Works from `file://`, any static host, or Vercel
 
@@ -46,7 +46,6 @@ A hand-drawn style whiteboard for the browser, inspired by Excalidraw. No build 
 | `P` / `7` | Pen |
 | `T` / `8` | Text |
 | `E` / `9` | Eraser |
-| `Q` | Keep the tool active after drawing |
 | `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / redo |
 | `Ctrl+D` | Duplicate |
 | `Ctrl+C` / `Ctrl+V` | Copy / paste |
@@ -109,7 +108,7 @@ MIT - see [LICENSE](LICENSE).
 ## New in v4
 
 - X buttons close the properties panel, shape library, menu, and dialogs. Closing properties does not change the current tool; select a tool again to reopen it.
-- Tools stay active by default after drawing. You can still turn off the lock (Q) for one-shot drawing. Typing names, search queries or other input fields no longer triggers tool shortcuts. Double-clicking empty space no longer unexpectedly switches to text.
+- Drawing tools always stay active after drawing. There is no lock toggle or Q shortcut; choose another tool or press Esc to return to selection. Typing names, search queries or other input fields no longer triggers tool shortcuts. Double-clicking empty space no longer unexpectedly switches to text.
 - The welcome logo/text sits behind the drawing surface. Peer names and cursors have a separate overlay above drawings, images, videos and floating tool panels (dialogs remain on top).
 - **Media** (the picture button or menu): upload PNG or GIF files from your device (4 MB each). Move, resize, duplicate, delete, set opacity, and reorder media and shapes. GIFs animate on the board. There is no online GIF/meme search and no third-party media API: nothing is fetched from an external provider. JPEG/WebP/video uploads are not accepted; boards saved earlier with those still open.
 - Uploaded media is embedded in board data. Older boards that contained online-GIF elements (stored only as an id) show a dashed "GIF removed" placeholder, which you can delete.
@@ -120,3 +119,20 @@ Media uploads stay in your browser or travel directly to collaborators. No autom
 ## Media update
 
 The GIPHY/Wikimedia Commons online GIF search was removed; only PNG and GIF uploads from the device are accepted. Old v4 video elements still render for backward compatibility, without enabling new video uploads.
+
+## Tool lock and grid update
+
+- Drawing tools always stay selected after shapes, pen strokes and text entries. The lock button and Q shortcut were removed.
+- The grid now has its own background canvas below all drawings and uploaded media, in both light and dark mode. Selection handles and live drawing previews remain above the scene.
+
+## PDF export
+
+Choose **Export > Export as PDF**, or the PDF item in the hamburger menu. Downloads `ghdraw.pdf`: the full board fitted to one custom-sized page, without the grid or editing controls. GIFs are static; for animation choose PNG/APNG instead. PDF is raster (JPEG at 95% quality), not editable vectors. Large boards are scaled to at most 8 million pixels and 8192 pixels per side to keep mobile memory use bounded. All PDF generation happens locally, with no extra dependencies.
+
+## Animated GIF export
+
+Choose **Export > Animated GIF** for a gallery-friendly `ghdraw-animated.gif`. Requires an uploaded animated GIF and browser GIF frame decoding (`ImageDecoder`, tested in Chrome). Full board, white background, looping, up to 10 seconds at 10 fps, longest side 480 pixels, fixed 256-color RGB332 palette. This trades color fidelity and resolution for mobile memory use; text and line art may look softer, and the simple encoder makes bigger files than optimized GIF encoders. PNG/APNG stays available for higher quality. PDF cannot animate.
+
+## MP4 / video export
+
+Choose **Export > MP4 / Video**. Browser-supported MP4 (H.264) is preferred; browsers that cannot record MP4 download an honestly named `.webm` instead. Requires an uploaded animated GIF and GIF frame decoding. Silent single-pass video, up to 10 seconds at 20 fps, longest side at most 1280 pixels (even dimensions), white background, no grid. Keep the tab visible during real-time recording. Encoding support varies by browser/device; no video upload was added.
