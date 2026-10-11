@@ -119,10 +119,15 @@ html,body{overscroll-behavior:none;-webkit-touch-callout:none;-webkit-tap-highli
  #lib{left:8px;right:8px;top:auto;bottom:118px;width:auto;max-height:42vh}
  .lg{grid-template-columns:repeat(4,1fr)}
 }
+
+#board{z-index:2}#welcome{z-index:0}#scene{position:fixed;inset:0;z-index:1;pointer-events:none;overflow:hidden}#cursorLayer{position:fixed;inset:0;width:100%;height:100%;z-index:35;pointer-events:none}
+#props{padding-top:44px}#modal .box{position:relative;padding-top:52px}.panelClose{position:absolute;right:6px;top:6px;min-width:36px;min-height:36px;font-size:25px;border-radius:8px;background:var(--hover);z-index:2}
+.mediaNode{position:absolute;transform-origin:0 0}.audioCard{display:flex;flex-direction:column;gap:8px;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:12px;overflow:hidden;color:var(--text)}.audioCard span{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.audioCard audio{width:100%;height:40px;pointer-events:auto}
+.gifgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:14px}.gifgrid button{width:100%;padding:6px;background:var(--hover);border-radius:10px}.gifgrid img{width:100%;height:110px;object-fit:contain}.gifgrid span{display:block;font-size:11px;word-break:break-word}.gifgrid a{font-size:11px;color:var(--sel-t)}.mediaActions{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}.mediaNote{font-size:12px;color:var(--muted);line-height:1.5;margin:12px 0}@media(max-width:600px){.gifgrid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
 </head>
 <body>
-<canvas id="board"></canvas>
+<div id="scene"></div><canvas id="board"></canvas><canvas id="cursorLayer"></canvas>
 <div id="welcome"><img src="logo.svg" alt="GHDraw"><p id="wtxt"></p></div>
 <div id="top">
   <div id="menuWrap">
@@ -142,7 +147,8 @@ html,body{overscroll-behavior:none;-webkit-touch-callout:none;-webkit-tap-highli
 <div id="br" class="panel" style="background:none;box-shadow:none"><button id="help">?</button></div>
 <div id="hint"></div>
 <textarea id="editor" spellcheck="false" wrap="off"></textarea>
-<div id="modal"><div class="box" id="modalBox"></div></div>
+<div id="modal"><div class="box"><button id="modalX" class="panelClose" aria-label="Close">×</button><div id="modalBox"></div></div></div>
+<input id="mediaIn" type="file" accept="image/png,image/jpeg,image/gif,image/webp,video/mp4,video/webm" multiple hidden>
 <div id="toast"></div>
 <input type="file" id="fileIn" accept=".ghdraw,.json,application/json" style="display:none">
 <script>
@@ -203,7 +209,7 @@ const PAL_BG=['transparent','#ffc9c9','#b2f2bb','#a5d8ff','#ffec99'];
 
 const cv=$('#board'),ctx=cv.getContext('2d');
 const mctx=document.createElement('canvas').getContext('2d');
-let els=[],sel=new Set(),cam={x:0,y:0,z:1},tool='select',locked=false,grid=false,dark=false;
+let els=[],sel=new Set(),cam={x:0,y:0,z:1},tool='select',locked=true,grid=false,dark=false;
 let defaults={stroke:'#1e1e1e',bg:'transparent',fill:'hachure',sw:2,style:'solid',rough:1,round:true,opacity:100,font:'Caveat',size:28,align:'left'};
 let hist=[],hidx=-1,clip=[],dpr=1,W=0,H=0,space=false;
 let drag=null,editing=null,erased=null,marquee=null;
@@ -245,7 +251,7 @@ function distSeg(px,py,a,b){const dx=b[0]-a[0],dy=b[1]-a[1],l=dx*dx+dy*dy;let u=
 function inPoly(px,py,pts){let c=false;for(let i=0,j=pts.length-1;i<pts.length;j=i++){const a=pts[i],b=pts[j];if((a[1]>py)!==(b[1]>py)&&px<(b[0]-a[0])*(py-a[1])/(b[1]-a[1])+a[0])c=!c}return c}
 function hit(e,px,py){
   const tol=Math.max(6,e.sw||2)/cam.z+2;
-  if(e.type==='text')return px>=e.x-4&&px<=e.x+e.w+4&&py>=e.y-4&&py<=e.y+e.h+4;
+  if(['image','video','text'].includes(e.type))return px>=e.x-4&&px<=e.x+e.w+4&&py>=e.y-4&&py<=e.y+e.h+4;
   if(e.type==='poly'){const p=e.pts,n=p.length;for(let i=0;i<n;i++)if(distSeg(px,py,p[i],p[(i+1)%n])<=tol)return true;return !!(e.bg&&e.bg!=='transparent')&&inPoly(px,py,p)}
   if(isLin(e)){for(let i=0;i<e.pts.length-1;i++)if(distSeg(px,py,e.pts[i],e.pts[i+1])<=tol)return true;return e.pts.length===1&&Math.hypot(px-e.pts[0][0],py-e.pts[0][1])<=tol}
   const poly=polyFor(e,null);
@@ -297,7 +303,9 @@ function drawArrowHead(c,e,r){
 }
 function drawEl(c,e){
   if(e===editing)return;
-  c.save();
+  c.save();c.globalAlpha=(e.opacity??100)/100;
+  if(e.type==='image'){const im=getImage(e.src);if(im.complete&&im.naturalWidth)c.drawImage(im,e.x,e.y,e.w,e.h);c.restore();return}
+  if(e.type==='video'){const v=sceneNodes.get(e.id)?.node;if(v?.readyState>=2)c.drawImage(v,e.x,e.y,e.w,e.h);else{c.fillStyle='#f1f0ff';c.fillRect(e.x,e.y,e.w,e.h);c.fillStyle='#4a47b1';c.font='16px Nunito,system-ui';c.fillText('▶ '+(e.name||'Video'),e.x+12,e.y+30)}c.restore();return}
   c.globalAlpha=(e.opacity??100)/100;c.lineCap='round';c.lineJoin='round';
   c.strokeStyle=col(e.stroke);c.fillStyle=col(e.stroke);c.lineWidth=e.sw;
   if(e.type==='text'){
@@ -334,7 +342,7 @@ function handles(b){const p=6/cam.z,l=b.x-p,r=b.x+b.w+p,tp=b.y-p,bt=b.y+b.h+p,mx
 const CUR={nw:'nwse-resize',se:'nwse-resize',ne:'nesw-resize',sw:'nesw-resize',n:'ns-resize',s:'ns-resize',e:'ew-resize',w:'ew-resize'};
 function render(){
   ctx.setTransform(dpr,0,0,dpr,0,0);
-  ctx.fillStyle=dark?'#121212':'#ffffff';ctx.fillRect(0,0,W,H);
+  ctx.clearRect(0,0,W,H);syncScene();
   ctx.save();ctx.translate(cam.x,cam.y);ctx.scale(cam.z,cam.z);
   if(grid){
     const g=20,x0=Math.floor(-cam.x/cam.z/g)*g,y0=Math.floor(-cam.y/cam.z/g)*g,x1=(W-cam.x)/cam.z,y1=(H-cam.y)/cam.z;
@@ -343,7 +351,7 @@ function render(){
     for(let y=y0;y<y1;y+=g){ctx.moveTo(x0,y);ctx.lineTo(x1,y)}
     ctx.stroke();
   }
-  for(const e of els)drawEl(ctx,e);
+  // Elements are in the ordered DOM scene so GIFs keep animating.
   if(drag&&drag.el)drawEl(ctx,drag.el);
   const sl=els.filter(e=>sel.has(e.id));
   if(sl.length&&!editing){
@@ -357,7 +365,7 @@ function render(){
   }
   if(marquee){ctx.fillStyle='rgba(105,101,219,.10)';ctx.strokeStyle='#6965db';ctx.lineWidth=1/cam.z;ctx.fillRect(marquee.x,marquee.y,marquee.w,marquee.h);ctx.strokeRect(marquee.x,marquee.y,marquee.w,marquee.h)}
   ctx.restore();
-  drawCursors();schedPush();
+  const cc=$('#cursorLayer').getContext('2d');cc.canvas.width=W*dpr;cc.canvas.height=H*dpr;cc.setTransform(dpr,0,0,dpr,0,0);drawCursors(cc);schedPush();
   $('#zl').textContent=Math.round(cam.z*100)+'%';
   $('#welcome').classList.toggle('hide',els.length>0||!!editing||!!drag);
 }
@@ -366,7 +374,7 @@ function commit(){hist=hist.slice(0,hidx+1);hist.push(snap());if(hist.length>200
 function restore(s){els=JSON.parse(s);if(collabOn&&foreign.size){const keep=(window.__els0||[]).filter(e=>foreign.has(e.id));els=els.filter(e=>!foreign.has(e.id)).concat(keep)}els.forEach(e=>{if(e.type==='text')measure(e)});sel=new Set([...sel].filter(id=>els.some(e=>e.id===id)));save();syncUI();render()}
 function undo(){if(editing)return;if(hidx>0){window.__els0=els;hidx--;restore(hist[hidx])}}
 function redo(){if(editing)return;if(hidx<hist.length-1){window.__els0=els;hidx++;restore(hist[hidx])}}
-function save(){if(collabOn&&!isHost)return;try{localStorage.setItem('ghdraw:v2',JSON.stringify({els,cam,defaults,grid,dark}))}catch(_){}}
+function save(){if(collabOn&&!isHost)return;try{localStorage.setItem('ghdraw:v2',JSON.stringify({els,cam,defaults,grid,dark}))}catch(_){if(!window.__storageWarn){window.__storageWarn=true;toast(L2('Tarayıcı depolaması dolu. Çalışmanı .ghdraw dosyası olarak kaydet.','Browser storage is full. Save your board as a .ghdraw file.'))}}}
 function load(){
   try{const d=JSON.parse(localStorage.getItem('ghdraw:v2')||'null');if(d){els=d.els||[];cam=d.cam||cam;Object.assign(defaults,d.defaults||{});grid=!!d.grid;dark=!!d.dark}}catch(_){}
   els.forEach(e=>{if(e.type==='text')measure(e)});
@@ -381,13 +389,14 @@ function buildTools(){
     const b=document.createElement('button');b.className='ib'+(tool===n?' on':'');b.title=`${t(n)} - ${k}`;b.dataset.tool=n;b.innerHTML=svg(n)+`<span class="k">${k}</span>`;
     b.onclick=()=>setTool(n);box.appendChild(b);
   }
+  const mb=document.createElement('button');mb.className='ib';mb.textContent='▧';mb.title=L2('Medya / GIF','Media / GIF');mb.onclick=openMedia;box.appendChild(mb);
   const sp2=document.createElement('div');sp2.className='sepv';box.appendChild(sp2);
   const lb=document.createElement('button');lb.className='ib'+(libOpen?' on':'');lb.title=t('lib')+' - B';lb.innerHTML=svg('lib')+'<span class="k">B</span>';lb.onclick=()=>toggleLib();box.appendChild(lb);
 }
 function cursorFor(n){return n==='hand'?'grab':n==='select'?'default':n==='text'?'text':n==='eraser'?'cell':'crosshair'}
 function setTool(n){
   if(editing)finishEdit();
-  tool=n;if(n!=='select')sel=new Set();
+  propsClosed=false;tool=n;if(n!=='select')sel=new Set();
   document.querySelectorAll('#tools .ib[data-tool]').forEach(b=>b.classList.toggle('on',b.dataset.tool===n));
   cv.style.cursor=cursorFor(n);
   const h=$('#hint');h.style.display=(n==='text'||['rect','diamond','ellipse','arrow','line','pen'].includes(n))?'block':'none';h.textContent=n==='text'?t('hintText'):t('hintDraw');
@@ -414,18 +423,20 @@ const SECTIONS=[
  {id:'font',kinds:'text',type:'font'},
  {id:'size',kinds:'text',type:'size'},
  {id:'align',kinds:'text',type:'opts',key:'align',opts:[['left','al_left','left'],['center','al_center','center'],['right','al_right','right']]},
- {id:'opacity',kinds:'shape line pen text',type:'range'},
- {id:'layers',kinds:'shape line pen text',type:'layers',selOnly:true},
- {id:'actions',kinds:'shape line pen text',type:'actions',selOnly:true}
+ {id:'opacity',kinds:'shape line pen text image video',type:'range'},
+ {id:'layers',kinds:'shape line pen text image video',type:'layers',selOnly:true},
+ {id:'actions',kinds:'shape line pen text image video',type:'actions',selOnly:true}
 ];
-let fontOpen=false;
+let fontOpen=false,propsClosed=false;
 function mk(tag,cls){const e=document.createElement(tag);if(cls)e.className=cls;return e}
 function buildProps(){
   const box=$('#props'),{kinds,sl}=kindsNow();
-  const show=kinds.size>0&&tool!=='hand'&&tool!=='eraser';
+  const show=!propsClosed&&kinds.size>0&&tool!=='hand'&&tool!=='eraser';
   box.classList.toggle('show',show);
   if(!show)return;
   const keepScroll=box.scrollTop;box.innerHTML='';
+  const close=mk('button','panelClose');close.textContent='×';close.title=t('close');close.setAttribute('aria-label',t('close'));close.onclick=()=>{propsClosed=true;box.classList.remove('show')};box.appendChild(close);
+  for(const e of sl.filter(e=>e.type==='video')){const row=mk('div','mediaActions');const play=mk('button','sbtn');play.textContent=L2('▶ Oynat / duraklat','▶ Play / pause');play.onclick=()=>{const v=sceneNodes.get(e.id)?.node;if(!v)return;v.paused?v.play().catch(()=>toast(L2('Video oynatılamadı. MP4 H.264 kullan.','Could not play video. Use H.264 MP4.'))):v.pause()};const mute=mk('button','sbtn');mute.textContent=L2('Ses aç / kapat','Sound on / off');mute.onclick=()=>{const v=sceneNodes.get(e.id)?.node;if(v)v.muted=!v.muted};const restart=mk('button','sbtn');restart.textContent=L2('Başa dön','Restart');restart.onclick=()=>{const v=sceneNodes.get(e.id)?.node;if(v)v.currentTime=0};row.append(play,mute,restart);box.appendChild(row)}
   const hasRect=sl.length?sl.some(e=>e.type==='rect'):tool==='rect';
   for(const s of SECTIONS){
     if(!s.kinds.split(' ').some(k=>kinds.has(k)))continue;
@@ -499,8 +510,8 @@ function delSel(){if(!sel.size)return;els=els.filter(e=>!sel.has(e.id));sel=new 
 function syncUI(){$('#undo').disabled=hidx<=0;$('#redo').disabled=hidx>=hist.length-1;buildProps()}
 
 function buildMenu(){
-  const m=$('#menu');m.innerHTML='';
-  const items=[['collab','users',()=>openCollab(),''],['lib','lib',()=>toggleLib(),'B'],'sep',['open','open',()=>$('#fileIn').click(),'Ctrl+O'],['save','save',saveFile,'Ctrl+S'],['png','png',exportPNG,'Ctrl+Shift+E'],['clear','trash',clearAll,''],'sep',['grid','grid',()=>{grid=!grid;save();render();buildMenu()},grid?'\u2713':''],['dark','moon',()=>{dark=!dark;document.body.classList.toggle('dark',dark);save();render();buildMenu()},dark?'\u2713':''],['lang','globe',()=>{lang=lang==='tr'?'en':'tr';localStorage.setItem('ghdraw:lang',lang);i18nApply()},''],'sep',['github','gh',()=>window.open('https://github.com/GokalpHizmetleri/GHDraw','_blank'),'']];
+  const m=$('#menu');m.innerHTML='';const close=mk('button','mi');close.textContent='× '+t('close');close.onclick=()=>m.classList.remove('open');m.appendChild(close);
+  const items=[[L2('Medya / GIF','Media / GIF'),'png',openMedia,''],['collab','users',()=>openCollab(),''],['lib','lib',()=>toggleLib(),'B'],'sep',['open','open',()=>$('#fileIn').click(),'Ctrl+O'],['save','save',saveFile,'Ctrl+S'],['png','png',exportPNG,'Ctrl+Shift+E'],['clear','trash',clearAll,''],'sep',['grid','grid',()=>{grid=!grid;save();render();buildMenu()},grid?'\u2713':''],['dark','moon',()=>{dark=!dark;document.body.classList.toggle('dark',dark);save();render();buildMenu()},dark?'\u2713':''],['lang','globe',()=>{lang=lang==='tr'?'en':'tr';localStorage.setItem('ghdraw:lang',lang);i18nApply()},''],'sep',['github','gh',()=>window.open('https://github.com/GokalpHizmetleri/GHDraw','_blank'),'']];
   for(const it of items){
     if(it==='sep'){m.appendChild(mk('div','msep'));continue}
     const b=mk('button','mi');b.innerHTML=svg(it[1])+`<span>${t(it[0])}</span><span class="sc">${it[3]}</span>`;
@@ -521,7 +532,7 @@ function openHelp(){
 }
 function clearAll(){if(!els.length||confirm(t('confirmClear'))){els=[];sel=new Set();commit();render()}}
 function saveFile(){
-  const blob=new Blob([JSON.stringify({type:'ghdraw',version:2,elements:els})],{type:'application/json'});
+  const blob=new Blob([JSON.stringify({type:'ghdraw',version:4,elements:els})],{type:'application/json'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='ghdraw-'+new Date().toISOString().slice(0,10)+'.ghdraw';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2000);toast(t('saved'));
 }
 $('#fileIn').onchange=e=>{
@@ -529,14 +540,15 @@ $('#fileIn').onchange=e=>{
   r.onload=()=>{try{const d=JSON.parse(r.result);els=d.elements||[];els.forEach(x=>{if(x.type==='text')measure(x)});sel=new Set();commit();render()}catch(_){toast('Invalid file')}};
   r.readAsText(f);e.target.value='';
 };
-function exportPNG(){
+async function exportPNG(){
+  await Promise.all(els.filter(e=>e.type==='image').map(e=>new Promise(resolve=>{const im=getImage(e.src);if(im.complete)resolve();else{im.addEventListener('load',resolve,{once:true});im.addEventListener('error',resolve,{once:true})}})));
   if(editing)finishEdit();
   const b=els.length?unionBox(els):{x:0,y:0,w:400,h:300},pad=24,sc=2;
   const c=document.createElement('canvas');c.width=Math.ceil((b.w+pad*2)*sc);c.height=Math.ceil((b.h+pad*2)*sc);
   const x=c.getContext('2d');const wasDark=dark;dark=false;
   x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.scale(sc,sc);x.translate(-b.x+pad,-b.y+pad);
   for(const e of els)drawEl(x,e);dark=wasDark;
-  c.toBlob(bl=>{const a=document.createElement('a');a.href=URL.createObjectURL(bl);a.download='ghdraw.png';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2000);toast(t('saved'))});
+  try{c.toBlob(bl=>{const a=document.createElement('a');a.href=URL.createObjectURL(bl);a.download='ghdraw.png';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2000);toast(t('saved'))});}catch(_){toast(L2('Bu uzak resim PNG dışa aktarımına izin vermiyor. .ghdraw olarak kaydet.','This remote image blocks PNG export. Save as .ghdraw instead.'))}
 }
 
 const ed=$('#editor');
@@ -699,7 +711,7 @@ cv.addEventListener('pointerup',endDrag);cv.addEventListener('pointercancel',end
 cv.addEventListener('dblclick',ev=>{
   if(tool!=='select')return;const p=toW(ev.clientX,ev.clientY),e=topAt(p.x,p.y);
   if(e&&e.type==='text'){sel=new Set([e.id]);startEdit(e,false)}
-  else if(!e){setTool('text');newText(p.x,p.y)}
+  
 });
 cv.addEventListener('wheel',ev=>{
   ev.preventDefault();
@@ -716,7 +728,8 @@ $('#zl').onclick=()=>zoomAt(W/2,H/2,1);
 $('#help').onclick=openHelp;$('#modal').onclick=e=>{if(e.target.id==='modal')$('#modal').classList.remove('open')};
 let clipPaste=0;
 document.addEventListener('keydown',e=>{
-  if(e.target===ed||(e.target.tagName==='INPUT'&&e.target.type==='number'))return;
+  if(e.isComposing||e.target.closest('input,textarea,select,[contenteditable=true]'))return;
+  if($('#modal').classList.contains('open')){if(e.key==='Escape')closeModal();return;}
   const k=e.key.toLowerCase(),mod=e.ctrlKey||e.metaKey;
   if(k===' '){space=true;if(!drag)cv.style.cursor='grab';e.preventDefault();return}
   if(mod){
@@ -994,7 +1007,7 @@ function sendCursor(p){
   const n=Date.now();if(n-curT<60||!conns.length)return;curT=n;
   bcast({t:'cur',id:peer&&peer.id,x:p.x,y:p.y,n:myName,c:myColor});
 }
-function drawCursors(){
+function drawCursors(ctx){
   if(!remoteCur.size)return;
   const now=Date.now();
   for(const[id,c]of remoteCur){
@@ -1040,7 +1053,7 @@ const tp=new Map();let pinch=null,penSeen=0,lastTap={t:0,x:0,y:0};
 function dblAt(sx,sy){
   const p=toW(sx,sy),e=topAt(p.x,p.y);
   if(e&&e.type==='text'){sel=new Set([e.id]);startEdit(e,false)}
-  else if(!e){setTool('text');newText(p.x,p.y)}
+  
 }
 cv.addEventListener('pointerdown',ev=>{
   if(ev.pointerType==='pen')penSeen=Date.now();
@@ -1072,6 +1085,56 @@ cv.addEventListener('pointermove',ev=>{
 const tpEnd=ev=>{if(ev.pointerType!=='touch')return;tp.delete(ev.pointerId);if(tp.size<2&&pinch){pinch=null;save();ev.stopImmediatePropagation()}};
 cv.addEventListener('pointerup',tpEnd,true);cv.addEventListener('pointercancel',tpEnd,true);
 cv.addEventListener('pointermove',ev=>{if(collabOn)sendCursor(toW(ev.clientX,ev.clientY))});
+
+/* ---- ordered media scene and online GIF search ---- */
+const imgCache=new Map(),sceneNodes=new Map();
+function getImage(src){if(!imgCache.has(src)){const im=new Image();im.crossOrigin='anonymous';im.onload=()=>render();im.onerror=()=>{};im.src=src;imgCache.set(src,im)}return imgCache.get(src)}
+function syncScene(){
+ const scene=$('#scene'),active=new Set();let prev=null;
+ for(const e of els){
+  active.add(e.id);let rec=sceneNodes.get(e.id);const b=bbox(e);
+  if(!rec||rec.type!==e.type){if(rec)rec.node.remove();const node=document.createElement(e.type==='image'?'img':e.type==='video'?'video':'canvas');node.className='mediaNode';rec={node,type:e.type};sceneNodes.set(e.id,rec);scene.appendChild(node);
+   if(e.type==='video'){node.preload='metadata';node.playsInline=true;node.loop=true;node.muted=true}
+  }
+  const node=rec.node,pad=['image','video'].includes(e.type)?0:14;
+  node.style.left=(cam.x+(b.x-pad)*cam.z)+'px';node.style.top=(cam.y+(b.y-pad)*cam.z)+'px';node.style.width=(b.w+pad*2)+'px';node.style.height=(b.h+pad*2)+'px';node.style.transform=`scale(${cam.z})`;node.style.opacity=['image','video'].includes(e.type)?(e.opacity??100)/100:1;node.style.visibility=e===editing?'hidden':'visible';
+  if(e.type==='image'){if(rec.src!==e.src){node.src=e.src;node.alt=e.name||'Image';rec.src=e.src}}
+  else if(e.type==='video'){if(rec.src!==e.src){node.src=e.src;rec.src=e.src}}
+  else{const sig=JSON.stringify(e)+dark+dpr;if(sig!==rec.sig){node.width=Math.max(1,Math.ceil((b.w+pad*2)*dpr));node.height=Math.max(1,Math.ceil((b.h+pad*2)*dpr));const c=node.getContext('2d');c.scale(dpr,dpr);c.translate(-b.x+pad,-b.y+pad);drawEl(c,e);rec.sig=sig}}
+  const next=prev?prev.nextSibling:scene.firstChild;if(next!==node)scene.insertBefore(node,next);prev=node; // reorder only when layer order changes
+ }
+ for(const[id,rec]of sceneNodes)if(!active.has(id)){rec.node.remove();sceneNodes.delete(id)}
+}
+function closeModal(){$('#modal').classList.remove('open');collabModal=false;gifAbort?.abort()}
+$('#modalX').onclick=closeModal;
+let gifAbort=null,gifQuery='',gifOffset=0;
+function openMedia(){
+ collabModal=false;$('#modal').classList.add('open');const b=$('#modalBox');b.innerHTML='';
+ const title=mk('h3');title.textContent=L2('Medya ve GIF','Media and GIF');b.appendChild(title);
+ const actions=mk('div','mediaActions'),up=mk('button','pbtn');up.textContent=L2('Fotoğraf / PNG / GIF / MP4 yükle','Upload photo / PNG / GIF / MP4');up.onclick=()=>$('#mediaIn').click();actions.appendChild(up);b.appendChild(actions);
+ const form=mk('form'),input=mk('input');input.placeholder=L2('İnternetten GIF ara (ör. cat, dance)','Search GIFs online (e.g. cat, dance)');input.setAttribute('aria-label',input.placeholder);input.value=gifQuery;const go=mk('button','pbtn');go.textContent=L2('GIF ara','Search GIFs');go.type='submit';go.style.marginTop='8px';form.append(input,go);form.onsubmit=e=>{e.preventDefault();gifQuery=input.value.trim();gifOffset=0;searchGIF()};b.appendChild(form);
+ const note=mk('p','mediaNote');note.textContent=L2('Kaynak: Wikimedia Commons. Hesap/API anahtarı gerekmez. İngilizce aramalar daha çok sonuç verir. Her GIF için kaynak ve lisans bağlantısı gösterilir. Dosya sınırı: 4 MB; daha büyük dosyaları önce küçült.','Source: Wikimedia Commons. No account/API key needed. Each GIF includes a source/license link. File limit: 4 MB; reduce larger files first.');b.appendChild(note);
+ const status=mk('p','mediaNote');status.id='gifStatus';b.appendChild(status);const results=mk('div','gifgrid');results.id='gifResults';b.appendChild(results);const more=mk('button','sbtn');more.id='gifMore';more.textContent=L2('Daha fazla','Load more');more.hidden=true;more.onclick=()=>searchGIF(true);b.appendChild(more);
+}
+function plainHTML(v){const d=new DOMParser().parseFromString(v||'','text/html');return d.body.textContent||''}
+async function searchGIF(more=false){
+ if(!gifQuery)return;gifAbort?.abort();gifAbort=new AbortController();const status=$('#gifStatus'),grid=$('#gifResults'),moreBtn=$('#gifMore');if(!grid)return;if(!more)grid.innerHTML='';status.textContent=L2('GIFler aranıyor...','Searching GIFs...');moreBtn.hidden=true;
+ try{const u=new URL('https://commons.wikimedia.org/w/api.php');u.search=new URLSearchParams({action:'query',generator:'search',gsrsearch:gifQuery+' filemime:image/gif',gsrnamespace:'6',gsrlimit:'18',gsroffset:String(gifOffset),prop:'imageinfo',iiprop:'url|size|extmetadata',format:'json',origin:'*'});const r=await fetch(u,{signal:gifAbort.signal});if(!r.ok)throw Error();const d=await r.json();if(d.error)throw Error();
+ const pages=Object.values(d.query?.pages||{}).sort((a,b)=>a.index-b.index);
+ for(const p of pages){const ii=p.imageinfo?.[0];if(!ii||!/^https:\/\/upload.wikimedia.org\//.test(ii.url)||!p.title.toLowerCase().endsWith('.gif'))continue;const cell=mk('div'),btn=mk('button'),img=mk('img');img.loading='lazy';img.src=ii.url;img.alt=p.title.slice(5);btn.title=img.alt;btn.append(img);const label=mk('span');label.textContent=img.alt;btn.append(label);btn.onclick=async()=>{btn.disabled=true;try{await addRemoteImage(ii.url,img.alt,{url:ii.descriptionurl,artist:plainHTML(ii.extmetadata?.Artist?.value),license:plainHTML(ii.extmetadata?.LicenseShortName?.value)});closeModal()}catch(_){toast(L2('GIF eklenemedi veya 4 MB sınırını aşıyor.','Could not add GIF, or it exceeds 4 MB.'));btn.disabled=false}};cell.append(btn);const a=mk('a');a.href=ii.descriptionurl;a.target='_blank';a.rel='noopener noreferrer';a.textContent=L2('Kaynak / lisans: ','Source / license: ')+plainHTML(ii.extmetadata?.LicenseShortName?.value);cell.append(a);grid.append(cell)}
+ gifOffset=d.continue?.gsroffset||0;moreBtn.hidden=!gifOffset;status.textContent=grid.children.length?L2('Eklemek için GIFe tıkla.','Click a GIF to add it.'):L2('Sonuç bulunamadı. İngilizce başka bir kelime dene.','No results. Try another word.');
+ }catch(e){if(e.name!=='AbortError')status.textContent=L2('GIF araması şu anda kullanılamıyor. İnternet bağlantını kontrol et.','GIF search is unavailable. Check your connection.')}
+}
+const MAX_MEDIA=4*1024*1024;
+function readData(file){return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(file)})}
+async function addRemoteImage(url,name,credit){const r=await fetch(url);if(!r.ok)throw Error();const blob=await r.blob();if(blob.size>MAX_MEDIA)throw Error();const src=await readData(blob);await addMedia(src,'image',name,credit)}
+async function addMedia(src,type,name,credit){
+ let w=320,h=180;if(type==='image'){const im=getImage(src);if(!im.complete)await new Promise((res,rej)=>{im.addEventListener('load',res,{once:true});im.addEventListener('error',rej,{once:true})});if(!im.naturalWidth)throw Error();w=Math.min(480,im.naturalWidth);h=w*im.naturalHeight/im.naturalWidth}
+ if(type==='video'){const v=document.createElement('video');v.preload='metadata';v.src=src;await new Promise((res,rej)=>{v.onloadedmetadata=res;v.onerror=rej});w=Math.min(480,v.videoWidth||320);h=w*(v.videoHeight||180)/(v.videoWidth||320)}
+ const p=toW(W/2,H/2),e={id:uid(),type,src,name,credit,x:p.x-w/2,y:p.y-h/2,w,h,opacity:100};els.push(e);setTool('select');sel=new Set([e.id]);commit();render();
+}
+$('#mediaIn').onchange=async ev=>{const files=[...ev.target.files];ev.target.value='';for(const f of files){if(f.size>MAX_MEDIA){toast(L2('Dosya 4 MB sınırını aşıyor: ','File exceeds 4 MB: ')+f.name);continue}const type=f.type.startsWith('image/')?'image':f.type.startsWith('video/')?'video':null;if(!type){toast(L2('Desteklenmeyen dosya','Unsupported file'));continue}try{await addMedia(await readData(f),type,f.name);closeModal()}catch(_){toast(L2('Medya okunamadı: ','Could not read media: ')+f.name)}}};
+window.addEventListener('blur',()=>{space=false;if(!drag)cv.style.cursor=cursorFor(tool)});
 
 load();document.body.classList.toggle('dark',dark);
 if(!isFinite(cam.z)||!cam.z)cam={x:0,y:0,z:1};
