@@ -402,7 +402,7 @@ function commit(){hist=hist.slice(0,hidx+1);hist.push(snap());if(hist.length>200
 function restore(s){els=JSON.parse(s);if(collabOn&&foreign.size){const keep=(window.__els0||[]).filter(e=>foreign.has(e.id));els=els.filter(e=>!foreign.has(e.id)).concat(keep)}els.forEach(e=>{if(e.type==='text')measure(e)});sel=new Set([...sel].filter(id=>els.some(e=>e.id===id)));save();syncUI();render()}
 function undo(){if(editing)return;if(hidx>0){window.__els0=els;hidx--;restore(hist[hidx])}}
 function redo(){if(editing)return;if(hidx<hist.length-1){window.__els0=els;hidx++;restore(hist[hidx])}}
-function save(){if(viewOnly)return;if(collabOn&&!isHost)return;syncPage();try{localStorage.setItem('ghdraw:v2',JSON.stringify({els,cam,defaults,grid,dark,pi,pages:pages.map(p=>({id:p.id,name:p.name,els:p.els,cam:p.cam}))}))}catch(_){if(!window.__storageWarn){window.__storageWarn=true;toast(L2('Tarayıcı depolaması dolu. Çalışmanı .ghdraw dosyası olarak kaydet.','Browser storage is full. Save your board as a .ghdraw file.'))}}}
+function save(){if(viewOnly)return;if(collabOn&&!isHost&&!cloudRoom)return;syncPage();try{localStorage.setItem('ghdraw:v2',JSON.stringify({els,cam,defaults,grid,dark,pi,pages:pages.map(p=>({id:p.id,name:p.name,els:p.els,cam:p.cam}))}))}catch(_){if(!window.__storageWarn){window.__storageWarn=true;toast(L2('Tarayıcı depolaması dolu. Çalışmanı .ghdraw dosyası olarak kaydet.','Browser storage is full. Save your board as a .ghdraw file.'))}}}
 function load(){
   try{const d=JSON.parse(localStorage.getItem('ghdraw:v2')||'null');if(d){els=d.els||[];cam=d.cam||cam;Object.assign(defaults,d.defaults||{});grid=!!d.grid;dark=!!d.dark;if(Array.isArray(d.pages)&&d.pages.length){pages=d.pages;pi=Math.max(0,Math.min(d.pi||0,pages.length-1));els=pages[pi].els||[];cam=pages[pi].cam||cam}}}catch(_){}
   if(!pages.length)pages=[{id:uid(),name:'',els:[],cam:{x:0,y:0,z:1}}];
@@ -762,7 +762,7 @@ function setFit(r,m){
 function fitPage(){const L=els.filter(e=>!e.frame);if(L.length)setFit(unionBox(L),.12)}
 function gotoPage(i){
   if(i<0||i>=pages.length||i===pi)return;
-  if(collabOn){toast(L2('Ortak çizim sırasında sayfa değiştirilemez.','Pages are locked during collaboration.'));return}
+  if(collabOn&&!cloudRoom){toast(L2('Ortak çizim sırasında sayfa değiştirilemez.','Pages are locked during collaboration.'));return}
   if(editing)finishEdit();
   syncPage();pages[pi].hist=hist;pages[pi].hidx=hidx;
   pi=i;const p=pages[i];els=p.els;cam=p.cam||{x:0,y:0,z:1};
@@ -772,15 +772,15 @@ function gotoPage(i){
   save();syncUI();render();buildPages();
 }
 function addPage(){
-  if(collabOn){toast(L2('Ortak çizim sırasında sayfa eklenemez.','Pages are locked during collaboration.'));return}
+  if(collabOn&&!cloudRoom){toast(L2('Ortak çizim sırasında sayfa eklenemez.','Pages are locked during collaboration.'));return}
   syncPage();pages.push({id:uid(),name:'',els:[],cam:{x:0,y:0,z:1}});gotoPage(pages.length-1);
 }
 function dupPage(){
-  if(collabOn)return;syncPage();
+  if(collabOn&&!cloudRoom)return;syncPage();
   const c=cloneEls(els,0,0);pages.splice(pi+1,0,{id:uid(),name:pages[pi].name?pages[pi].name+' 2':'',els:c,cam:Object.assign({},cam)});gotoPage(pi+1);
 }
 function delPage(){
-  if(collabOn)return;
+  if(collabOn&&!cloudRoom)return;
   if(pages.length<2){if(confirm(t('confirmClear'))){els=[];sel=new Set();commit();render()}return}
   if(!confirm(L2('Bu sayfa silinsin mi?','Delete this page?')))return;
   syncPage();pages.splice(pi,1);const n=Math.min(pi,pages.length-1);pi=-1;
@@ -788,7 +788,7 @@ function delPage(){
   save();syncUI();render();buildPages();
 }
 function renamePage(){const n=prompt(L2('Sayfa adı:','Page name:'),pages[pi].name||'');if(n===null)return;pages[pi].name=n.trim().slice(0,24);save();buildPages()}
-function movePage(d){const j=pi+d;if(j<0||j>=pages.length||collabOn)return;syncPage();const[p]=pages.splice(pi,1);pages.splice(j,0,p);pi=j;save();buildPages()}
+function movePage(d){if(cloudRoom){toast(L2('Ortak çizimde sayfa sırası sabittir.','Page order is fixed during collaboration.'));return}const j=pi+d;if(j<0||j>=pages.length||(collabOn&&!cloudRoom))return;syncPage();const[p]=pages.splice(pi,1);pages.splice(j,0,p);pi=j;save();buildPages()}
 function pageMenu(){
   collabModal=false;const b=$('#modalBox');b.innerHTML='';
   const h=mk('h3');h.textContent=pageName(pi);b.appendChild(h);
@@ -900,6 +900,49 @@ function addFrame(){
 I18.tr.sc.push(["Sunum modu","Ctrl+Shift+P"],["Sunumda ileri / geri","Ok tuşları, Boşluk"]);
 I18.en.sc.push(["Presentation mode","Ctrl+Shift+P"],["Next / previous step","Arrow keys, Space"]);
 
+/* GHDraw cloud links: anonymous capability links, private database, server expiry. */
+const CLOUD='https://ghdraw-expiring-links.fra.appwrite.run';
+let cloudRoom=null,cloudBase=null,cloudTimer=0,cloudBusy=false,cloudPending=false,cloudApplying=false,cloudOwner=null;
+async function cloudRequest(path,body,method){
+ const r=await fetch(CLOUD+path,{method:method||(body?'POST':'GET'),headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});
+ const d=await r.json();if(!r.ok)throw Object.assign(new Error(d.error||'Cloud error'),{status:r.status});return d;
+}
+function cloudBoard(){syncPage();return {v:2,d:dark?1:0,p:pages.map(p=>({id:p.id,n:p.name||'',e:p.els.filter(e=>!('__bak' in e)).map(e=>JSON.parse(ser(e)))}))}}
+function cloudDiff(a,b){
+ const changes=[],old=new Map(a.p.map(p=>[p.id,p]));
+ for(const p of b.p){const op=old.get(p.id);if(!op){changes.push({t:'addPage',p});continue}if(op.n!==p.n)changes.push({t:'rename',pid:p.id,n:p.n});const es=new Map(op.e.map(e=>[e.id,JSON.stringify(e)]));for(const e of p.e){if(es.get(e.id)!==JSON.stringify(e))changes.push({t:'put',pid:p.id,e});es.delete(e.id)}for(const eid of es.keys())changes.push({t:'del',pid:p.id,eid});if(op.e.map(e=>e.id).join()!==p.e.map(e=>e.id).join())changes.push({t:'order',pid:p.id,ids:p.e.map(e=>e.id)})}
+ const ids=new Set(b.p.map(p=>p.id));for(const p of a.p)if(!ids.has(p.id))changes.push({t:'delPage',pid:p.id});return changes;
+}
+function cloudMerge(d,sent){
+ // Reapply edits made locally while the request was in flight.
+ const now=cloudBoard(),pending=sent?cloudDiff(sent,now):cloudDiff(cloudBase||now,now),b=structuredClone(d.board);
+ for(const c of pending){if(c.t==='addPage'&&!b.p.some(p=>p.id===c.p.id))b.p.push(c.p);else if(c.t==='delPage'&&b.p.length>1)b.p=b.p.filter(p=>p.id!==c.pid);else{const p=b.p.find(p=>p.id===c.pid);if(!p)continue;if(c.t==='rename')p.n=c.n;if(c.t==='put'){const i=p.e.findIndex(e=>e.id===c.e.id);if(i<0)p.e.push(c.e);else p.e[i]=c.e}if(c.t==='del')p.e=p.e.filter(e=>e.id!==c.eid);if(c.t==='order'){const ord=new Map(c.ids.map((id,i)=>[id,i]));p.e.sort((a,b)=>(ord.get(a.id)??99999)-(ord.get(b.id)??99999))}}}
+ const before=JSON.stringify(els);const current=pages[pi]?.id,views=new Map(pages.map(p=>[p.id,p.cam]));cloudBase=structuredClone(d.board);
+ pages=b.p.map(p=>({id:p.id,name:p.n,els:p.e,cam:views.get(p.id)||{x:0,y:0,z:1}}));pi=Math.max(0,pages.findIndex(p=>p.id===current));els=pages[pi].els;els.forEach(e=>{if(e.type==='text')measure(e)});cam=pages[pi].cam;if(before!==JSON.stringify(els)&&!pending.length){hist=[snap()];hidx=0}sel=new Set([...sel].filter(id=>els.some(e=>e.id===id)));cloudApplying=true;buildPages();syncUI();render();cloudApplying=false;save();
+ cloudPending=!!pending.length;
+}
+async function cloudSync(){
+ if(!cloudRoom||cloudBusy||document.hidden)return;
+ if(Date.now()>=cloudRoom.expires){cloudEnd(false);toast(L2('Ortak çizim süresi doldu. Yerel kopyan sende.','Collaboration expired. Your local copy is kept.'));return}
+ // Do not replace an active gesture or text editor.
+ if(drag||editing)return;
+ cloudBusy=true;const sent=cloudBoard(),changes=cloudDiff(cloudBase,sent);
+ try{const d=changes.length?await cloudRequest('/room/'+cloudRoom.id,{changes}):await cloudRequest('/room/'+cloudRoom.id);cloudMerge(d,sent);$('#collabBtn').title=L2('Buluta bağlı. Oturum: ','Connected to cloud. Expires: ')+new Date(d.expires).toLocaleString()}
+ catch(e){if(e.status===410||e.status===404){cloudEnd(false);toast(L2('Oturum bitti veya süresi doldu.','Session ended or expired.'))}else if(!cloudPending){cloudPending=true;toast(L2('Buluta ulaşılamıyor. Çizimin yerelde korunuyor; yeniden denenecek.','Cloud unavailable. Local edits are kept; will retry.'))}}
+ finally{cloudBusy=false}
+}
+async function cloudJoin(id,host=false){
+ try{const d=await cloudRequest('/room/'+id);if(d.kind!=='room')throw Error('room');
+  try{localStorage.setItem('ghdraw:backup-before-collab',localStorage.getItem('ghdraw:v2')||'')}catch(_){}cloudBase=cloudBoard();cloudMerge(d,cloudBoard());hist=[snap()];hidx=0
+  cloudRoom={id,expires:d.expires};cloudBase=structuredClone(d.board);collabOn=true;isHost=host;roomId=id;conns=[];peersN=1;hostConn={cloud:true};
+  history.replaceState(null,'',location.href.split('#')[0]+'#collab='+id);setStatus();clearInterval(cloudTimer);cloudTimer=setInterval(cloudSync,4000);toast(L2('Ortak çizime bağlandın. 48 saat; 4 saniyede eşitlenir.','Connected. 48 hours; syncs every 4 seconds.'));
+ }catch(e){toast(L2('Oturum açılamadı: ','Could not open session: ')+e.message)}
+}
+function cloudEnd(revoke){
+ const r=cloudRoom;clearInterval(cloudTimer);cloudTimer=0;cloudRoom=null;cloudBase=null;collabOn=false;hostConn=null;isHost=false;conns=[];roomId=null;history.replaceState(null,'',location.href.split('#')[0]);save();setStatus();buildPages();render();
+ if(revoke&&r&&cloudOwner)cloudRequest('/owner/'+r.id,{owner:cloudOwner},'DELETE').catch(()=>toast(L2('Sunucudaki oturum kapatılamadı; süresi dolunca kapanır.','Server session could not be closed; it will expire.')));
+}
+
 /* ---- read-only share link (no server: the board is packed into the link) ---- */
 const b64u=u=>{let s='';for(let i=0;i<u.length;i+=0x8000)s+=String.fromCharCode.apply(null,u.subarray(i,i+0x8000));return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')};
 const unb64u=s=>{s=s.replace(/-/g,'+').replace(/_/g,'/');while(s.length%4)s+='=';const b=atob(s),u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u};
@@ -914,32 +957,31 @@ function sharePayload(withMedia){
   return{json,omitted};
 }
 async function makeShareLink(){
-  let r=sharePayload(true),code=b64u(await deflate(new TextEncoder().encode(r.json)));
-  if(code.length>SHARE_MAX){r=sharePayload(false);code=b64u(await deflate(new TextEncoder().encode(r.json)))}
-  return{url:location.href.split('#')[0]+'#view='+code,len:code.length,omitted:r.omitted,tooBig:code.length>SHARE_MAX};
+ const d=await cloudRequest('/create',{kind:'view',board:cloudBoard()});
+ return {url:location.href.split('#')[0]+'#share='+d.id,len:32,omitted:0,tooBig:false,expires:d.expires};
 }
 async function openShare(){
   collabModal=false;const b=$('#modalBox');b.innerHTML='';
   const h=mk('h3');h.textContent=L2('Salt okunur link','Read-only link');b.appendChild(h);
   const p=mk('p','cp');p.textContent=L2('Hazırlanıyor...','Preparing...');b.appendChild(p);$('#modal').classList.add('open');
-  if(typeof CompressionStream==='undefined'){p.textContent=L2('Bu tarayıcı link oluşturmayı desteklemiyor. Chrome, Edge veya yeni Safari dene.','This browser cannot build the link. Try Chrome, Edge or a recent Safari.');return}
+
   try{
     const r=await makeShareLink();
     if(r.tooBig){p.textContent=L2('Tahta link için çok büyük. Daha küçük bir tahta dene ya da PDF / .ghdraw dosyası paylaş.','This board is too big for a link. Try a smaller board, or share a PDF / .ghdraw file.');return}
-    p.textContent=L2('Linki alan kişi tahtayı görür, kaydırır, yakınlaştırır ve sunum yapabilir ama değiştiremez. Link, tahtanın şu anki halinin bir kopyasıdır; sonraki değişiklikler linke yansımaz.','Anyone with this link can view, pan, zoom and present the board but not edit it. It is a snapshot of the board right now; later changes do not appear in the link.');
+    p.textContent=L2('Linki alan kişi tahtayı görür, kaydırır, yakınlaştırır ve sunum yapabilir ama değiştiremez. Link 7 gün sonra kapanır. Tahtanın şu anki halinin bir kopyasıdır; sonraki değişiklikler linke yansımaz.','Anyone with this link can view, pan, zoom and present the board but not edit it. Expires after 7 days. It is a snapshot; later changes do not appear.');
     const i=document.createElement('input');i.id='slink';i.readOnly=true;i.value=r.url;b.appendChild(i);
     const act=mk('div','cact');act.style.marginTop='10px';
     const cp=mk('button','pbtn');cp.textContent=L2('Linki kopyala','Copy link');
     cp.onclick=()=>{i.select();const done=()=>toast(L2('Kopyalandı','Copied'));if(navigator.clipboard)navigator.clipboard.writeText(i.value).then(done,()=>{document.execCommand('copy');done()});else{document.execCommand('copy');done()}};act.appendChild(cp);
     if(navigator.share){const s=mk('button','sbtn');s.textContent=L2('Paylaş','Share');s.onclick=()=>navigator.share({title:'GHDraw',url:r.url}).catch(()=>{});act.appendChild(s)}
     b.appendChild(act);
-    const n=mk('p','cn');n.textContent=L2('Uzunluk: ','Length: ')+r.len.toLocaleString()+L2(' karakter. ',' characters. ')+(r.omitted?L2(r.omitted+' görsel/video boyut nedeniyle linke eklenmedi. ',r.omitted+' image/video item(s) left out to keep the link small. '):'')+L2('Link sunucuya kaydedilmez; veri linkin içindedir.','Nothing is stored on a server; the board data is inside the link.');b.appendChild(n);
-  }catch(_){p.textContent=L2('Link oluşturulamadı.','Could not build the link.')}
+    const n=mk('p','cn');n.textContent=L2('Uzunluk: ','Length: ')+r.len.toLocaleString()+L2(' karakter. ',' characters. ')+(r.omitted?L2(r.omitted+' görsel/video boyut nedeniyle linke eklenmedi. ',r.omitted+' image/video item(s) left out to keep the link small. '):'')+L2('Sunucuda saklanır; süre sonunda erişim kapanır. Son: ','Stored on the server; access ends at expiry. Ends: ')+new Date(r.expires).toLocaleString();b.appendChild(n);
+  }catch(e){p.textContent=L2('Link oluşturulamadı: ','Could not build the link: ')+e.message}
 }
 async function startViewer(code){
   document.body.classList.add('viewer');
   try{
-    const j=JSON.parse(new TextDecoder().decode(await inflate(unb64u(code))));
+    const j=code.startsWith('cloud:')?(await cloudRequest('/view/'+code.slice(6))).board:JSON.parse(new TextDecoder().decode(await inflate(unb64u(code))));
     pages=j.p.map(p=>({id:uid(),name:p.n||'',els:p.e||[],cam:{x:0,y:0,z:1}}));if(!pages.length)throw Error('empty');
     dark=!!j.d;document.body.classList.toggle('dark',dark);
     pages.forEach(p=>p.els.forEach(e=>{if(e.type==='text')measure(e)}));
@@ -950,7 +992,7 @@ async function startViewer(code){
     r.appendChild(cpb);r.appendChild(ps);
     setTool('hand');fitPage();presQ=Math.max(1,Math.min(4,cam.z));buildPages();render();
     document.fonts.ready.then(()=>{els.forEach(e=>{if(e.type==='text')measure(e)});if(!presenting)fitPage();render()});
-  }catch(_){toast(L2('Link açılamadı veya bozuk.','Could not open this link (it may be damaged).'))}
+  }catch(e){const b=$('#modalBox');b.textContent=L2('Link açılamadı: ','Could not open link: ')+e.message;$('#modal').classList.add('open');toast(e.message)}
 }
 function viewToEdit(){
   if(!confirm(L2('Bu tahta kendi tahtanın yerine geçecek. Mevcut tahtan yedeklenir. Devam edilsin mi?','This board will replace your own board here. Your current board is backed up. Continue?')))return;
@@ -1175,7 +1217,7 @@ function openExport(){
 }
 
 addEventListener('pagehide',()=>{if(collabOn&&isHost){clearTimeout(remoteSaveT);save()}});
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'&&collabOn&&isHost){clearTimeout(remoteSaveT);save()}});
+document.addEventListener('visibilitychange',()=>{if(cloudRoom&&document.visibilityState==='visible')cloudSync();if(document.visibilityState==='hidden'&&collabOn&&isHost){clearTimeout(remoteSaveT);save()}});
 const ed=$('#editor');
 function applyEditorStyle(){
   if(!editing)return;
@@ -1522,16 +1564,18 @@ function loadPeer(){
   return new Promise((res,rej)=>{const next=()=>{if(i>=urls.length)return rej(new Error('peerjs'));const s=document.createElement('script');s.src=urls[i++];s.onload=res;s.onerror=()=>{s.remove();next()};document.head.appendChild(s)};next()});
 }
 const PEER_OPTS={config:{iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:global.stun.twilio.com:3478'}]}};
-const linkFor=id=>location.href.split('#')[0]+'#room='+id;
-function bcast(m,except){const s=JSON.stringify(m);for(const c of conns)if(c!==except&&c.open)try{c.send(s)}catch(_){}}
+const linkFor=id=>location.href.split('#')[0]+(cloudRoom?'#collab=':'#room=')+id;
+function bcast(m,except){if(cloudRoom)return;const s=JSON.stringify(m);for(const c of conns)if(c!==except&&c.open)try{c.send(s)}catch(_){}}
 function updateCollabBtn(){
   const b=$('#collabBtn');if(!b)return;
-  b.innerHTML=svg('users')+`<span class="lbl">${t('collab')}</span>`+(collabOn?`<span class="cdot${(isHost||hostConn)?' live':''}"></span><b class="cn">${peersN}</b>`:'');
+  b.innerHTML=svg('users')+`<span class="lbl">${t('collab')}</span>`+(collabOn?`<span class="cdot${(isHost||hostConn)?' live':''}"></span><b class="cn">${cloudRoom?'☁':peersN}</b>`:'');
   b.title=t('collab');
 }
 function setStatus(){updateCollabBtn();if(collabModal&&$('#modal').classList.contains('open'))openCollab()}
 function snapEls(){return els.filter(e=>!('__bak' in e)).map(e=>JSON.parse(ser(e)))}
 function schedPush(){
+  if(cloudRoom){cloudPending=true;return}
+
   if(!collabOn||!conns.length||pushT)return;
   pushT=setTimeout(()=>{pushT=0;collabPush()},50);
 }
@@ -1590,6 +1634,8 @@ function hostAttach(c){
   c.on('close',gone);c.on('error',gone);
 }
 async function collabStart(name){
+  try{const d=await cloudRequest('/create',{kind:'room',board:cloudBoard()});cloudOwner=d.owner;localStorage.setItem('ghdraw:cloudOwner:'+d.id,d.owner);await cloudJoin(d.id,true)}catch(e){toast(e.message)}return;
+
   myName=name||myName;localStorage.setItem('ghdraw:name',myName);
   try{await loadPeer()}catch(_){toast(L2('Ortak çizim kütüphanesi yüklenemedi (internet?)','Could not load the collaboration library (offline?)'));return}
   const id=localStorage.getItem('ghdraw:hostRoom')&&location.hash.includes(localStorage.getItem('ghdraw:hostRoom'))?localStorage.getItem('ghdraw:hostRoom'):'ghd'+Math.random().toString(36).slice(2,12);
@@ -1631,6 +1677,8 @@ function guestConnect(){
   c.on('close',gone);c.on('error',gone);
 }
 function collabStop(silent){
+  if(cloudRoom){cloudEnd(isHost);return}
+
   if(peer){try{peer.destroy()}catch(_){}}
   peer=null;conns=[];hostConn=null;collabOn=false;const wasHost=isHost;isHost=false;peersN=1;remoteCur.clear();foreign.clear();lastSent.clear();window.__gotFull=false;
   if(wasHost)localStorage.removeItem('ghdraw:hostRoom');
@@ -1638,6 +1686,8 @@ function collabStop(silent){
   save();setStatus();render();if(!silent)toast(L2('Ortak çizim kapatıldı','Collaboration stopped'));
 }
 function sendCursor(p){
+  if(cloudRoom)return;
+
   const n=Date.now();if(n-curT<60||!conns.length)return;curT=n;
   bcast({t:'cur',id:peer&&peer.id,x:p.x,y:p.y,n:myName,c:myColor});
 }
@@ -1667,9 +1717,9 @@ function openCollab(){
     h+=`<p class="cp">${L2('Bu linki arkadaşlarına gönder:','Send this link to people you want to draw with:')}</p>
     <input id="clink" readonly value="${esc(linkFor(roomId))}">
     <div class="cact" style="margin-top:10px"><button class="pbtn" id="ccopy">${L2('Linki kopyala','Copy link')}</button>${navigator.share?`<button class="sbtn" id="cshare">${L2('Paylaş','Share')}</button>`:''}<button class="sbtn" id="cstop">${L2('Oturumu bitir','End session')}</button></div>
-    <p class="cn">${L2('Şu an bağlı: ','Connected now: ')}<b>${peersN}</b> ${L2('kişi (sen dahil)','people (including you)')}</p>`;
+    <p class="cn">${L2('Şu an bağlı: ','Connected now: ')}<b>${cloudRoom?L2('bulut','cloud'):peersN}</b> ${cloudRoom?L2('48 saat. Eşitleme yaklaşık 4 sn.','48 hours. Sync about 4 s.'):L2('kişi (sen dahil)','people (including you)')}</p>`;
   }else{
-    h+=`<p class="cp">${hostConn?L2('Ortak çizime bağlısın.','You are connected to the shared board.'):L2('Bağlanıyor...','Connecting...')} (${peersN})</p><div class="cact"><button class="sbtn" id="cstop">${L2('Ayrıl','Leave')}</button><button class="sbtn" id="cclose">${t('close')}</button></div>`;
+    h+=`<p class="cp">${hostConn?L2('Bulut ortak çizimine bağlısın. Süre 48 saat; yaklaşık 4 saniyede eşitlenir.','Connected to cloud collaboration. 48 hours; sync about 4 seconds.'):L2('Bağlanıyor...','Connecting...')} (${peersN})</p><div class="cact"><button class="sbtn" id="cstop">${L2('Ayrıl','Leave')}</button><button class="sbtn" id="cclose">${t('close')}</button></div>`;
   }
   b.innerHTML=h;$('#modal').classList.add('open');
   const q=s=>b.querySelector(s);
@@ -1761,18 +1811,19 @@ async function addMedia(src,type,name,credit){
 $('#mediaIn').onchange=async ev=>{const files=[...ev.target.files];ev.target.value='';for(const f of files){if(f.size>MAX_MEDIA){toast(L2('Dosya 4 MB sınırını aşıyor: ','File exceeds 4 MB: ')+f.name);continue}const type=['image/png','image/gif'].includes(f.type)?'image':null;if(!type){toast(L2('Yalnızca PNG ve GIF yüklenebilir.','Only PNG and GIF uploads are supported.'));continue}try{await addMedia(await readData(f),type,f.name);closeModal()}catch(_){toast(L2('Medya okunamadı: ','Could not read media: ')+f.name)}}};
 window.addEventListener('blur',()=>{space=false;if(!drag)cv.style.cursor=cursorFor(tool)});
 
-const vmatch=location.hash.match(/view=([\w-]+)/);if(vmatch)viewOnly=true;
+const smatch=location.hash.match(/share=([a-f0-9]{32})/),vmatch=location.hash.match(/view=([\w-]+)/);if(vmatch||smatch)viewOnly=true;
 if(!viewOnly)load();document.body.classList.toggle('dark',dark);
 if(!isFinite(cam.z)||!cam.z)cam={x:0,y:0,z:1};
 hist=[snap()];hidx=0;
-resize();i18nApply();setTool('select');buildPages();if(viewOnly)startViewer(vmatch[1]);
+resize();i18nApply();setTool('select');buildPages();if(viewOnly)startViewer(smatch?'cloud:'+smatch[1]:vmatch[1]);
 const remeasure=()=>{els.forEach(e=>{if(e.type==='text')measure(e)});render()};
 Promise.all(FONTS.map(f=>document.fonts.load(`20px "${f}"`).catch(()=>{}))).then(remeasure);
 document.fonts.ready.then(remeasure);
 {const m=viewOnly?null:location.hash.match(/room=([\w-]+)/);if(m){const saved=localStorage.getItem('ghdraw:hostRoom');if(saved===m[1]){collabStart()}else{toast(L2('Ortak çizime bağlanıyor...','Joining the shared board...'));collabJoin(m[1])}}}
+{const m=location.hash.match(/collab=([a-f0-9]{32})/);if(m){cloudOwner=localStorage.getItem('ghdraw:cloudOwner:'+m[1]);cloudJoin(m[1],!!cloudOwner)}}
 window.__ghdraw={get els(){return els},set els(v){els=v;remeasure()},render,commit,setTool,defaults};
 })();
 
 </script>
 </body>
- </html>
+                                      </html>
