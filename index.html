@@ -120,13 +120,13 @@ html,body{overscroll-behavior:none;-webkit-touch-callout:none;-webkit-tap-highli
  .lg{grid-template-columns:repeat(4,1fr)}
 }
 
-#board{z-index:2}#welcome{z-index:0}#scene{position:fixed;inset:0;z-index:1;pointer-events:none;overflow:hidden}#cursorLayer{position:fixed;inset:0;width:100%;height:100%;z-index:35;pointer-events:none}
+#gridLayer{position:fixed;inset:0;width:100%;height:100%;z-index:0;pointer-events:none}#board{z-index:2}#welcome{z-index:0}#scene{position:fixed;inset:0;z-index:1;pointer-events:none;overflow:hidden}#cursorLayer{position:fixed;inset:0;width:100%;height:100%;z-index:35;pointer-events:none}
 #props{padding-top:44px}#modal .box{position:relative;padding-top:52px}.panelClose{position:absolute;right:6px;top:6px;min-width:36px;min-height:36px;font-size:25px;border-radius:8px;background:var(--hover);z-index:2}
 .mediaNode{position:absolute;transform-origin:0 0}.audioCard{display:flex;flex-direction:column;gap:8px;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:12px;overflow:hidden;color:var(--text)}.audioCard span{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.audioCard audio{width:100%;height:40px;pointer-events:auto}
 </style>
 </head>
 <body>
-<div id="scene"></div><canvas id="board"></canvas><canvas id="cursorLayer"></canvas>
+<canvas id="gridLayer"></canvas><div id="scene"></div><canvas id="board"></canvas><canvas id="cursorLayer"></canvas>
 <div id="welcome"><img src="logo.svg" alt="GHDraw"><p id="wtxt"></p></div>
 <div id="top">
   <div id="menuWrap">
@@ -156,10 +156,10 @@ const $=s=>document.querySelector(s);
 const FONTS=["Caveat", "Kalam", "Patrick Hand", "Shantell Sans", "Playpen Sans", "Pangolin", "Caveat Brush", "Amatic SC", "Marck Script", "Kaushan Script", "Dancing Script", "Pacifico", "Merienda", "Courgette", "Lobster", "Bangers", "Fredoka", "Baloo 2", "Righteous", "Comfortaa", "Nunito", "Poppins", "Inter", "Rubik", "Oswald", "Playfair Display", "Lora", "Merriweather", "Abril Fatface", "Cinzel", "Courier Prime", "Roboto Mono", "Space Mono"];
 const FONT_NOTE={"Caveat":"el yazısı","Kalam":"el yazısı","Patrick Hand":"el yazısı","Shantell Sans":"çizgi film","Playpen Sans":"çocuk","Pangolin":"el yazısı","Caveat Brush":"fırça","Amatic SC":"ince","Marck Script":"kaligrafi","Kaushan Script":"fırça","Dancing Script":"yazı","Pacifico":"retro","Merienda":"yazı","Courgette":"yazı","Lobster":"başlık","Bangers":"çizgi roman","Fredoka":"yuvarlak","Baloo 2":"yuvarlak","Righteous":"başlık","Comfortaa":"yuvarlak","Nunito":"sans","Poppins":"sans","Inter":"sans","Rubik":"sans","Oswald":"dar","Playfair Display":"serif","Lora":"serif","Merriweather":"serif","Abril Fatface":"kalın serif","Cinzel":"serif","Courier Prime":"mono","Roboto Mono":"mono","Space Mono":"mono"};
 const I18={
-tr:{select:"Seçim",hand:"Kaydır (El)",rect:"Dikdörtgen",diamond:"Elmas",ellipse:"Elips",arrow:"Ok",line:"Çizgi",pen:"Kalem",text:"Metin",eraser:"Silgi",lock:"Aracı kilitle",export:"Dışa aktar",stroke:"Çizgi rengi",bg:"Arka plan",fill:"Dolgu",width:"Çizgi kalınlığı",style:"Çizgi stili",rough:"El yapımı titreme",edges:"Kenarlar",opacity:"Saydamlık",font:"Yazı tipi",size:"Yazı boyutu",align:"Hizalama",layers:"Katmanlar",actions:"İşlemler",hachure:"Çizgili",cross:"Çapraz",solid:"Dolu",none:"Yok",thin:"İnce",bold:"Kalın",xbold:"Çok kalın",dashed:"Kesikli",dotted:"Noktalı",sharp:"Keskin",round:"Yuvarlak",left:"Sola",center:"Ortala",right:"Sağa",back:"En arkaya",backward:"Bir geri",forward:"Bir ileri",front:"En öne",dup:"Çoğalt",del:"Sil",open:"Aç...",save:"Dosyaya kaydet",png:"PNG olarak dışa aktar",clear:"Tuvali temizle",grid:"Izgarayı göster",dark:"Karanlık mod",lang:"Language: English",github:"GitHub",undo:"Geri al",redo:"İleri al",welcome:"Çizim yapmak için bir araç seç\nve tuvale tıkla.\nTüm verilerin tarayıcında kayıtlı kalır.",hintText:"Metin yazmak için tıkla, bitirince Esc'ye bas",hintDraw:"Çizmek için sürükle. Esc: seçim aracı",helpT:"Klavye kısayolları",confirmClear:"Tuvaldeki her şey silinsin mi?",saved:"Kaydedildi",sample:"Ağşİıöüç Aa",close:"Kapat",
-sc:[["Seçim","V / 1"],["Kaydır","H"],["Dikdörtgen","R / 2"],["Elmas","D / 3"],["Elips","O / 4"],["Ok","A / 5"],["Çizgi","L / 6"],["Kalem","P / 7"],["Metin","T / 8"],["Silgi","E / 9"],["Aracı kilitle","Q"],["Geri al / İleri al","Ctrl+Z / Ctrl+Shift+Z"],["Çoğalt","Ctrl+D"],["Kopyala / Yapıştır","Ctrl+C / Ctrl+V"],["Tümünü seç","Ctrl+A"],["Sil","Delete"],["Yakınlaştır","Ctrl + tekerlek, + / -"],["Kaydırma","Boşluk + sürükle, tekerlek"],["Kare / 45 derece","Shift"]]},
-en:{select:"Selection",hand:"Hand (pan)",rect:"Rectangle",diamond:"Diamond",ellipse:"Ellipse",arrow:"Arrow",line:"Line",pen:"Draw",text:"Text",eraser:"Eraser",lock:"Keep selected tool active",export:"Export",stroke:"Stroke",bg:"Background",fill:"Fill",width:"Stroke width",style:"Stroke style",rough:"Sloppiness",edges:"Edges",opacity:"Opacity",font:"Font family",size:"Font size",align:"Text align",layers:"Layers",actions:"Actions",hachure:"Hachure",cross:"Cross-hatch",solid:"Solid",none:"None",thin:"Thin",bold:"Bold",xbold:"Extra bold",dashed:"Dashed",dotted:"Dotted",sharp:"Sharp",round:"Round",left:"Left",center:"Center",right:"Right",back:"Send to back",backward:"Send backward",forward:"Bring forward",front:"Bring to front",dup:"Duplicate",del:"Delete",open:"Open...",save:"Save to file",png:"Export as PNG",clear:"Reset the canvas",grid:"Show grid",dark:"Dark mode",lang:"Dil: Türkçe",github:"GitHub",undo:"Undo",redo:"Redo",welcome:"Pick a tool and click the canvas to draw.\nAll your data is saved in your browser.",hintText:"Click to type, press Esc when done",hintDraw:"Drag to draw. Esc: selection tool",helpT:"Keyboard shortcuts",confirmClear:"Delete everything on the canvas?",saved:"Saved",sample:"Aa Quick fox",close:"Close",
-sc:[["Selection","V / 1"],["Hand","H"],["Rectangle","R / 2"],["Diamond","D / 3"],["Ellipse","O / 4"],["Arrow","A / 5"],["Line","L / 6"],["Draw","P / 7"],["Text","T / 8"],["Eraser","E / 9"],["Keep tool active","Q"],["Undo / Redo","Ctrl+Z / Ctrl+Shift+Z"],["Duplicate","Ctrl+D"],["Copy / Paste","Ctrl+C / Ctrl+V"],["Select all","Ctrl+A"],["Delete","Delete"],["Zoom","Ctrl + wheel, + / -"],["Pan","Space + drag, wheel"],["Constrain shape","Shift"]]}};
+tr:{select:"Seçim",hand:"Kaydır (El)",rect:"Dikdörtgen",diamond:"Elmas",ellipse:"Elips",arrow:"Ok",line:"Çizgi",pen:"Kalem",text:"Metin",eraser:"Silgi",export:"Dışa aktar",stroke:"Çizgi rengi",bg:"Arka plan",fill:"Dolgu",width:"Çizgi kalınlığı",style:"Çizgi stili",rough:"El yapımı titreme",edges:"Kenarlar",opacity:"Saydamlık",font:"Yazı tipi",size:"Yazı boyutu",align:"Hizalama",layers:"Katmanlar",actions:"İşlemler",hachure:"Çizgili",cross:"Çapraz",solid:"Dolu",none:"Yok",thin:"İnce",bold:"Kalın",xbold:"Çok kalın",dashed:"Kesikli",dotted:"Noktalı",sharp:"Keskin",round:"Yuvarlak",left:"Sola",center:"Ortala",right:"Sağa",back:"En arkaya",backward:"Bir geri",forward:"Bir ileri",front:"En öne",dup:"Çoğalt",del:"Sil",open:"Aç...",save:"Dosyaya kaydet",png:"PNG olarak dışa aktar",clear:"Tuvali temizle",grid:"Izgarayı göster",dark:"Karanlık mod",lang:"Language: English",github:"GitHub",undo:"Geri al",redo:"İleri al",welcome:"Çizim yapmak için bir araç seç\nve tuvale tıkla.\nTüm verilerin tarayıcında kayıtlı kalır.",hintText:"Metin yazmak için tıkla, bitirince Esc'ye bas",hintDraw:"Çizmek için sürükle. Esc: seçim aracı",helpT:"Klavye kısayolları",confirmClear:"Tuvaldeki her şey silinsin mi?",saved:"Kaydedildi",sample:"Ağşİıöüç Aa",close:"Kapat",
+sc:[["Seçim","V / 1"],["Kaydır","H"],["Dikdörtgen","R / 2"],["Elmas","D / 3"],["Elips","O / 4"],["Ok","A / 5"],["Çizgi","L / 6"],["Kalem","P / 7"],["Metin","T / 8"],["Silgi","E / 9"],["Geri al / İleri al","Ctrl+Z / Ctrl+Shift+Z"],["Çoğalt","Ctrl+D"],["Kopyala / Yapıştır","Ctrl+C / Ctrl+V"],["Tümünü seç","Ctrl+A"],["Sil","Delete"],["Yakınlaştır","Ctrl + tekerlek, + / -"],["Kaydırma","Boşluk + sürükle, tekerlek"],["Kare / 45 derece","Shift"]]},
+en:{select:"Selection",hand:"Hand (pan)",rect:"Rectangle",diamond:"Diamond",ellipse:"Ellipse",arrow:"Arrow",line:"Line",pen:"Draw",text:"Text",eraser:"Eraser",export:"Export",stroke:"Stroke",bg:"Background",fill:"Fill",width:"Stroke width",style:"Stroke style",rough:"Sloppiness",edges:"Edges",opacity:"Opacity",font:"Font family",size:"Font size",align:"Text align",layers:"Layers",actions:"Actions",hachure:"Hachure",cross:"Cross-hatch",solid:"Solid",none:"None",thin:"Thin",bold:"Bold",xbold:"Extra bold",dashed:"Dashed",dotted:"Dotted",sharp:"Sharp",round:"Round",left:"Left",center:"Center",right:"Right",back:"Send to back",backward:"Send backward",forward:"Bring forward",front:"Bring to front",dup:"Duplicate",del:"Delete",open:"Open...",save:"Save to file",png:"Export as PNG",clear:"Reset the canvas",grid:"Show grid",dark:"Dark mode",lang:"Dil: Türkçe",github:"GitHub",undo:"Undo",redo:"Redo",welcome:"Pick a tool and click the canvas to draw.\nAll your data is saved in your browser.",hintText:"Click to type, press Esc when done",hintDraw:"Drag to draw. Esc: selection tool",helpT:"Keyboard shortcuts",confirmClear:"Delete everything on the canvas?",saved:"Saved",sample:"Aa Quick fox",close:"Close",
+sc:[["Selection","V / 1"],["Hand","H"],["Rectangle","R / 2"],["Diamond","D / 3"],["Ellipse","O / 4"],["Arrow","A / 5"],["Line","L / 6"],["Draw","P / 7"],["Text","T / 8"],["Eraser","E / 9"],["Undo / Redo","Ctrl+Z / Ctrl+Shift+Z"],["Duplicate","Ctrl+D"],["Copy / Paste","Ctrl+C / Ctrl+V"],["Select all","Ctrl+A"],["Delete","Delete"],["Zoom","Ctrl + wheel, + / -"],["Pan","Space + drag, wheel"],["Constrain shape","Shift"]]}};
 let lang=localStorage.getItem('ghdraw:lang')||((navigator.language||'tr').toLowerCase().startsWith('tr')?'tr':'en');
 Object.assign(I18.tr,{collab:"Ortak çizim",lib:"Şekil kütüphanesi",close:"Kapat"});
 Object.assign(I18.en,{collab:"Collaborate",lib:"Shape library",close:"Close"});
@@ -168,8 +168,6 @@ I18.en.sc.push(["Shape library","B"],["Group / Ungroup","Ctrl+G / Ctrl+Shift+G"]
 const t=k=>(I18[lang][k]??k);
 
 const ICON={
-lock:'<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
-unlock:'<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 7.5-1.8"/>',
 hand:'<path d="M8 13V6.5a1.5 1.5 0 0 1 3 0V12M11 11V5a1.5 1.5 0 0 1 3 0v6M14 11V6.5a1.5 1.5 0 0 1 3 0V14a6 6 0 0 1-6 6h-1a5 5 0 0 1-4-2l-2.5-4a1.5 1.5 0 0 1 2.5-1.5L8 14"/>',
 select:'<path d="M6 3.5l12 7.5-5.2 1.3L10.5 18z"/>',
 rect:'<rect x="4" y="6" width="16" height="12" rx="2"/>',
@@ -206,9 +204,9 @@ const svg=(n)=>`<svg viewBox="0 0 24 24">${ICON[n]||''}</svg>`;
 const PAL_STROKE=['#1e1e1e','#e03131','#2f9e44','#1971c2','#f08c00'];
 const PAL_BG=['transparent','#ffc9c9','#b2f2bb','#a5d8ff','#ffec99'];
 
-const cv=$('#board'),ctx=cv.getContext('2d');
+const cv=$('#board'),ctx=cv.getContext('2d'),gridCanvas=$('#gridLayer'),gridCtx=gridCanvas.getContext('2d');
 const mctx=document.createElement('canvas').getContext('2d');
-let els=[],sel=new Set(),cam={x:0,y:0,z:1},tool='select',locked=true,grid=false,dark=false;
+let els=[],sel=new Set(),cam={x:0,y:0,z:1},tool='select',grid=false,dark=false;
 let defaults={stroke:'#1e1e1e',bg:'transparent',fill:'hachure',sw:2,style:'solid',rough:1,round:true,opacity:100,font:'Caveat',size:28,align:'left'};
 let hist=[],hidx=-1,clip=[],dpr=1,W=0,H=0,space=false;
 let drag=null,editing=null,erased=null,marquee=null;
@@ -342,14 +340,17 @@ const CUR={nw:'nwse-resize',se:'nwse-resize',ne:'nesw-resize',sw:'nesw-resize',n
 function render(){
   ctx.setTransform(dpr,0,0,dpr,0,0);
   ctx.clearRect(0,0,W,H);syncScene();
-  ctx.save();ctx.translate(cam.x,cam.y);ctx.scale(cam.z,cam.z);
+  gridCtx.setTransform(dpr,0,0,dpr,0,0);gridCtx.clearRect(0,0,W,H);
+  gridCtx.save();gridCtx.translate(cam.x,cam.y);gridCtx.scale(cam.z,cam.z);
   if(grid){
     const g=20,x0=Math.floor(-cam.x/cam.z/g)*g,y0=Math.floor(-cam.y/cam.z/g)*g,x1=(W-cam.x)/cam.z,y1=(H-cam.y)/cam.z;
-    ctx.strokeStyle=dark?'#2a2a31':'#ececf3';ctx.lineWidth=1/cam.z;ctx.beginPath();
-    for(let x=x0;x<x1;x+=g){ctx.moveTo(x,y0);ctx.lineTo(x,y1)}
-    for(let y=y0;y<y1;y+=g){ctx.moveTo(x0,y);ctx.lineTo(x1,y)}
-    ctx.stroke();
+    gridCtx.strokeStyle=dark?'#2a2a31':'#ececf3';gridCtx.lineWidth=1/cam.z;gridCtx.beginPath();
+    for(let x=x0;x<x1;x+=g){gridCtx.moveTo(x,y0);gridCtx.lineTo(x,y1)}
+    for(let y=y0;y<y1;y+=g){gridCtx.moveTo(x0,y);gridCtx.lineTo(x1,y)}
+    gridCtx.stroke();
   }
+  gridCtx.restore();
+  ctx.save();ctx.translate(cam.x,cam.y);ctx.scale(cam.z,cam.z);
   // Elements are in the ordered DOM scene so GIFs keep animating.
   if(drag&&drag.el)drawEl(ctx,drag.el);
   const sl=els.filter(e=>sel.has(e.id));
@@ -381,9 +382,6 @@ function load(){
 const TOOLS=[['hand','H'],['select','1'],['rect','2'],['diamond','3'],['ellipse','4'],['arrow','5'],['line','6'],['pen','7'],['text','8'],['eraser','9']];
 function buildTools(){
   const box=$('#tools');box.innerHTML='';
-  const lk=document.createElement('button');lk.className='ib'+(locked?' on':'');lk.title=t('lock')+' (Q)';lk.innerHTML=svg(locked?'lock':'unlock');
-  lk.onclick=()=>{locked=!locked;buildTools()};box.appendChild(lk);
-  const sp=document.createElement('div');sp.className='sepv';box.appendChild(sp);
   for(const[n,k]of TOOLS){
     const b=document.createElement('button');b.className='ib'+(tool===n?' on':'');b.title=`${t(n)} - ${k}`;b.dataset.tool=n;b.innerHTML=svg(n)+`<span class="k">${k}</span>`;
     b.onclick=()=>setTool(n);box.appendChild(b);
@@ -510,7 +508,7 @@ function syncUI(){$('#undo').disabled=hidx<=0;$('#redo').disabled=hidx>=hist.len
 
 function buildMenu(){
   const m=$('#menu');m.innerHTML='';const close=mk('button','mi');close.textContent='× '+t('close');close.onclick=()=>m.classList.remove('open');m.appendChild(close);
-  const items=[[L2('Medya / GIF','Media / GIF'),'png',openMedia,''],['collab','users',()=>openCollab(),''],['lib','lib',()=>toggleLib(),'B'],'sep',['open','open',()=>$('#fileIn').click(),'Ctrl+O'],['save','save',saveFile,'Ctrl+S'],['png','png',exportPNG,'Ctrl+Shift+E'],['clear','trash',clearAll,''],'sep',['grid','grid',()=>{grid=!grid;save();render();buildMenu()},grid?'\u2713':''],['dark','moon',()=>{dark=!dark;document.body.classList.toggle('dark',dark);save();render();buildMenu()},dark?'\u2713':''],['lang','globe',()=>{lang=lang==='tr'?'en':'tr';localStorage.setItem('ghdraw:lang',lang);i18nApply()},''],'sep',['github','gh',()=>window.open('https://github.com/GokalpHizmetleri/GHDraw','_blank'),'']];
+  const items=[[L2('Medya / GIF','Media / GIF'),'png',openMedia,''],['collab','users',()=>openCollab(),''],['lib','lib',()=>toggleLib(),'B'],'sep',['open','open',()=>$('#fileIn').click(),'Ctrl+O'],['save','save',saveFile,'Ctrl+S'],['png','png',exportPNG,'Ctrl+Shift+E'],[L2('PDF olarak dışa aktar','Export as PDF'),'png',exportPDF,''],['clear','trash',clearAll,''],'sep',['grid','grid',()=>{grid=!grid;save();render();buildMenu()},grid?'\u2713':''],['dark','moon',()=>{dark=!dark;document.body.classList.toggle('dark',dark);save();render();buildMenu()},dark?'\u2713':''],['lang','globe',()=>{lang=lang==='tr'?'en':'tr';localStorage.setItem('ghdraw:lang',lang);i18nApply()},''],'sep',['github','gh',()=>window.open('https://github.com/GokalpHizmetleri/GHDraw','_blank'),'']];
   for(const it of items){
     if(it==='sep'){m.appendChild(mk('div','msep'));continue}
     const b=mk('button','mi');b.innerHTML=svg(it[1])+`<span>${t(it[0])}</span><span class="sc">${it[3]}</span>`;
@@ -597,6 +595,103 @@ async function exportPNG(){
   try{c.toBlob(bl=>dl(bl,'ghdraw.png'));}catch(_){toast(L2('Bu uzak resim PNG dışa aktarımına izin vermiyor. .ghdraw olarak kaydet.','This remote image blocks PNG export. Save as .ghdraw instead.'))}
 }
 
+/* Fixed RGB332 palette and bounded 9-bit LZW blocks keep GIF encoding dependency-free. */
+function buildGIF(frames,w,h,delay){
+  const chunks=[],bytes=v=>chunks.push(new Uint8Array(v)),word=n=>[n&255,(n>>8)&255];
+  bytes([71,73,70,56,57,97,...word(w),...word(h),247,0,0]);
+  const palette=[];for(let i=0;i<256;i++)palette.push(Math.round((i>>5)*255/7),Math.round(((i>>2)&7)*255/7),Math.round((i&3)*255/3));bytes(palette);
+  bytes([33,255,11,...new TextEncoder().encode('NETSCAPE2.0'),3,1,0,0,0]);
+  for(const rgba of frames){
+    bytes([33,249,4,4,...word(delay),0,0,44,0,0,0,0,...word(w),...word(h),0,8]);
+    const data=[];let bits=0,count=0,block=0;
+    const code=n=>{bits|=n<<count;count+=9;while(count>=8){data.push(bits&255);bits>>>=8;count-=8}};
+    code(256);
+    for(let i=0;i<rgba.length;i+=4){if(block===250){code(256);block=0}code((rgba[i]&224)|((rgba[i+1]>>3)&28)|(rgba[i+2]>>6));block++}
+    code(257);if(count)data.push(bits&255);
+    for(let i=0;i<data.length;i+=255){const n=Math.min(255,data.length-i);bytes([n]);bytes(data.slice(i,i+n))}bytes([0]);
+  }
+  bytes([59]);return new Blob(chunks,{type:'image/gif'});
+}
+async function exportGIF(){
+  if(editing)finishEdit();await document.fonts.ready;
+  await Promise.all(els.filter(e=>e.type==='image').map(e=>new Promise(resolve=>{const im=getImage(mediaSource(e));if(im.complete)resolve();else{im.addEventListener('load',resolve,{once:true});im.addEventListener('error',resolve,{once:true})}})));
+  const gifs=new Map();for(const e of els.filter(e=>e.type==='image')){const g=await decodeGifFrames(e);if(g)gifs.set(e.id,g)}
+  if(!gifs.size){toast(L2('Hareketli GIF dışa aktarmak için tahtaya bir hareketli GIF yükle.','Upload an animated GIF to export animation.'));return}
+  const b=unionBox(els),pad=24,sc=Math.min(1,480/Math.max(b.w+pad*2,b.h+pad*2));
+  const c=document.createElement('canvas');c.width=Math.max(1,Math.ceil((b.w+pad*2)*sc));c.height=Math.max(1,Math.ceil((b.h+pad*2)*sc));const x=c.getContext('2d',{willReadFrequently:true});
+  const total=Math.min(10000,Math.max(...[...gifs.values()].map(g=>g.total))),step=100,N=Math.ceil(total/step),frames=[],wasDark=dark;
+  toast(L2('GIF hazırlanıyor...','Preparing GIF...'));
+  try{
+    dark=false;
+    for(let k=0;k<N;k++){window.__apngFrames=new Map([...gifs].map(([id,g])=>[id,frameAt(g,k*step)]));x.setTransform(1,0,0,1,0,0);x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.scale(sc,sc);x.translate(-b.x+pad,-b.y+pad);for(const e of els)drawEl(x,e);frames.push(x.getImageData(0,0,c.width,c.height).data);if(k%5===0)await new Promise(r=>setTimeout(r,0))}
+    const gif=buildGIF(frames,c.width,c.height,10),a=document.createElement('a');a.href=URL.createObjectURL(gif);a.download='ghdraw-animated.gif';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2000);toast(t('saved'));
+  }catch(_){toast(L2('GIF oluşturulamadı. Bu tarayıcı GIF karelerini çözemiyor olabilir; Chrome / Edge dene.','Could not create GIF. This browser may not decode GIF frames; try Chrome / Edge.'))}
+  finally{dark=wasDark;window.__apngFrames=null;render();for(const g of gifs.values())for(const f of g.fr)f.bmp.close?.()}
+}
+
+async function exportVideo(){
+  if(editing)finishEdit();await document.fonts.ready;
+  if(!window.MediaRecorder||!HTMLCanvasElement.prototype.captureStream){toast(L2('Bu tarayıcı video dışa aktarmayı desteklemiyor.','This browser does not support video export.'));return}
+  const candidates=['video/mp4;codecs=avc1.42E01E','video/mp4','video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm'];
+  const mime=candidates.find(m=>MediaRecorder.isTypeSupported(m));if(!mime){toast(L2('Desteklenen video biçimi bulunamadı. GIF kullan.','No supported video format. Use GIF.'));return}
+  const isMP4=mime.startsWith('video/mp4');
+  const gifs=new Map();for(const e of els.filter(e=>e.type==='image')){const g=await decodeGifFrames(e);if(g)gifs.set(e.id,g)}
+  if(!gifs.size){toast(L2('Video dışa aktarmak için tahtaya hareketli GIF yükle.','Upload an animated GIF to export video.'));return}
+  await Promise.all(els.filter(e=>e.type==='image').map(e=>new Promise(resolve=>{const im=getImage(mediaSource(e));if(im.complete)resolve();else{im.addEventListener('load',resolve,{once:true});im.addEventListener('error',resolve,{once:true})}})));
+  const b=unionBox(els),pad=24,sc=Math.min(1,1280/Math.max(b.w+pad*2,b.h+pad*2)),c=document.createElement('canvas');c.width=Math.max(2,Math.ceil((b.w+pad*2)*sc/2)*2);c.height=Math.max(2,Math.ceil((b.h+pad*2)*sc/2)*2);
+  const x=c.getContext('2d'),total=Math.min(10000,Math.max(...[...gifs.values()].map(g=>g.total))),chunks=[];let stream,rec;
+  const frame=t=>{const wasDark=dark;try{dark=false;window.__apngFrames=new Map([...gifs].map(([id,g])=>[id,frameAt(g,t)]));x.setTransform(1,0,0,1,0,0);x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.scale(sc,sc);x.translate(-b.x+pad,-b.y+pad);for(const e of els)drawEl(x,e)}finally{dark=wasDark;window.__apngFrames=null}};
+  try{
+    toast(isMP4?L2('MP4 hazırlanıyor; bu sekmeyi açık tut.','Preparing MP4; keep this tab open.'):L2('MP4 desteklenmiyor; WebM hazırlanıyor.','MP4 is not supported; preparing WebM.'));
+    frame(0);stream=c.captureStream(20);rec=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:4000000});rec.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
+    const stopped=new Promise((res,rej)=>{rec.onstop=res;rec.onerror=rej});rec.start();
+    const start=performance.now();let elapsed=0;while(elapsed<total){frame(elapsed);await new Promise(r=>setTimeout(r,50));elapsed=performance.now()-start}
+    rec.stop();await stopped;const blob=new Blob(chunks,{type:rec.mimeType||mime}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=isMP4?'ghdraw-animated.mp4':'ghdraw-animated.webm';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2000);toast(isMP4?t('saved'):L2('WebM kaydedildi (bu tarayıcı MP4 desteklemiyor).','WebM saved (this browser does not support MP4).'));
+  }catch(_){if(rec&&rec.state!=='inactive')rec.stop();toast(L2('Video oluşturulamadı. GIF dışa aktarmayı dene.','Could not create video. Try GIF export.'))}
+  finally{stream?.getTracks().forEach(t=>t.stop());window.__apngFrames=null;render();for(const g of gifs.values())for(const f of g.fr)f.bmp.close?.()}
+}
+
+/* One-page raster PDF, built locally without a library or network request. */
+function imagePDF(jpeg,w,h){
+  const enc=new TextEncoder(),parts=[],offsets=[0];let length=0;
+  const put=v=>{const bytes=typeof v==='string'?enc.encode(v):v;parts.push(bytes);length+=bytes.length};
+  const obj=(n,body)=>{offsets[n]=length;put(`${n} 0 obj\n${body}\nendobj\n`)};
+  const pw=w*.75,ph=h*.75;
+  put('%PDF-1.4\n');
+  obj(1,'<< /Type /Catalog /Pages 2 0 R >>');
+  obj(2,'<< /Type /Pages /Kids [3 0 R] /Count 1 >>');
+  obj(3,`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pw} ${ph}] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>`);
+  offsets[4]=length;put(`4 0 obj\n<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpeg.length} >>\nstream\n`);put(jpeg);put('\nendstream\nendobj\n');
+  const content=`q\n${pw} 0 0 ${ph} 0 0 cm\n/Im0 Do\nQ\n`;
+  obj(5,`<< /Length ${enc.encode(content).length} >>\nstream\n${content}endstream`);
+  const xref=length;put('xref\n0 6\n0000000000 65535 f \n');for(let n=1;n<=5;n++)put(String(offsets[n]).padStart(10,'0')+' 00000 n \n');
+  put(`trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
+  return new Blob(parts,{type:'application/pdf'});
+}
+async function exportPDF(){
+  if(editing)finishEdit();
+  await document.fonts.ready;
+  await Promise.all(els.filter(e=>e.type==='image').map(e=>new Promise(resolve=>{const im=getImage(mediaSource(e));if(im.complete)resolve();else{im.addEventListener('load',resolve,{once:true});im.addEventListener('error',resolve,{once:true})}})));
+  const b=els.length?unionBox(els):{x:0,y:0,w:400,h:300},pad=24;
+  const sc=Math.min(2,8192/Math.max(b.w+pad*2,b.h+pad*2),Math.sqrt(8e6/((b.w+pad*2)*(b.h+pad*2))));
+  const c=document.createElement('canvas');c.width=Math.max(1,Math.ceil((b.w+pad*2)*sc));c.height=Math.max(1,Math.ceil((b.h+pad*2)*sc));
+  const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.scale(sc,sc);x.translate(-b.x+pad,-b.y+pad);
+  const wasDark=dark;
+  try{
+    dark=false;for(const e of els)drawEl(x,e);
+    const jpeg=await new Promise(r=>c.toBlob(r,'image/jpeg',.95));if(!jpeg)throw Error('canvas');
+    const pdf=imagePDF(new Uint8Array(await jpeg.arrayBuffer()),c.width,c.height),a=document.createElement('a');a.href=URL.createObjectURL(pdf);a.download='ghdraw.pdf';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2000);toast(t('saved'));
+  }catch(_){toast(L2('PDF oluşturulamadı. Uzak resim varsa kendi PNG / GIF dosyanı yükle.','Could not create PDF. For remote images, upload your own PNG / GIF.'))}
+  finally{dark=wasDark;render()}
+}
+function openExport(){
+  collabModal=false;$('#modal').classList.add('open');const b=$('#modalBox');b.innerHTML='';
+  const title=mk('h3');title.textContent=t('export');b.appendChild(title);
+  const row=mk('div','cact');
+  for(const[label,fn]of[[L2('PNG / Animasyonlu PNG','PNG / Animated PNG'),exportPNG],[L2('Animasyonlu GIF','Animated GIF'),exportGIF],['MP4 / Video',exportVideo],[L2('PDF olarak dışa aktar','Export as PDF'),exportPDF]]){const btn=mk('button','pbtn');btn.textContent=label;btn.onclick=()=>{closeModal();fn()};row.appendChild(btn)}
+  b.appendChild(row);const note=mk('p','cn');note.textContent=L2('PDF: tüm tahta tek sayfa, beyaz arka plan. GIFler PDF içinde hareketsizdir. Hareket için GIF veya APNG seç. GIF: en fazla 10 sn, 480 px, 10 kare/sn, 256 renk. MP4 desteklenmezse WebM indirilir. Video hazırlanırken sekmeyi açık tut. Izgara ve araçlar dosyaya eklenmez.','PDF: the whole board on one page with a white background. GIFs are still images in PDF. Choose GIF or APNG for animation. GIF: up to 10 s, 480 px, 10 fps, 256 colors. If MP4 is unsupported, video downloads as WebM. Keep the tab open while recording video. Grid and tools are not included.');b.appendChild(note);
+}
+
 addEventListener('pagehide',()=>{if(collabOn&&isHost){clearTimeout(remoteSaveT);save()}});
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'&&collabOn&&isHost){clearTimeout(remoteSaveT);save()}});
 const ed=$('#editor');
@@ -623,7 +718,6 @@ function finishEdit(){
   e.text=txt;measure(e);
   if(!els.includes(e))els.push(e);
   commit();
-  if(!locked&&tool==='text'){setTool('select')}
   sel=new Set([e.id]);syncUI();render();
 }
 ed.addEventListener('input',()=>{if(editing)sizeEditor()});
@@ -748,7 +842,7 @@ function endDrag(){
     const e=d.el;let ok=true;
     if(e.pts&&e.type!=='pen')ok=Math.hypot(e.pts[1][0]-e.pts[0][0],e.pts[1][1]-e.pts[0][1])>2;
     else if(!e.pts)ok=e.w>2||e.h>2;
-    if(ok){els.push(e);commit();if(!locked){setTool('select');sel=new Set([e.id]);syncUI()}}
+    if(ok){els.push(e);commit()}
     render();return;
   }
   if(d.kind==='move'){if(d.moved)commit();render();return}
@@ -769,7 +863,7 @@ cv.addEventListener('wheel',ev=>{
 cv.addEventListener('contextmenu',e=>e.preventDefault());
 $('#menuBtn').onclick=e=>{e.stopPropagation();$('#menu').classList.toggle('open')};
 document.addEventListener('pointerdown',e=>{if(!e.target.closest('#menu,#menuBtn'))$('#menu').classList.remove('open')});
-$('#exportBtn').onclick=exportPNG;
+$('#exportBtn').onclick=openExport;
 $('#undo').onclick=undo;$('#redo').onclick=redo;
 $('#zin').onclick=()=>zoomAt(W/2,H/2,cam.z*1.2);$('#zout').onclick=()=>zoomAt(W/2,H/2,cam.z/1.2);
 $('#zl').onclick=()=>zoomAt(W/2,H/2,1);
@@ -800,7 +894,6 @@ document.addEventListener('keydown',e=>{
   if(k==='escape'){sel=new Set();setTool('select');return}
   if(k.startsWith('arrow')&&sel.size){e.preventDefault();const s=e.shiftKey?10:1,dx=k==='arrowleft'?-s:k==='arrowright'?s:0,dy=k==='arrowup'?-s:k==='arrowdown'?s:0;els.forEach(x=>{if(sel.has(x.id))moveEl(x,dx,dy)});clearTimeout(window.__nt);window.__nt=setTimeout(commit,300);render();return}
   const map={v:'select','1':'select',h:'hand',r:'rect','2':'rect',d:'diamond','3':'diamond',o:'ellipse','4':'ellipse',a:'arrow','5':'arrow',l:'line','6':'line',p:'pen','7':'pen',x:'pen',t:'text','8':'text',e:'eraser','9':'eraser'};
-  if(k==='q'){locked=!locked;buildTools();return}
   if(k==='b'){toggleLib();return}
   if(k==='+'||k==='='){zoomAt(W/2,H/2,cam.z*1.2);return}
   if(k==='-'){zoomAt(W/2,H/2,cam.z/1.2);return}
@@ -808,7 +901,7 @@ document.addEventListener('keydown',e=>{
   if(map[k]){e.preventDefault();setTool(map[k])}
 });
 document.addEventListener('keyup',e=>{if(e.key===' '){space=false;if(!drag)cv.style.cursor=cursorFor(tool)}});
-function resize(){dpr=window.devicePixelRatio||1;W=innerWidth;H=innerHeight;cv.width=W*dpr;cv.height=H*dpr;render()}
+function resize(){dpr=window.devicePixelRatio||1;W=innerWidth;H=innerHeight;cv.width=W*dpr;cv.height=H*dpr;gridCanvas.width=W*dpr;gridCanvas.height=H*dpr;render()}
 addEventListener('resize',resize);
 /* ===== GHDraw v3: shape library, collaboration, touch ===== */
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
