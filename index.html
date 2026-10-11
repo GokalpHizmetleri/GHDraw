@@ -148,7 +148,7 @@ html,body{overscroll-behavior:none;-webkit-touch-callout:none;-webkit-tap-highli
 <div id="hint"></div>
 <textarea id="editor" spellcheck="false" wrap="off"></textarea>
 <div id="modal"><div class="box"><button id="modalX" class="panelClose" aria-label="Close">×</button><div id="modalBox"></div></div></div>
-<input id="mediaIn" type="file" accept="image/png,image/jpeg,image/gif,image/webp,video/mp4,video/webm" multiple hidden>
+<input id="mediaIn" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
 <div id="toast"></div>
 <input type="file" id="fileIn" accept=".ghdraw,.json,application/json" style="display:none">
 <script>
@@ -1111,7 +1111,7 @@ let gifAbort=null,gifQuery='',gifOffset=0;
 function openMedia(){
  collabModal=false;$('#modal').classList.add('open');const b=$('#modalBox');b.innerHTML='';
  const title=mk('h3');title.textContent=L2('Medya ve GIF','Media and GIF');b.appendChild(title);
- const actions=mk('div','mediaActions'),up=mk('button','pbtn');up.textContent=L2('Fotoğraf / PNG / GIF / MP4 yükle','Upload photo / PNG / GIF / MP4');up.onclick=()=>$('#mediaIn').click();actions.appendChild(up);b.appendChild(actions);
+ const actions=mk('div','mediaActions'),up=mk('button','pbtn');up.textContent=L2('Fotoğraf / PNG / GIF yükle','Upload photo / PNG / GIF');up.onclick=()=>$('#mediaIn').click();actions.appendChild(up);b.appendChild(actions);
  const form=mk('form'),input=mk('input');input.placeholder=L2('İnternetten GIF ara (ör. cat, dance)','Search GIFs online (e.g. cat, dance)');input.setAttribute('aria-label',input.placeholder);input.value=gifQuery;const go=mk('button','pbtn');go.textContent=L2('GIF ara','Search GIFs');go.type='submit';go.style.marginTop='8px';form.append(input,go);form.onsubmit=e=>{e.preventDefault();gifQuery=input.value.trim();gifOffset=0;searchGIF()};b.appendChild(form);
  const note=mk('p','mediaNote');note.textContent=L2('Kaynak: Wikimedia Commons. Hesap/API anahtarı gerekmez. İngilizce aramalar daha çok sonuç verir. Her GIF için kaynak ve lisans bağlantısı gösterilir. Dosya sınırı: 4 MB; daha büyük dosyaları önce küçült.','Source: Wikimedia Commons. No account/API key needed. Each GIF includes a source/license link. File limit: 4 MB; reduce larger files first.');b.appendChild(note);
  const status=mk('p','mediaNote');status.id='gifStatus';b.appendChild(status);const results=mk('div','gifgrid');results.id='gifResults';b.appendChild(results);const more=mk('button','sbtn');more.id='gifMore';more.textContent=L2('Daha fazla','Load more');more.hidden=true;more.onclick=()=>searchGIF(true);b.appendChild(more);
@@ -1133,7 +1133,7 @@ async function addMedia(src,type,name,credit){
  if(type==='video'){const v=document.createElement('video');v.preload='metadata';v.src=src;await new Promise((res,rej)=>{v.onloadedmetadata=res;v.onerror=rej});w=Math.min(480,v.videoWidth||320);h=w*(v.videoHeight||180)/(v.videoWidth||320)}
  const p=toW(W/2,H/2),e={id:uid(),type,src,name,credit,x:p.x-w/2,y:p.y-h/2,w,h,opacity:100};els.push(e);setTool('select');sel=new Set([e.id]);commit();render();
 }
-$('#mediaIn').onchange=async ev=>{const files=[...ev.target.files];ev.target.value='';for(const f of files){if(f.size>MAX_MEDIA){toast(L2('Dosya 4 MB sınırını aşıyor: ','File exceeds 4 MB: ')+f.name);continue}const type=f.type.startsWith('image/')?'image':f.type.startsWith('video/')?'video':null;if(!type){toast(L2('Desteklenmeyen dosya','Unsupported file'));continue}try{await addMedia(await readData(f),type,f.name);closeModal()}catch(_){toast(L2('Medya okunamadı: ','Could not read media: ')+f.name)}}};
+$('#mediaIn').onchange=async ev=>{const files=[...ev.target.files];ev.target.value='';for(const f of files){if(f.size>MAX_MEDIA){toast(L2('Dosya 4 MB sınırını aşıyor: ','File exceeds 4 MB: ')+f.name);continue}const type=['image/png','image/jpeg','image/gif','image/webp'].includes(f.type)?'image':null;if(!type){toast(L2('Yalnızca PNG, JPEG, WebP ve GIF yüklenebilir. Video yükleme kaldırıldı.','Only PNG, JPEG, WebP and GIF uploads are supported. Video upload has been removed.'));continue}try{await addMedia(await readData(f),type,f.name);closeModal()}catch(_){toast(L2('Medya okunamadı: ','Could not read media: ')+f.name)}}};
 window.addEventListener('blur',()=>{space=false;if(!drag)cv.style.cursor=cursorFor(tool)});
 
 load();document.body.classList.toggle('dark',dark);
