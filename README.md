@@ -1,6 +1,6 @@
 # GHDraw
 
-A hand-drawn style whiteboard for the browser, inspired by Excalidraw. No build step, no dependencies, no backend - open it and start sketching.
+A hand-drawn style whiteboard for the browser, inspired by Excalidraw. No frontend build step. Local drawing works in the browser; expiring links and collaboration use a small Appwrite backend.
 
 <p align="center"><img src="logo.svg" alt="GHDraw" width="320"></p>
 
@@ -85,7 +85,7 @@ Every push to `main` after that redeploys automatically.
 - Every shape, stroke and text block is a plain JSON element in an ordered list (the order is the layer order).
 - Rendering draws that list onto a `<canvas>` through a pan/zoom transform. Undo and redo move through snapshots of the list, and export draws the same list onto an offscreen canvas.
 - The hand-drawn look comes from drawing each shape twice with small seeded offsets, so lines wobble without flickering between frames.
-- Autosave serializes the element list, view and style defaults to `localStorage` on every change. During a collaboration session the host also saves edits received from guests (debounced 400 ms, and on tab hide/close), so a host reload keeps them. Guests do not autosave.
+- Autosave serializes the element list, view and style defaults to `localStorage` on every change. During cloud collaboration all participants autosave, including received changes. Joining backs up the previous local board.
 
 ## Files
 
@@ -101,7 +101,7 @@ MIT - see [LICENSE](LICENSE).
 
 ## New in v3
 
-- **Collaborate (ortak çizim):** top right "Collaborate" button, Start session, send the link. Everyone who opens it draws on the same canvas live, with named cursors. It runs peer-to-peer (WebRTC) and uses the free public PeerJS signaling server, so there is nothing to set up on Vercel: no env vars, no accounts, no database. The session lives while the host keeps the page open; drawings are not stored on any server. Very strict corporate networks may block direct connections (no TURN relay is configured).
+- **Collaborate (ortak çizim):** start a session and send its short link. Changes sync through the free Appwrite backend about every 4 seconds, across all pages. The host does not need to stay online. Sessions expire after 48 hours; there are no live cursors or participant counts in cloud mode.
 - **Shape library:** press `B` or use the toolbar button. Flowchart, UML and icon sets. Click a shape to place it, then move or edit it. Shapes come in groups: `Ctrl+G` groups, `Ctrl+Shift+G` ungroups.
 - **Mobile and pen:** two-finger pinch to zoom and pan, double-tap text to edit, bottom toolbar on small screens. Stylus pressure changes pen stroke width, and while a stylus is in use, finger touches pan instead of drawing (palm rejection).
 
@@ -114,7 +114,7 @@ MIT - see [LICENSE](LICENSE).
 - Uploaded media is embedded in board data. Older boards that contained online-GIF elements (stored only as an id) show a dashed "GIF removed" placeholder, which you can delete.
 - PNG export works for drawings and uploaded images/GIFs. If the board has animated GIFs, export produces `ghdraw-animated.png` (APNG, animated in browsers and most viewers; up to 10 s and 100 frames, so long GIFs are sampled). This needs a browser with the `ImageDecoder` API (Chrome/Edge, recent Safari/Firefox); otherwise the GIF exports as a single frame.
 
-Media uploads stay in your browser or travel directly to collaborators. No automatic polling. Collaboration still requires the host page to remain open; existing public PeerJS/no-TURN limits apply.
+Uploaded media stays local until you create a cloud share or collaboration link; those actions upload the board and media. Cloud collaboration polls every 4 seconds while the tab is visible. Older PeerJS links are legacy only.
 
 ## Media update
 
@@ -139,11 +139,11 @@ Choose **Export > MP4 / Video**. Browser-supported MP4 (H.264) is preferred; bro
 
 ## New in v7
 
-- **Pages:** the bar at the bottom center holds page tabs. `+` adds a page, click the active tab (marked with a small arrow) for rename, duplicate, move and delete. Each page keeps its own view and undo history. Pages are saved in the browser and in `.ghdraw` files. During a collaboration session pages are locked to the current page.
+- **Pages:** the bar at the bottom center holds page tabs. `+` adds a page, click the active tab (marked with a small arrow) for rename, duplicate, move and delete. Each page keeps its own view and undo history. Pages are saved in the browser and in `.ghdraw` files. Cloud collaboration supports adding, renaming, duplicating, deleting and switching pages. Page reordering is disabled during collaboration.
 - **Smart arrows:** an arrow or line whose end is drawn on a rectangle, diamond, ellipse, text or image attaches to it and follows when the shape is moved or resized. Select an arrow and drag a round end handle to re-attach or detach it (a filled handle means attached). Moving the arrow itself detaches it. Copy, duplicate and library save keep attachments between the copied shapes.
 - **Own shape library:** the **Mine** tab in the library (`B`). Select shapes, press **Save selection** (or the library button in the properties panel), name it, and reuse it any time. Hover or tap the x on a tile to delete it. Stored in the browser only (images and videos are not saved).
 - **Presentation mode:** menu > Present, the play button next to the page tabs, or `Ctrl+Shift+P`. Add **presentation frames** from the menu (each frame is a 16:9 dashed box with a number); every frame is one step. Pages without frames are one step showing the whole page. Arrow keys, Space, Enter, tap (left third goes back) or swipe move between steps, Esc exits.
-- **Read-only share link:** menu > Read-only link. The board (all pages) is compressed into the link itself (`#view=...`), so no server or account is needed. Whoever opens it can pan, zoom, switch pages and present, but not edit, and nothing is written to their own board unless they choose "Copy to my board" (their current board is backed up first). It is a snapshot: later changes do not appear. Images and videos are included only if the link stays under about 120,000 characters, otherwise they are left out and the dialog says so. Needs a browser with `CompressionStream` (Chrome, Edge, Safari 16.4+, Firefox 113+).
+- **Read-only share link:** menu > Read-only link. A short `#share=...` link stores all pages and media in the backend and expires after 7 days. The viewer can pan, zoom, switch pages and present, but cannot change the stored snapshot. Copy to my board backs up the previous local board. Legacy self-contained `#view=...` links still open, but cannot expire or be revoked.
 - **Export menu:** PNG / animated PNG, animated GIF, MP4 / video, PDF, SVG and PPTX. A progress bar shows while a file is prepared. PNG, GIF, MP4 and SVG use the current page; PDF and PPTX include every page.
   - **SVG:** real vector output with the same hand-drawn look. Fonts are referenced by name and loaded from Google Fonts when the SVG is opened online.
   - **PPTX:** built in the browser with a small zip writer, no library. Shapes, arrows, freehand lines, text boxes and images become editable PowerPoint objects (uploaded GIFs stay animated in slideshow). Hand-drawn outlines and smooth pen curves are preserved as editable custom freeform paths; hatched fills become pattern fills. Pressure strokes use per-segment widths. Each presentation frame becomes one slide; pages without frames become one slide each. Fonts not installed on the viewing machine fall back to another font.
@@ -151,3 +151,26 @@ Choose **Export > MP4 / Video**. Browser-supported MP4 (H.264) is preferred; bro
 ## PPTX curve update
 
 PPTX now captures the same seeded outline curves used by the drawing surface, including arrowheads and smooth pen curves. Paths remain editable; rough fills use a separate editable fill object. Checked in Chrome and rendered in LibreOffice. Native PowerPoint, Safari and Firefox are not tested.
+
+## Cloud backend
+
+New read-only links expire 7 days after creation; collaboration rooms expire after 48 hours. The server checks its clock on reads and edits, and an hourly cleanup runs at minute 17. Expiry prevents new server access, not screenshots, downloads or copies already held in a browser. Anyone who has a room link can edit it: keep it private. A read-only link is a bearer link, not a password-protected document.
+
+The live endpoint is `https://ghdraw-expiring-links.fra.appwrite.run/`. Database documents have no public read/write permissions. Only the function receives a short-lived scoped server key; no service key is shipped in the frontend. Function scopes: documents.read/write and databases.read/write. `/create` returns a private owner token for optional DELETE `/owner/:id`; public reads omit it. Collaboration hosts keep their revocation token in localStorage.
+
+Bounds: 12 MB JSON board/request, 100 pages, 150 stored links for the entire project. These are not per-person accounts or a complete abuse-control system. The endpoint is public and anonymous creation can consume the free quota. Provider quota/rate limits can still stop it. No card, paid plan or paid overages were selected. A 3 MB embedded-data board passed create/read testing.
+
+**Free-plan availability:** Appwrite pauses Free projects after 7 consecutive days without development activity in its Console. Normal user traffic does not guarantee that a project stays awake. While paused, links and rooms are inaccessible and scheduled cleanup stops; data remains and the project can be reactivated in the Console. Continuous availability requires a different hosting choice or a paid plan, neither enabled here. Policy: https://appwrite.io/changelog/entry/2026-02-20-1
+
+The Appwrite organization and project are managed under the assistant-operated GHDraw Assistant account (`ghbot@mail.instinct.com`), not the user's personal email. Its login is in the vault as `Appwrite GHDraw (agent)`. No credentials are in this repository. The account page offers Update email with password verification (`https://appwrite.io/account`), so a later handoff can change the account email after the user selects an address. No email change or ownership transfer was performed.
+
+### Deploying your own copy
+
+1. Create an Appwrite project, then a private database `ghdraw` and private collection `boards` with one required string attribute `payload` (16,777,216 characters). No public collection permissions.
+2. Create a Node.js 22 function, entrypoint `src/main.js`, install command `npm install`, public execute permission `any` and only the four scopes listed above.
+3. Deploy `backend/package.json` and `backend/src/main.js`, and set cron `17 * * * *`.
+4. Add a function domain. Replace the frontend `CLOUD_API` endpoint and the backend CORS origin with your own app URL. Do not add a persistent server key to frontend code.
+
+### Collaboration limits
+
+Concurrent edits to different elements are merged transactionally; editing the same element uses the last accepted update. Cloud sync is periodic, not instant. Closing while an update is pending can leave unsent edits only in local autosave. Hidden tabs pause sync and refresh on return. Page order stays fixed during a room. Undo history resets after remote changes so an old snapshot does not overwrite peers. Desktop two-tab and mobile image-share tests passed in Chromium; other browsers and large multi-user sessions remain untested.
