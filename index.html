@@ -1943,13 +1943,14 @@ function renderChat(){
   for(const m of chatMsgs){if(m.pending&&seenMine.has(m.m))continue;const r=document.createElement('div');r.className='chm'+(m.cid===liveCid?' me':'');const n=document.createElement('b');n.textContent=m.cid===liveCid?L2('Sen','You'):m.n;n.style.color=m.c||'inherit';const t=document.createElement('span');t.textContent=m.m;r.appendChild(n);r.appendChild(t);l.appendChild(r)}
   l.scrollTop=l.scrollHeight;
 }
+function startAt100(){const f=c=>{if(!c||!isFinite(c.z)||!c.z||c.z===1)return;const wx=(W/2-c.x)/c.z,wy=(H/2-c.y)/c.z;c.z=1;c.x=W/2-wx;c.y=H/2-wy};pages.forEach(p=>f(p.cam));f(cam)}
 buildTools();
 
 const smatch=location.hash.match(/share=([a-f0-9]{32})/),vmatch=location.hash.match(/view=([\w-]+)/);if(vmatch||smatch)viewOnly=true;
 if(!viewOnly)load();document.body.classList.toggle('dark',dark);
 if(!isFinite(cam.z)||!cam.z)cam={x:0,y:0,z:1};
 hist=[snap()];hidx=0;
-resize();i18nApply();setTool('select');buildPages();if(viewOnly)startViewer(smatch?'cloud:'+smatch[1]:vmatch[1]);
+resize();if(!viewOnly)startAt100();i18nApply();setTool('select');buildPages();if(viewOnly)startViewer(smatch?'cloud:'+smatch[1]:vmatch[1]);
 const remeasure=()=>{els.forEach(e=>{if(e.type==='text')measure(e)});render()};
 Promise.all(FONTS.map(f=>document.fonts.load(`20px "${f}"`).catch(()=>{}))).then(remeasure);
 document.fonts.ready.then(remeasure);
