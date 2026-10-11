@@ -413,7 +413,7 @@ function render(){
   ctx.clearRect(0,0,W,H);fixBindings();syncScene();
   gridCtx.setTransform(dpr,0,0,dpr,0,0);gridCtx.clearRect(0,0,W,H);
   gridCtx.save();gridCtx.translate(cam.x,cam.y);gridCtx.scale(cam.z,cam.z);
-  drawSheet(gridCtx);
+
   if(grid){
     const g=20,x0=Math.floor(-cam.x/cam.z/g)*g,y0=Math.floor(-cam.y/cam.z/g)*g,x1=(W-cam.x)/cam.z,y1=(H-cam.y)/cam.z;
     gridCtx.strokeStyle=dark?'#2a2a31':'#ececf3';gridCtx.lineWidth=1/cam.z;gridCtx.beginPath();
@@ -448,7 +448,7 @@ function commit(){hist=hist.slice(0,hidx+1);hist.push(snap());if(hist.length>200
 function restore(s){els=JSON.parse(s);if(collabOn&&foreign.size){const keep=(window.__els0||[]).filter(e=>foreign.has(e.id));els=els.filter(e=>!foreign.has(e.id)).concat(keep)}els.forEach(e=>{if(e.type==='text')measure(e)});sel=new Set([...sel].filter(id=>els.some(e=>e.id===id)));save();syncUI();render()}
 function undo(){if(editing)return;if(hidx>0){window.__els0=els;hidx--;restore(hist[hidx])}}
 function redo(){if(editing)return;if(hidx<hist.length-1){window.__els0=els;hidx++;restore(hist[hidx])}}
-function save(){if(viewOnly)return;histSched();if(collabOn&&!isHost&&!cloudRoom)return;syncPage();try{localStorage.setItem('ghdraw:v2',JSON.stringify({els,cam,defaults,grid,dark,pi,pages:pages.map(p=>({id:p.id,name:p.name,els:p.els,cam:p.cam,paper:p.paper||undefined}))}))}catch(_){if(!window.__storageWarn){window.__storageWarn=true;toast(L2('Tarayıcı depolaması dolu. Çalışmanı .ghdraw dosyası olarak kaydet.','Browser storage is full. Save your board as a .ghdraw file.'))}}}
+function save(){if(viewOnly)return;histSched();if(collabOn&&!isHost&&!cloudRoom)return;syncPage();try{localStorage.setItem('ghdraw:v2',JSON.stringify({els,cam,defaults,grid,dark,pi,pages:pages.map(p=>({id:p.id,name:p.name,els:p.els,cam:p.cam}))}))}catch(_){if(!window.__storageWarn){window.__storageWarn=true;toast(L2('Tarayıcı depolaması dolu. Çalışmanı .ghdraw dosyası olarak kaydet.','Browser storage is full. Save your board as a .ghdraw file.'))}}}
 function load(){
   try{const d=JSON.parse(localStorage.getItem('ghdraw:v2')||'null');if(d){els=d.els||[];cam=d.cam||cam;Object.assign(defaults,d.defaults||{});grid=!!d.grid;dark=!!d.dark;if(Array.isArray(d.pages)&&d.pages.length){pages=d.pages;pi=Math.max(0,Math.min(d.pi||0,pages.length-1));els=pages[pi].els||[];cam=pages[pi].cam||cam}}}catch(_){}
   if(!pages.length)pages=[{id:uid(),name:'',els:[],cam:{x:0,y:0,z:1}}];
@@ -580,7 +580,7 @@ function syncUI(){$('#undo').disabled=hidx<=0;$('#redo').disabled=hidx>=hist.len
 
 function buildMenu(){
   const m=$('#menu');m.innerHTML='';const close=mk('button','mi');close.textContent='× '+t('close');close.onclick=()=>m.classList.remove('open');m.appendChild(close);
-  const items=[[L2('Medya / GIF','Media / GIF'),'png',openMedia,''],['collab','users',()=>openCollab(),''],['lib','lib',()=>toggleLib(),'B'],[L2('Sunum modu','Present'),'play',()=>startPresent(),'Ctrl+Shift+P'],[L2('Sunum karesi ekle','Add presentation frame'),'rect',addFrame,''],[L2('Salt okunur link','Read-only link'),'share',openShare,''],[L2('Sayfa boyutu (A3/A4/A5)','Page size (A3/A4/A5)'),'rect',openPaper,''],[L2('Tahta geçmişi','Board history'),'lib',openHistory,''],...(installEvt?[[L2('Uygulama olarak yükle','Install as app'),'save',doInstall,'']]:[]),'sep',['open','open',()=>$('#fileIn').click(),'Ctrl+O'],['save','save',saveFile,'Ctrl+S'],['png','png',exportPNG,'Ctrl+Shift+E'],[L2('Dışa aktar...','Export...'),'png',openExport,''],['clear','trash',clearAll,''],'sep',['grid','grid',()=>{grid=!grid;save();render();buildMenu()},grid?'\u2713':''],['dark','moon',()=>{dark=!dark;document.body.classList.toggle('dark',dark);save();render();buildMenu()},dark?'\u2713':''],['lang','globe',()=>{lang=lang==='tr'?'en':'tr';localStorage.setItem('ghdraw:lang',lang);i18nApply()},''],'sep',['github','gh',()=>window.open('https://github.com/GokalpHizmetleri/GHDraw','_blank'),'']];
+  const items=[[L2('Medya / GIF','Media / GIF'),'png',openMedia,''],['collab','users',()=>openCollab(),''],['lib','lib',()=>toggleLib(),'B'],[L2('Sunum modu','Present'),'play',()=>startPresent(),'Ctrl+Shift+P'],[L2('Sunum karesi ekle','Add presentation frame'),'rect',addFrame,''],[L2('Salt okunur link','Read-only link'),'share',openShare,''],[L2('Tahta geçmişi','Board history'),'lib',openHistory,''],...(installEvt?[[L2('Uygulama olarak yükle','Install as app'),'save',doInstall,'']]:[]),'sep',['open','open',()=>$('#fileIn').click(),'Ctrl+O'],['save','save',saveFile,'Ctrl+S'],['png','png',exportPNG,'Ctrl+Shift+E'],[L2('Dışa aktar...','Export...'),'png',openExport,''],['clear','trash',clearAll,''],'sep',['grid','grid',()=>{grid=!grid;save();render();buildMenu()},grid?'\u2713':''],['dark','moon',()=>{dark=!dark;document.body.classList.toggle('dark',dark);save();render();buildMenu()},dark?'\u2713':''],['lang','globe',()=>{lang=lang==='tr'?'en':'tr';localStorage.setItem('ghdraw:lang',lang);i18nApply()},''],'sep',['github','gh',()=>window.open('https://github.com/GokalpHizmetleri/GHDraw','_blank'),'']];
   for(const it of items){
     if(it==='sep'){m.appendChild(mk('div','msep'));continue}
     const b=mk('button','mi');b.innerHTML=svg(it[1])+`<span>${t(it[0])}</span><span class="sc">${it[3]}</span>`;
@@ -640,11 +640,11 @@ function frameAt(g,t){t=t%g.total;let a=0;for(const f of g.fr){a+=f.d;if(t<a)ret
 async function exportPNG_(){
   await Promise.all(els.filter(e=>e.type==='image').map(e=>new Promise(resolve=>{const im=getImage(mediaSource(e));if(im.complete)resolve();else{im.addEventListener('load',resolve,{once:true});im.addEventListener('error',resolve,{once:true})}})));
   if(editing)finishEdit();
-  const P=sheetOf(),b=P?{x:0,y:0,w:P.w,h:P.h}:(els.length?unionBox(els):{x:0,y:0,w:400,h:300}),pad=P?0:24;
+  const b=els.length?unionBox(els):{x:0,y:0,w:400,h:300},pad=24;
   const gifs=new Map();
   for(const e of els.filter(e=>e.type==='image'&&!e.giphyId)){const g=await decodeGifFrames(e);if(g)gifs.set(e.id,g)}
   const wasDark=dark;
-  const make=sc=>{if(P){const c=document.createElement('canvas');c.width=P.ew;c.height=P.eh;const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.scale(P.ew/P.w,P.eh/P.h);x.beginPath();x.rect(0,0,P.w,P.h);x.clip();return[c,x]}const c=document.createElement('canvas');c.width=Math.ceil((b.w+pad*2)*sc);c.height=Math.ceil((b.h+pad*2)*sc);const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.scale(sc,sc);x.translate(-b.x+pad,-b.y+pad);return[c,x]};
+  const make=sc=>{const c=document.createElement('canvas');c.width=Math.ceil((b.w+pad*2)*sc);c.height=Math.ceil((b.h+pad*2)*sc);const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.scale(sc,sc);x.translate(-b.x+pad,-b.y+pad);return[c,x]};
   const dl=(bl,name)=>{const a=document.createElement('a');a.href=URL.createObjectURL(bl);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2000);toast(t('saved'))};
   if(gifs.size){
     const total=Math.min(10000,Math.max(...[...gifs.values()].map(g=>g.total)));
@@ -835,7 +835,7 @@ function addPage(){
 }
 function dupPage(){
   if(collabOn&&!cloudRoom)return;syncPage();
-  const c=cloneEls(els,0,0);pages.splice(pi+1,0,{id:uid(),name:pages[pi].name?pages[pi].name+' 2':'',paper:pages[pi].paper,els:c,cam:Object.assign({},cam)});gotoPage(pi+1);
+  const c=cloneEls(els,0,0);pages.splice(pi+1,0,{id:uid(),name:pages[pi].name?pages[pi].name+' 2':'',els:c,cam:Object.assign({},cam)});gotoPage(pi+1);
 }
 function delPage(){
   if(collabOn&&!cloudRoom)return;
@@ -851,7 +851,7 @@ function pageMenu(){
   collabModal=false;const b=$('#modalBox');b.innerHTML='';
   const h=mk('h3');h.textContent=pageName(pi);b.appendChild(h);
   const col=mk('div','cact');col.style.flexDirection='column';col.style.alignItems='stretch';
-  for(const[l,fn]of[[L2('Yeniden adlandır','Rename'),renamePage],[L2('Sayfayı çoğalt','Duplicate page'),dupPage],[L2('Sayfa boyutu...','Page size...'),openPaper],[L2('Sola taşı','Move left'),()=>movePage(-1)],[L2('Sağa taşı','Move right'),()=>movePage(1)],[L2('Sayfayı sil','Delete page'),delPage]]){
+  for(const[l,fn]of[[L2('Yeniden adlandır','Rename'),renamePage],[L2('Sayfayı çoğalt','Duplicate page'),dupPage],[L2('Sola taşı','Move left'),()=>movePage(-1)],[L2('Sağa taşı','Move right'),()=>movePage(1)],[L2('Sayfayı sil','Delete page'),delPage]]){
     const x=mk('button','sbtn');x.textContent=l;x.onclick=()=>{closeModal();fn()};col.appendChild(x);
   }
   b.appendChild(col);$('#modal').classList.add('open');
@@ -859,7 +859,7 @@ function pageMenu(){
 function buildPages(){
   const bar=$('#pagebar');bar.innerHTML='';
   pages.forEach((p,i)=>{
-    const b=mk('button','ptab'+(i===pi?' on':''));b.textContent=pageName(i)+(p.paper?' \u00B7 '+p.paper.k:'')+(i===pi&&!viewOnly?' \u25BE':'');b.title=i===pi&&!viewOnly?L2('Sayfa menüsü','Page menu'):pageName(i);
+    const b=mk('button','ptab'+(i===pi?' on':''));b.textContent=pageName(i)+(i===pi&&!viewOnly?' \u25BE':'');b.title=i===pi&&!viewOnly?L2('Sayfa menüsü','Page menu'):pageName(i);
     b.onclick=()=>{if(i===pi){if(!viewOnly)pageMenu()}else gotoPage(i)};bar.appendChild(b);
   });
   if(!viewOnly){const a=mk('button','ib');a.id='addPage';a.textContent='+';a.style.fontSize='20px';a.title=L2('Yeni sayfa','New page');a.onclick=addPage;bar.appendChild(a)}
@@ -965,7 +965,7 @@ async function cloudRequest(path,body,method){
  const r=await fetch(CLOUD+path,{method:method||(body?'POST':'GET'),headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});
  const d=await r.json();if(!r.ok)throw Object.assign(new Error(d.error||'Cloud error'),{status:r.status});return d;
 }
-function cloudBoard(){syncPage();return {v:2,d:dark?1:0,p:pages.map(p=>({id:p.id,n:p.name||'',pp:p.paper||null,e:p.els.filter(e=>!('__bak' in e)).map(e=>JSON.parse(ser(e)))}))}}
+function cloudBoard(){syncPage();return {v:2,d:dark?1:0,p:pages.map(p=>({id:p.id,n:p.name||'',e:p.els.filter(e=>!('__bak' in e)).map(e=>JSON.parse(ser(e)))}))}}
 function cloudDiff(a,b){
  const changes=[],old=new Map(a.p.map(p=>[p.id,p]));
  for(const p of b.p){const op=old.get(p.id);if(!op){changes.push({t:'addPage',p});continue}if(op.n!==p.n)changes.push({t:'rename',pid:p.id,n:p.n});const es=new Map(op.e.map(e=>[e.id,JSON.stringify(e)]));for(const e of p.e){if(es.get(e.id)!==JSON.stringify(e))changes.push({t:'put',pid:p.id,e});es.delete(e.id)}for(const eid of es.keys())changes.push({t:'del',pid:p.id,eid});if(op.e.map(e=>e.id).join()!==p.e.map(e=>e.id).join())changes.push({t:'order',pid:p.id,ids:p.e.map(e=>e.id)})}
@@ -974,9 +974,9 @@ function cloudDiff(a,b){
 function cloudMerge(d,sent){
  // Reapply edits made locally while the request was in flight.
  const now=cloudBoard(),pending=sent?cloudDiff(sent,now):cloudDiff(cloudBase||now,now),b=structuredClone(d.board);
- for(const c of pending){if(c.t==='addPage'&&!b.p.some(p=>p.id===c.p.id))b.p.push(c.p);else if(c.t==='delPage'&&b.p.length>1)b.p=b.p.filter(p=>p.id!==c.pid);else{const p=b.p.find(p=>p.id===c.pid);if(!p)continue;if(c.t==='rename')p.n=c.n;if(c.t==='put'){const i=p.e.findIndex(e=>e.id===c.e.id);if(i<0)p.e.push(c.e);else p.e[i]=c.e}if(c.t==='del')p.e=p.e.filter(e=>e.id!==c.eid);if(c.t==='order'){const ord=new Map(c.ids.map((id,i)=>[id,i]));p.e.sort((a,b)=>(ord.get(a.id)??99999)-(ord.get(b.id)??99999))}}}
+ for(const c of pending){if(c.t==='addPage'&&!b.p.some(p=>p.id===c.p.id))b.p.push(c.p);else if(c.t==='delPage'&&b.p.length>1)b.p=b.p.filter(p=>p.id!==c.pid);else{const p=b.p.find(p=>p.id===c.pid);if(!p)continue;if(c.t==='rename')p.n=c.n;if(c.t==='put'){const i=p.e.findIndex(e=>e.id===c.e.id);if(i<0)p.e.push(c.e);else{const ne=structuredClone(c.e);if(ne.th||p.e[i].th){const k=m=>m.id||(m.ts+'|'+m.n+'|'+m.t),have=new Set((p.e[i].th||[]).map(k));ne.th=(p.e[i].th||[]).concat((ne.th||[]).filter(m=>!have.has(k(m))))}p.e[i]=ne}}if(c.t==='del')p.e=p.e.filter(e=>e.id!==c.eid);if(c.t==='order'){const ord=new Map(c.ids.map((id,i)=>[id,i]));p.e.sort((a,b)=>(ord.get(a.id)??99999)-(ord.get(b.id)??99999))}}}
  const before=JSON.stringify(els);const current=pages[pi]?.id,views=new Map(pages.map(p=>[p.id,p.cam]));cloudBase=structuredClone(d.board);
- pages=b.p.map(p=>({id:p.id,name:p.n,paper:p.pp||undefined,els:p.e,cam:views.get(p.id)||{x:0,y:0,z:1}}));pi=Math.max(0,pages.findIndex(p=>p.id===current));els=pages[pi].els;els.forEach(e=>{if(e.type==='text')measure(e)});cam=pages[pi].cam;if(before!==JSON.stringify(els)&&!pending.length){hist=[snap()];hidx=0}sel=new Set([...sel].filter(id=>els.some(e=>e.id===id)));cloudApplying=true;buildPages();syncUI();render();cloudApplying=false;save();
+ pages=b.p.map(p=>({id:p.id,name:p.n,els:p.e,cam:views.get(p.id)||{x:0,y:0,z:1}}));pi=Math.max(0,pages.findIndex(p=>p.id===current));els=pages[pi].els;els.forEach(e=>{if(e.type==='text')measure(e)});cam=pages[pi].cam;if(before!==JSON.stringify(els)&&!pending.length){hist=[snap()];hidx=0}sel=new Set([...sel].filter(id=>els.some(e=>e.id===id)));cloudApplying=true;buildPages();syncUI();render();cloudApplying=false;save();
  cloudPending=!!pending.length;
 }
 async function cloudSync(){
@@ -1040,7 +1040,7 @@ async function startViewer(code){
   document.body.classList.add('viewer');
   try{
     const j=code.startsWith('cloud:')?(await cloudRequest('/view/'+code.slice(6))).board:JSON.parse(new TextDecoder().decode(await inflate(unb64u(code))));
-    pages=j.p.map(p=>({id:uid(),name:p.n||'',paper:p.pp||undefined,els:p.e||[],cam:{x:0,y:0,z:1}}));if(!pages.length)throw Error('empty');
+    pages=j.p.map(p=>({id:uid(),name:p.n||'',els:p.e||[],cam:{x:0,y:0,z:1}}));if(!pages.length)throw Error('empty');
     dark=!!j.d;document.body.classList.toggle('dark',dark);
     pages.forEach(p=>p.els.forEach(e=>{if(e.type==='text')measure(e)}));
     pi=0;els=pages[0].els;grid=false;hist=[snap()];hidx=0;
@@ -1084,7 +1084,7 @@ function imagePDF(pgs){
   put(`trailer\n<< /Size ${total} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
   return new Blob(parts,{type:'application/pdf'});
 }
-const nonEmptyPages=()=>{syncPage();const l=pages.filter(p=>p.paper||p.els.some(e=>!e.frame));return l.length?l:[pages[pi]]};
+const nonEmptyPages=()=>{syncPage();const l=pages.filter(p=>p.els.some(e=>!e.frame));return l.length?l:[pages[pi]]};
 async function exportPDF_(){
   if(editing)finishEdit();await document.fonts.ready;
   const list=nonEmptyPages(),pg=[],wasDark=dark;
@@ -1092,13 +1092,13 @@ async function exportPDF_(){
     dark=false;
     for(let i=0;i<list.length;i++){
       const L=list[i].els.filter(e=>!e.frame);await loadImgs(L);
-      const S=sheetOf(list[i]),b=S?{x:0,y:0,w:S.w,h:S.h}:(L.length?unionBox(L):{x:0,y:0,w:400,h:300}),pad=S?0:24;
-      const sc=S?S.ew/S.w:Math.min(2,8192/Math.max(b.w+pad*2,b.h+pad*2),Math.sqrt(8e6/((b.w+pad*2)*(b.h+pad*2))));
+      const b=L.length?unionBox(L):{x:0,y:0,w:400,h:300},pad=24;
+      const sc=Math.min(2,8192/Math.max(b.w+pad*2,b.h+pad*2),Math.sqrt(8e6/((b.w+pad*2)*(b.h+pad*2))));
       const c=document.createElement('canvas');c.width=Math.max(1,Math.ceil((b.w+pad*2)*sc));c.height=Math.max(1,Math.ceil((b.h+pad*2)*sc));
-      if(S){c.width=S.ew;c.height=S.eh}const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.scale(S?S.ew/S.w:sc,S?S.eh/S.h:sc);if(S){x.beginPath();x.rect(0,0,S.w,S.h);x.clip()}else x.translate(-b.x+pad,-b.y+pad);
+      const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.scale(sc,sc);x.translate(-b.x+pad,-b.y+pad);
       for(const e of L)drawEl(x,e);
       const jpeg=await new Promise(r=>c.toBlob(r,'image/jpeg',.95));if(!jpeg)throw Error('canvas');
-      pg.push({jpeg:new Uint8Array(await jpeg.arrayBuffer()),w:c.width,h:c.height,pw:S?S.pw:0,ph:S?S.ph:0});
+      pg.push({jpeg:new Uint8Array(await jpeg.arrayBuffer()),w:c.width,h:c.height});
       Prog.set((i+1)/list.length*.95);await tick();
     }
     dlBlob(imagePDF(pg),'ghdraw.pdf');
@@ -1133,14 +1133,14 @@ function svgRec(){
 async function exportSVG_(){
   if(editing)finishEdit();await document.fonts.ready;
   const L=els.filter(e=>!e.frame&&e.type!=='video');
-  if(!L.length&&!sheetOf()){toast(L2('Tahta boş.','The board is empty.'));return}
+  if(!L.length){toast(L2('Tahta boş.','The board is empty.'));return}
   await loadImgs(L);
-  const S=sheetOf(),b=S?{x:0,y:0,w:S.w,h:S.h}:unionBox(L),pad=S?0:24,rec=svgRec(),wasDark=dark;
+  const b=unionBox(L),pad=24,rec=svgRec(),wasDark=dark;
   try{dark=false;for(let i=0;i<L.length;i++){drawEl(rec.ctx,L[i]);if(i%15===0){Prog.set(i/L.length*.9);await tick()}}}finally{dark=wasDark}
   const fams=[...new Set(L.filter(e=>e.type==='text').map(e=>e.font))];
   const css=fams.length?`<style>@import url('https://fonts.googleapis.com/css2?${fams.map(f=>'family='+f.replace(/ /g,'+')).join('&amp;')}&amp;display=swap');</style>`:'';
-  const w=S?+S.w.toFixed(2):Math.ceil(b.w+pad*2),h=S?+S.h.toFixed(2):Math.ceil(b.h+pad*2);
-  const out=`<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${S?S.mw+'mm':w}" height="${S?S.mh+'mm':h}" viewBox="0 0 ${w} ${h}">${css}<defs>${rec.defs.join('')}</defs><rect width="${w}" height="${h}" fill="#ffffff"/><g transform="translate(${+(pad-b.x).toFixed(2)} ${+(pad-b.y).toFixed(2)})">${rec.body.join('\n')}</g></svg>`;
+  const w=Math.ceil(b.w+pad*2),h=Math.ceil(b.h+pad*2);
+  const out=`<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${css}<defs>${rec.defs.join('')}</defs><rect width="${w}" height="${h}" fill="#ffffff"/><g transform="translate(${+(pad-b.x).toFixed(2)} ${+(pad-b.y).toFixed(2)})">${rec.body.join('\n')}</g></svg>`;
   Prog.set(.98);
   dlBlob(new Blob([out],{type:'image/svg+xml'}),'ghdraw.svg');
 }
@@ -1753,44 +1753,14 @@ async function addMedia(src,type,name,credit){
 $('#mediaIn').onchange=async ev=>{const files=[...ev.target.files];ev.target.value='';for(const f of files){if(f.size>MAX_MEDIA){toast(L2('Dosya 4 MB sınırını aşıyor: ','File exceeds 4 MB: ')+f.name);continue}const type=['image/png','image/gif'].includes(f.type)?'image':null;if(!type){toast(L2('Yalnızca PNG ve GIF yüklenebilir.','Only PNG and GIF uploads are supported.'));continue}try{await addMedia(await readData(f),type,f.name);closeModal()}catch(_){toast(L2('Medya okunamadı: ','Could not read media: ')+f.name)}}};
 window.addEventListener('blur',()=>{space=false;if(!drag)cv.style.cursor=cursorFor(tool)});
 
-/* ===== GHDraw v10: paper sizes, board history, sticky notes, comments, live presence and chat ===== */
-var PAPERS={A3:[297,420],A4:[210,297],A5:[148,210]};
-function sheetOf(p){
-  p=p||pages[pi];if(!p||!p.paper||!PAPERS[p.paper.k])return null;
-  const[a,b]=PAPERS[p.paper.k],land=p.paper.o==='l',mw=land?b:a,mh=land?a:b;
-  return{k:p.paper.k,land,mw,mh,w:mw/25.4*96,h:mh/25.4*96,ew:Math.round(mw/25.4*150),eh:Math.round(mh/25.4*150),pw:+(mw/25.4*72).toFixed(2),ph:+(mh/25.4*72).toFixed(2)};
-}
-function drawSheet(c){
-  const s=sheetOf();if(!s)return;
-  c.save();c.shadowColor='rgba(0,0,0,.28)';c.shadowBlur=18;c.shadowOffsetY=4;c.fillStyle=dark?'#26262d':'#ffffff';c.fillRect(0,0,s.w,s.h);c.restore();
-  c.save();c.strokeStyle=dark?'#52525e':'#c9c8d6';c.lineWidth=1/cam.z;c.strokeRect(0,0,s.w,s.h);
-  c.fillStyle=dark?'#9a99ad':'#8a89a0';c.font=`${Math.max(10,12/cam.z)}px Nunito,system-ui,sans-serif`;c.textBaseline='bottom';c.fillText(s.k+(s.land?' '+L2('yatay','landscape'):' '+L2('dikey','portrait'))+'  '+s.mw+' x '+s.mh+' mm',0,-6/cam.z);c.restore();
-}
-function setPaper(k,o){
-  if(cloudRoom){toast(L2('Ortak çizimde sayfa boyutu değiştirilemez.','Page size cannot be changed in a shared board.'));return}
-  const p=pages[pi];p.paper=k?{k,o:o||'p'}:null;save();
-  const s=sheetOf();if(s){const z=Math.max(.1,Math.min((W-40)/s.w,(H-170)/s.h,2));cam={z,x:(W-s.w*z)/2,y:78}}else fitPage();
-  render();buildPages();
-}
-function openPaper(){
-  collabModal=false;const b=$('#modalBox');b.innerHTML='';
-  const h=mk('h3');h.textContent=L2('Sayfa boyutu','Page size');b.appendChild(h);
-  const p=mk('p','cp');p.textContent=L2('Bu sayfa için seç. Kağıt boyutunda PNG, PDF ve SVG tam o boyutta çıkar. Sonsuz tuval eski serbest moddur.','Applies to this page. With a paper size, PNG, PDF and SVG export at exactly that size. Infinite canvas is the free mode.');b.appendChild(p);
-  const cur=pages[pi].paper,col=mk('div','cact');col.style.flexDirection='column';col.style.alignItems='stretch';
-  const opts=[[null,L2('Sonsuz tuval','Infinite canvas')],['A3','A3 (297 x 420 mm)'],['A4','A4 (210 x 297 mm)'],['A5','A5 (148 x 210 mm)']];
-  for(const[k,l]of opts){const x=mk('button',(cur?cur.k:null)===k?'pbtn':'sbtn');x.textContent=l;x.onclick=()=>{closeModal();setPaper(k,cur?cur.o:'p')};col.appendChild(x)}
-  b.appendChild(col);
-  if(cur){const r=mk('div','cact');r.style.marginTop='10px';for(const[o,l]of[['p',L2('Dikey','Portrait')],['l',L2('Yatay','Landscape')]]){const x=mk('button',cur.o===o?'pbtn':'sbtn');x.textContent=l;x.onclick=()=>{closeModal();setPaper(cur.k,o)};r.appendChild(x)}b.appendChild(r)}
-  $('#modal').classList.add('open');
-}
-
+/* ===== GHDraw v10: board history, sticky notes, comments, live presence and chat ===== */
 /* ---- board history: local snapshots in IndexedDB, newest 20 ---- */
 var HDB=null,histT=0,lastHistStr='',lastHistT=0;
 function hOpen(){return new Promise((res,rej)=>{if(HDB)return res(HDB);if(!window.indexedDB)return rej(new Error('idb'));const r=indexedDB.open('ghdraw-history',1);r.onupgradeneeded=()=>r.result.createObjectStore('v',{keyPath:'ts'});r.onsuccess=()=>{HDB=r.result;res(HDB)};r.onerror=()=>rej(r.error)})}
 async function hTx(mode,fn){const db=await hOpen();return new Promise((res,rej)=>{const tx=db.transaction('v',mode);let q;try{q=fn(tx.objectStore('v'))}catch(e){rej(e);return}tx.oncomplete=()=>res(q&&q.result);tx.onerror=()=>rej(tx.error);tx.onabort=()=>rej(tx.error)})}
-function histData(){syncPage();return{pages:pages.map(p=>({id:p.id,name:p.name,els:p.els.filter(e=>!('__bak' in e)).map(e=>JSON.parse(ser(e))),cam:p.cam,paper:p.paper||null})),pi,dark}}
+function histData(){syncPage();return{pages:pages.map(p=>({id:p.id,name:p.name,els:p.els.filter(e=>!('__bak' in e)).map(e=>JSON.parse(ser(e))),cam:p.cam})),pi,dark}}
 async function histSnap(manual,force){
-  if(viewOnly)return false;
+  if(viewOnly||cloudRoom)return false;
   try{
     const d=histData(),s=JSON.stringify(d),n=d.pages.reduce((a,p)=>a+p.els.length,0);
     if(!manual&&(!n||s===lastHistStr||(!force&&Date.now()-lastHistT<120000)))return false;
@@ -1804,12 +1774,12 @@ async function histSnap(manual,force){
 }
 function histSched(){if(histT||viewOnly)return;histT=setTimeout(()=>{histT=0;histSnap(false)},15000)}
 async function histRestore(ts){
-  if(collabOn){toast(L2('Ortak çizim sırasında geri yüklenemez.','Cannot restore during collaboration.'));return}
+  if(collabOn){toast(L2('Ortak çizimde sunucu geçmişini kullan.','Use the server history in shared boards.'));return}
   const rec=await hTx('readonly',st=>st.get(ts));if(!rec)return;
   if(!confirm(L2('Tahta bu sürüme dönecek. Şu anki halin önce kaydedilir, istersen ona da dönebilirsin. Devam edilsin mi?','The board will go back to this version. Your current state is saved first so you can return to it. Continue?')))return;
   await histSnap(true);
   const d=rec.data;
-  pages=d.pages.map(p=>({id:p.id,name:p.name,els:p.els,cam:p.cam||{x:0,y:0,z:1},paper:p.paper||undefined}));
+  pages=d.pages.map(p=>({id:p.id,name:p.name,els:p.els,cam:p.cam||{x:0,y:0,z:1}}));
   pi=Math.max(0,Math.min(d.pi||0,pages.length-1));els=pages[pi].els;cam=pages[pi].cam;
   pages.forEach(p=>p.els.forEach(e=>{if(e.type==='text')measure(e)}));
   sel=new Set();drag=null;hist=[snap()];hidx=0;save();syncUI();render();buildPages();closeModal();toast(L2('Sürüm geri yüklendi.','Version restored.'));
@@ -1817,17 +1787,26 @@ async function histRestore(ts){
 async function openHistory(){
   collabModal=false;const b=$('#modalBox');b.innerHTML='';
   const h=mk('h3');h.textContent=L2('Tahta geçmişi','Board history');b.appendChild(h);
-  const p=mk('p','cp');p.textContent=L2('Son 20 sürüm bu tarayıcıda saklanır. Çizerken otomatik alınır (en az 2 dakika arayla).','The last 20 versions are kept in this browser. They are taken automatically while you draw (at least 2 minutes apart).');b.appendChild(p);
-  const act=mk('div','cact');const sv=mk('button','pbtn');sv.textContent=L2('Şimdi sürüm kaydet','Save a version now');sv.onclick=async()=>{const ok=await histSnap(true);toast(ok?L2('Sürüm kaydedildi.','Version saved.'):L2('Kaydedilemedi.','Could not save.'));openHistory()};act.appendChild(sv);b.appendChild(act);
+  const srv=!!cloudRoom;
+  const p=mk('p','cp');p.textContent=srv?L2('Ortak çizimin sürümleri sunucuda saklanır (son 20). Çizim değişince otomatik alınır (en az 2 dakika arayla). Oturumla birlikte, 48 saat sonra silinir.','Shared-board versions are kept on the server (last 20). Taken automatically when the board changes (at least 2 minutes apart). Deleted with the session after 48 hours.'):L2('Son 20 sürüm bu tarayıcıda saklanır. Sunucuda geçmiş, ortak çizimlerde tutulur. Çizerken otomatik alınır (en az 2 dakika arayla).','The last 20 versions are kept in this browser. Server-side history is kept for shared boards. Taken automatically while you draw (at least 2 minutes apart).');b.appendChild(p);
+  const act=mk('div','cact');const sv=mk('button','pbtn');sv.textContent=L2('Şimdi sürüm kaydet','Save a version now');
+  sv.onclick=async()=>{let ok;if(srv){try{const r=await cloudRequest('/hist/'+cloudRoom.id,{op:'save'});ok=r.result==='saved'||r.result==='skipped'}catch(_){ok=false}}else ok=await histSnap(true);toast(ok?L2('Sürüm kaydedildi.','Version saved.'):L2('Kaydedilemedi.','Could not save.'));openHistory()};act.appendChild(sv);b.appendChild(act);
   const list=mk('div','hl');b.appendChild(list);$('#modal').classList.add('open');
-  let rows=[];try{rows=(await hTx('readonly',st=>st.getAll()))||[]}catch(_){}
+  let rows=[];
+  try{rows=srv?((await cloudRequest('/hist/'+cloudRoom.id,{op:'list'})).versions||[]):((await hTx('readonly',st=>st.getAll()))||[])}catch(_){if(srv){const e=mk('p','cn');e.textContent=L2('Sunucu geçmişi alınamadı.','Could not load server history.');list.appendChild(e);return}}
   rows.sort((a,b)=>b.ts-a.ts);
   if(!rows.length){const e=mk('p','cn');e.textContent=L2('Henüz sürüm yok.','No versions yet.');list.appendChild(e);return}
   for(const r of rows){
     const row=mk('div','hrow');const tx=mk('div','ht');
     tx.innerHTML=`<b>${esc(new Date(r.ts).toLocaleString())}</b><span>${r.n} ${L2('öğe','items')}, ${r.pc} ${L2('sayfa','page(s)')}${r.manual?' · '+L2('elle','manual'):''}</span>`;
-    const bt=mk('button','sbtn');bt.textContent=L2('Geri yükle','Restore');bt.onclick=()=>histRestore(r.ts);row.appendChild(tx);row.appendChild(bt);list.appendChild(row);
+    const bt=mk('button','sbtn');bt.textContent=L2('Geri yükle','Restore');bt.onclick=srv?()=>histRestoreCloud(r.ts):()=>histRestore(r.ts);row.appendChild(tx);row.appendChild(bt);list.appendChild(row);
   }
+}
+async function histRestoreCloud(ts){
+  if(!cloudRoom)return;
+  if(!confirm(L2('Ortak tahta bu sürüme dönecek ve herkes için değişecek. Şu anki hali önce sürüm olarak kaydedilir. Devam edilsin mi?','The shared board will go back to this version for everyone. The current state is saved as a version first. Continue?')))return;
+  try{const d=await cloudRequest('/hist/'+cloudRoom.id,{op:'restore',ts});cloudMerge(d,cloudBoard());hist=[snap()];hidx=0;syncUI();closeModal();toast(L2('Sürüm geri yüklendi.','Version restored.'))}
+  catch(e){toast(L2('Geri yüklenemedi: ','Could not restore: ')+e.message)}
 }
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')histSnap(false,true)});
 
@@ -1908,7 +1887,7 @@ function openThread(e){
   b.appendChild(list);
   const ta=document.createElement('textarea');ta.rows=2;ta.maxLength=500;ta.placeholder=L2('Yorum yaz...','Write a comment...');ta.style.cssText='width:100%;resize:vertical;font:inherit;font-size:16px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);user-select:text;-webkit-user-select:text';b.appendChild(ta);
   const act=mk('div','cact');act.style.marginTop='8px';
-  const send=mk('button','pbtn');send.textContent=L2('Gönder','Send');send.onclick=()=>{const t=ta.value.trim();if(!t)return;e.th=(e.th||[]).concat([{n:myName,c:myColor,t,ts:Date.now()}]);commit();render();openThread(e)};
+  const send=mk('button','pbtn');send.textContent=L2('Gönder','Send');send.onclick=()=>{const t=ta.value.trim();if(!t)return;e.th=(e.th||[]).concat([{id:uid(),n:myName,c:myColor,t,ts:Date.now()}]);commit();render();openThread(e)};
   const rs=mk('button','sbtn');rs.textContent=e.done?L2('Yeniden aç','Reopen'):L2('Çözüldü','Resolve');rs.onclick=()=>{e.done=!e.done;e.bg=e.done?'#868e96':'#6965db';commit();render();closeModal()};
   const del=mk('button','sbtn');del.textContent=L2('Sil','Delete');del.onclick=()=>{els=els.filter(x=>x.id!==e.id);sel=new Set();commit();syncUI();render();closeModal()};
   act.appendChild(send);act.appendChild(rs);act.appendChild(del);b.appendChild(act);
