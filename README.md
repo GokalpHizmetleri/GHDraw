@@ -26,7 +26,7 @@ A hand-drawn style whiteboard for the browser, inspired by Excalidraw. No build 
 
 **Everything else**
 - Dark mode, optional grid, Turkish and English interface (switch in the menu)
-- Export to a single-page PDF (raster, white background, static GIF frame), PNG (2x), or to an animated PNG (APNG) when the board has animated GIFs; save and open `.ghdraw` files
+- Export to PNG (2x) or animated PNG, animated GIF, MP4 / video, PDF (all pages), SVG (vector) and PPTX (editable shapes), each with a progress bar; save and open `.ghdraw` files
 - Autosave to `localStorage`
 - Zero build: a single `index.html` with vanilla JS. Works from `file://`, any static host, or Vercel
 
@@ -136,3 +136,14 @@ Choose **Export > Animated GIF** for a gallery-friendly `ghdraw-animated.gif`. R
 ## MP4 / video export
 
 Choose **Export > MP4 / Video**. Browser-supported MP4 (H.264) is preferred; browsers that cannot record MP4 download an honestly named `.webm` instead. Requires an uploaded animated GIF and GIF frame decoding. Silent single-pass video, up to 10 seconds at 20 fps, longest side at most 1280 pixels (even dimensions), white background, no grid. Keep the tab visible during real-time recording. Encoding support varies by browser/device; no video upload was added.
+
+## New in v7
+
+- **Pages:** the bar at the bottom center holds page tabs. `+` adds a page, click the active tab (marked with a small arrow) for rename, duplicate, move and delete. Each page keeps its own view and undo history. Pages are saved in the browser and in `.ghdraw` files. During a collaboration session pages are locked to the current page.
+- **Smart arrows:** an arrow or line whose end is drawn on a rectangle, diamond, ellipse, text or image attaches to it and follows when the shape is moved or resized. Select an arrow and drag a round end handle to re-attach or detach it (a filled handle means attached). Moving the arrow itself detaches it. Copy, duplicate and library save keep attachments between the copied shapes.
+- **Own shape library:** the **Mine** tab in the library (`B`). Select shapes, press **Save selection** (or the library button in the properties panel), name it, and reuse it any time. Hover or tap the x on a tile to delete it. Stored in the browser only (images and videos are not saved).
+- **Presentation mode:** menu > Present, the play button next to the page tabs, or `Ctrl+Shift+P`. Add **presentation frames** from the menu (each frame is a 16:9 dashed box with a number); every frame is one step. Pages without frames are one step showing the whole page. Arrow keys, Space, Enter, tap (left third goes back) or swipe move between steps, Esc exits.
+- **Read-only share link:** menu > Read-only link. The board (all pages) is compressed into the link itself (`#view=...`), so no server or account is needed. Whoever opens it can pan, zoom, switch pages and present, but not edit, and nothing is written to their own board unless they choose "Copy to my board" (their current board is backed up first). It is a snapshot: later changes do not appear. Images and videos are included only if the link stays under about 120,000 characters, otherwise they are left out and the dialog says so. Needs a browser with `CompressionStream` (Chrome, Edge, Safari 16.4+, Firefox 113+).
+- **Export menu:** PNG / animated PNG, animated GIF, MP4 / video, PDF, SVG and PPTX. A progress bar shows while a file is prepared. PNG, GIF, MP4 and SVG use the current page; PDF and PPTX include every page.
+  - **SVG:** real vector output with the same hand-drawn look. Fonts are referenced by name and loaded from Google Fonts when the SVG is opened online.
+  - **PPTX:** built in the browser with a small zip writer, no library. Shapes, arrows, freehand lines, text boxes and images become editable PowerPoint objects (uploaded GIFs stay animated in slideshow). Hand-drawn wobble is straightened and hatched fills become pattern fills. Each presentation frame becomes one slide; pages without frames become one slide each. Fonts not installed on the viewing machine fall back to another font.
