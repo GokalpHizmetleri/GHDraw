@@ -1,11 +1,52 @@
 import {Client,Databases,Query} from 'node-appwrite';
-import {randomBytes} from 'node:crypto';
+import {randomBytes,createHash} from 'node:crypto';
+import {gzipSync,gunzipSync} from 'node:zlib';
 const DB='ghdraw',COL='boards',MAX=12*1024*1024;
 const validId=x=>typeof x==='string'&&x.length>0&&x.length<=128;
-const validElement=e=>e&&validId(e.id)&&['rect','diamond','ellipse','arrow','line','pen','text','image','video','frame','poly'].includes(e.type);
+const validThread=th=>th===undefined||Array.isArray(th)&&th.length<=300&&th.every(m=>m&&typeof m.t==='string'&&m.t.length<=500);
+const validElement=e=>e&&validId(e.id)&&['rect','diamond','ellipse','arrow','line','pen','text','image','video','frame','poly'].includes(e.type)&&validThread(e.th);
+const msgKey=m=>m.id||(m.ts+'|'+m.n+'|'+m.t);
+// Board history: one side document per room ('h'+id), same expiry as the room. Newest 20 versions, gzip+base64, 8 MB total.
+const HID=id=>'h'+id.slice(0,31),HMAX_N=20,HMAX_TOTAL=8e6,HMAX_ONE=3e6,HGAP=120000;
 const validPage=p=>p&&validId(p.id)&&typeof p.n==='string'&&p.n.length<=100&&Array.isArray(p.e)&&p.e.length<=10000&&p.e.every(validElement)&&new Set(p.e.map(e=>e.id)).size===p.e.length;
 const validBoard=b=>b&&Array.isArray(b.p)&&b.p.length>0&&b.p.length<=100&&b.p.every(validPage)&&new Set(b.p.map(p=>p.id)).size===b.p.length;
 const validChange=c=>c&&(['addPage'].includes(c.t)?validPage(c.p):validId(c.pid)&&(c.t==='delPage'||c.t==='rename'&&typeof c.n==='string'||c.t==='put'&&validElement(c.e)||c.t==='del'&&validId(c.eid)||c.t==='order'&&Array.isArray(c.ids)&&c.ids.length<=10000&&c.ids.every(validId)));
+
+// Per-room write lock: a document created with a fixed id succeeds for exactly one caller (409 for the rest),
+// so room updates and restores run one at a time and no write is lost. A lock older than 15 s is treated as stale.
+const withLock=async (db,id,fn)=>{
+ const kid='k'+id.slice(0,31);let got=false;
+ for(let i=0;i<50&&!got;i++){
+  try{await db.createDocument({databaseId:DB,collectionId:COL,documentId:kid,data:{payload:JSON.stringify({kind:'lock',ts:Date.now(),expires:Date.now()+60000})},permissions:[]});got=true}
+  catch(e){if(e.code!==409)throw e;
+   try{const doc=await db.getDocument({databaseId:DB,collectionId:COL,documentId:kid});if(JSON.parse(doc.payload).ts<Date.now()-15000)await db.deleteDocument({databaseId:DB,collectionId:COL,documentId:kid}).catch(()=>{})}catch(_){}
+   await new Promise(r=>setTimeout(r,120+Math.random()*120));
+  }
+ }
+ if(!got)throw {code:429};
+ try{return await fn()}finally{await db.deleteDocument({databaseId:DB,collectionId:COL,documentId:kid}).catch(()=>{})}
+};
+const histSnap=async (db,id,board,expires,manual)=>{
+ const json=JSON.stringify(board),hash=createHash('sha1').update(json).digest('hex');
+ let z=null;const n=board.p.reduce((a,p)=>a+p.e.length,0),pc=board.p.length,now=Date.now();
+ for(let attempt=0;attempt<4;attempt++){
+  const tx=await db.createTransaction({ttl:60});
+  try{
+   let data,exists=true;
+   try{const doc=await db.getDocument({databaseId:DB,collectionId:COL,documentId:HID(id),transactionId:tx.$id});data=JSON.parse(doc.payload)}catch(e){if(e.code!==404)throw e;exists=false;data={kind:'hist',expires,v:[]}}
+   const last=data.v[data.v.length-1];
+   if(last&&(last.h===hash||(!manual&&now-last.ts<HGAP))){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});return 'skipped'}
+   z=z||gzipSync(json).toString('base64');if(z.length>HMAX_ONE){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});return 'toolarge'}
+   data.v.push({ts:now,m:manual?1:0,h:hash,n,pc,z});
+   while(data.v.length>HMAX_N||(data.v.length>1&&data.v.reduce((a,x)=>a+x.z.length,0)>HMAX_TOTAL))data.v.shift();
+   const payload=JSON.stringify(data);
+   if(exists)await db.updateDocument({databaseId:DB,collectionId:COL,documentId:HID(id),data:{payload},transactionId:tx.$id});
+   else await db.createDocument({databaseId:DB,collectionId:COL,documentId:HID(id),data:{payload},permissions:[],transactionId:tx.$id});
+   await db.updateTransaction({transactionId:tx.$id,commit:true});return 'saved';
+  }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});if(e.code!==409||attempt===3)throw e}
+ }
+};
+const histRead=async (db,id)=>{try{const doc=await db.getDocument({databaseId:DB,collectionId:COL,documentId:HID(id)});return JSON.parse(doc.payload)}catch(e){if(e.code===404)return {v:[]};throw e}};
 
 export default async ({req,res,error})=>{
  const headers={'Access-Control-Allow-Origin':'https://ghdraw.vercel.app','Access-Control-Allow-Methods':'GET,POST,DELETE,OPTIONS','Access-Control-Allow-Headers':'Content-Type','Cache-Control':'no-store'};
@@ -47,11 +88,30 @@ export default async ({req,res,error})=>{
     }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});if(e.code!==409||attempt===3)throw e}
    }
   }
+  if(req.method==='POST'&&path[0]==='hist'){
+   const room=await read(id);if(room.kind!=='room')throw {code:404};
+   const b=req.bodyJson||{};
+   if(b.op==='save')return await withLock(db,id,async()=>{const cur=await read(id);return reply({result:await histSnap(db,id,cur.board,cur.expires,true)})});
+   if(b.op==='get'||b.op==='restore'){
+    const h=await histRead(db,id),v=h.v.find(x=>x.ts===b.ts);if(!v)throw {code:404};
+    const board=JSON.parse(gunzipSync(Buffer.from(v.z,'base64')).toString());if(!validBoard(board))throw {code:400};
+    if(b.op==='get')return reply({board});
+    return await withLock(db,id,async()=>{const cur=await read(id);await histSnap(db,id,cur.board,cur.expires,true);
+    for(let attempt=0;attempt<4;attempt++){
+     const tx=await db.createTransaction({ttl:60});
+     try{const d=await read(id,tx.$id);d.board=board;
+      await db.updateDocument({databaseId:DB,collectionId:COL,documentId:id,data:{payload:JSON.stringify(d)},transactionId:tx.$id});
+      await db.updateTransaction({transactionId:tx.$id,commit:true});const {owner,...publicData}=d;return reply(publicData);
+     }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});if(e.code!==409||attempt===3)throw e}
+    }});
+   }
+   const h=await histRead(db,id);return reply({versions:h.v.map(x=>({ts:x.ts,manual:!!x.m,n:x.n,pc:x.pc,size:x.z.length})).reverse(),expires:room.expires,max:HMAX_N});
+  }
   if(req.method==='POST'&&req.path==='/create'){
    if(Buffer.byteLength(req.bodyText||'')>MAX)return reply({error:'Board exceeds 12 MB'},413);
    const b=req.bodyJson;if(!['view','room'].includes(b.kind)||!validBoard(b.board))return reply({error:'Invalid board'},400);
    // A project-wide bound stops anonymous creation from exhausting free storage.
-   const count=await db.listDocuments({databaseId:DB,collectionId:COL,queries:[Query.select(['$id']),Query.limit(500)]});if(count.documents.filter(d=>!d.$id.startsWith('p')).length>=150)return reply({error:'Free storage is full; ask the project owner to remove old links.'},429);
+   const count=await db.listDocuments({databaseId:DB,collectionId:COL,queries:[Query.select(['$id']),Query.limit(500)]});if(count.documents.filter(d=>!/^[phk]/.test(d.$id)).length>=150)return reply({error:'Free storage is full; ask the project owner to remove old links.'},429);
    const id=randomBytes(16).toString('hex'),owner=randomBytes(24).toString('hex'),expires=Date.now()+(b.kind==='view'?7*24:48)*3600000;
    const d={kind:b.kind,expires,board:b.board,room:b.room||null,owner};
    await db.createDocument({databaseId:DB,collectionId:COL,documentId:id,data:{payload:JSON.stringify(d)},permissions:[]});
@@ -60,7 +120,7 @@ export default async ({req,res,error})=>{
   if(req.method==='POST'&&path[0]==='room'){
    if(Buffer.byteLength(req.bodyText||'')>MAX)return reply({error:'Update exceeds 12 MB'},413);
    const b=req.bodyJson;if(!Array.isArray(b.changes)||b.changes.length>5000||!b.changes.every(validChange))return reply({error:'Invalid update'},400);
-   for(let attempt=0;attempt<3;attempt++){
+   return await withLock(db,id,async()=>{for(let attempt=0;attempt<6;attempt++){
     const tx=await db.createTransaction({ttl:60});
     try{
      const d=await read(id,tx.$id);if(d.kind!=='room')throw {code:404};
@@ -69,18 +129,20 @@ export default async ({req,res,error})=>{
       else if(c.t==='delPage'&&d.board.p.length>1)d.board.p=d.board.p.filter(p=>p.id!==c.pid);
       else {const p=d.board.p.find(p=>p.id===c.pid);if(!p)continue;
        if(c.t==='rename')p.n=String(c.n||'').slice(0,24);
-       if(c.t==='put'){const i=p.e.findIndex(e=>e.id===c.e.id);if(i<0)p.e.push(c.e);else p.e[i]=c.e}
+       if(c.t==='put'){const i=p.e.findIndex(e=>e.id===c.e.id);if(i<0)p.e.push(c.e);else{const ne=c.e;if(ne.cm||ne.th){const cur=p.e[i],have=new Set((cur.th||[]).map(msgKey));ne.th=(cur.th||[]).concat((ne.th||[]).filter(m=>!have.has(msgKey(m))))}p.e[i]=ne}}
        if(c.t==='del')p.e=p.e.filter(e=>e.id!==c.eid);
        if(c.t==='order'){const order=new Map(c.ids.map((id,i)=>[id,i]));p.e.sort((a,b)=>(order.get(a.id)??99999)-(order.get(b.id)??99999))}
       }
      }
      if(!validBoard(d.board))throw {code:400};if(Buffer.byteLength(JSON.stringify(d))>MAX)throw {code:413};
      await db.updateDocument({databaseId:DB,collectionId:COL,documentId:id,data:{payload:JSON.stringify(d)},transactionId:tx.$id});
-     await db.updateTransaction({transactionId:tx.$id,commit:true});const {owner,...publicData}=d;return reply(publicData);
-    }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});if(e.code!==409||attempt===2)throw e}
-   }
+     await db.updateTransaction({transactionId:tx.$id,commit:true});
+     if(b.changes.length)await histSnap(db,id,d.board,d.expires,false).catch(()=>{});
+     const {owner,...publicData}=d;return reply(publicData);
+    }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});if(e.code!==409||attempt===5)throw e}
+   }});
   }
-  if(req.method==='DELETE' &&path[0]==='owner'){const d=await read(id);if(req.bodyJson.owner!==d.owner)return reply({error:'Not authorized'},403);await db.deleteDocument({databaseId:DB,collectionId:COL,documentId:id});await db.deleteDocument({databaseId:DB,collectionId:COL,documentId:'p'+id.slice(0,31)}).catch(()=>{});return reply({ok:true})}
+  if(req.method==='DELETE' &&path[0]==='owner'){const d=await read(id);if(req.bodyJson.owner!==d.owner)return reply({error:'Not authorized'},403);await db.deleteDocument({databaseId:DB,collectionId:COL,documentId:id});await db.deleteDocument({databaseId:DB,collectionId:COL,documentId:'p'+id.slice(0,31)}).catch(()=>{});await db.deleteDocument({databaseId:DB,collectionId:COL,documentId:HID(id)}).catch(()=>{});return reply({ok:true})}
   return reply({error:'Not found'},404);
  }catch(e){const code=[400,404,410,413,429].includes(e.code)?e.code:500;if(code===500)error('Backend request failed: '+(e.type||e.code||'unknown')+' '+(e.message||''));return reply({error:code===410?'This link has expired':code===404?'Link not found':code===400?'Invalid board':code===413?'Board exceeds 12 MB':'Service unavailable'},code)}
 };
