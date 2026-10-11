@@ -10,7 +10,7 @@ A hand-drawn style whiteboard for the browser, inspired by Excalidraw. No fronte
 - Floating top toolbar, a left properties panel, zoom and undo/redo controls at the bottom, and a hamburger menu
 - Tools: selection, hand (pan), rectangle, diamond, ellipse, arrow, line, pen, text and eraser. Drawing tools always stay active until you choose another tool or press Esc
 - Select, move, resize (with Shift to keep proportions) and multi-select with a marquee or Shift+click
-- Infinite canvas: pan with the mouse wheel, `Space` + drag or the hand tool; zoom with `Ctrl` + wheel or the +/- buttons
+- Infinite canvas: pan with the mouse wheel, `Space` + drag or the hand tool; zoom with `Ctrl` + wheel or the +/- buttons. Every time the app opens, each page starts at exactly 100% zoom (the view keeps its center, so you stay where you were); zoom changes made during a session are kept until you reload.
 
 **Styling**
 - Stroke and background colors (Excalidraw palette plus a custom color picker)
