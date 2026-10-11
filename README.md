@@ -26,7 +26,7 @@ A hand-drawn style whiteboard for the browser, inspired by Excalidraw. No fronte
 
 **Everything else**
 - Dark mode, optional grid, Turkish and English interface (switch in the menu)
-- Export to PNG (2x) or animated PNG, animated GIF, MP4 / video, PDF (all pages), SVG (vector) and PPTX (editable shapes), each with a progress bar; save and open `.ghdraw` files
+- Export to PNG (2x) or animated PNG, animated GIF, MP4 / video, PDF (all pages), SVG (vector), each with a progress bar; save and open `.ghdraw` files
 - Autosave to `localStorage`
 - Zero build: a single `index.html` with vanilla JS. Works from `file://`, any static host, or Vercel
 
@@ -144,13 +144,15 @@ Choose **Export > MP4 / Video**. Browser-supported MP4 (H.264) is preferred; bro
 - **Own shape library:** the **Mine** tab in the library (`B`). Select shapes, press **Save selection** (or the library button in the properties panel), name it, and reuse it any time. Hover or tap the x on a tile to delete it. Stored in the browser only (images and videos are not saved).
 - **Presentation mode:** menu > Present, the play button next to the page tabs, or `Ctrl+Shift+P`. Add **presentation frames** from the menu (each frame is a 16:9 dashed box with a number); every frame is one step. Pages without frames are one step showing the whole page. Arrow keys, Space, Enter, tap (left third goes back) or swipe move between steps, Esc exits.
 - **Read-only share link:** menu > Read-only link. A short `#share=...` link stores all pages and media in the backend and expires after 7 days. The viewer can pan, zoom, switch pages and present, but cannot change the stored snapshot. Copy to my board backs up the previous local board. Legacy self-contained `#view=...` links still open, but cannot expire or be revoked.
-- **Export menu:** PNG / animated PNG, animated GIF, MP4 / video, PDF, SVG and PPTX. A progress bar shows while a file is prepared. PNG, GIF, MP4 and SVG use the current page; PDF and PPTX include every page.
+- **Export menu:** PNG / animated PNG, animated GIF, MP4 / video, PDF and SVG. A progress bar shows while a file is prepared. PNG, GIF and SVG use the current page; PDF includes every page. Video has its own page and transition settings.
   - **SVG:** real vector output with the same hand-drawn look. Fonts are referenced by name and loaded from Google Fonts when the SVG is opened online.
-  - **PPTX:** built in the browser with a small zip writer, no library. Shapes, arrows, freehand lines, text boxes and images become editable PowerPoint objects (uploaded GIFs stay animated in slideshow). Hand-drawn outlines and smooth pen curves are preserved as editable custom freeform paths; hatched fills become pattern fills. Pressure strokes use per-segment widths. Each presentation frame becomes one slide; pages without frames become one slide each. Fonts not installed on the viewing machine fall back to another font.
 
-## PPTX curve update
+## New in v9
 
-PPTX now captures the same seeded outline curves used by the drawing surface, including arrowheads and smooth pen curves. Paths remain editable; rough fills use a separate editable fill object. Checked in Chrome and rendered in LibreOffice. Native PowerPoint, Safari and Firefox are not tested.
+- **Page video:** choose all pages or the current page, 1-10 seconds per page, and none / fade / slide transitions (0.5 seconds). Static drawings no longer need an animated GIF to export video. Silent 1280 x 720 output, maximum 120 seconds, MP4 where supported and WebM otherwise. Embedded video/audio is excluded. Keep the tab open throughout recording.
+- PPTX export and its browser-side writer have been removed. PNG / animated PNG, GIF, video, PDF and SVG remain. Presentation mode and presentation frames still work.
+- Tool settings use a narrower 200 px desktop card with less spacing. On phones the card is at most 292 px wide and 32% of the viewport height, with scrolling for the remaining settings. Touch controls keep at least 44 px targets.
+- The shape library popup is narrower too: 240 px on desktop, up to 280 px on phones.
 
 ## Cloud backend
 
