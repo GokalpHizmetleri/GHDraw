@@ -4,7 +4,7 @@ const DB='ghdraw',COL='boards',MAX=12*1024*1024;
 export default async ({req,res,error})=>{
  const headers={'Access-Control-Allow-Origin':'https://ghdraw.vercel.app','Access-Control-Allow-Methods':'GET,POST,DELETE,OPTIONS','Access-Control-Allow-Headers':'Content-Type','Cache-Control':'no-store'};
  const reply=(v,status=200)=>res.json(v,status,headers);
- if(req.method==='OPTIONS')return res.empty(204,headers);
+ if(req.method==='OPTIONS')return res.text('',204,headers);
  const client=new Client().setEndpoint(process.env.APPWRITE_FUNCTION_API_ENDPOINT||'https://fra.cloud.appwrite.io/v1').setProject(process.env.APPWRITE_FUNCTION_PROJECT_ID).setKey(req.headers['x-appwrite-key']);
  const db=new Databases(client);
  const read=async (id,transactionId)=>{if(!/^[a-f0-9]{32}$/.test(id))throw {code:404};const doc=await db.getDocument({databaseId:DB,collectionId:COL,documentId:id,transactionId});const data=JSON.parse(doc.payload);if(data.expires<=Date.now()){await db.deleteDocument({databaseId:DB,collectionId:COL,documentId:id}).catch(()=>{});throw {code:410}}return data};
