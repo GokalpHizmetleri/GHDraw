@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GHDraw - Hand-drawn whiteboard</title>
+<link rel="icon" type="image/svg+xml" href="logo.svg">
+<style>
+  :root {
+    --accent: #6965db;
+    --accent-hover: #5753c6;
+    --panel-bg: #ffffff;
+    --canvas-bg: #f8f7f4;
+    --border: #e3e1dc;
+    --text: #1b1b1f;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  body { background: var(--canvas-bg); }
+  #board { display: block; position: absolute; inset: 0; cursor: crosshair; touch-action: none; }
+
+  #brand {
+    position: fixed; top: 12px; left: 16px; z-index: 10;
+    display: flex; align-items: center; gap: 8px; user-select: none;
+  }
+  #brand img { height: 40px; display: block; }
+  #brand .tag { font-size: 12px; color: #8a877e; margin-top: 6px; }
+
+  .panel {
+    position: fixed; z-index: 10; background: var(--panel-bg);
+    border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: 0 2px 10px rgba(0,0,0,.06); padding: 6px;
+    display: flex; gap: 4px; align-items: center;
+  }
+  #toolbar { top: 12px; left: 50%; transform: translateX(-50%); }
+  #stylebar { top: 72px; left: 50%; transform: translateX(-50%); }
+  #actions { top: 12px; right: 16px; }
+
+  .tbtn {
+    width: 40px; height: 40px; border: none; background: transparent;
+    border-radius: 8px; cursor: pointer; font-size: 18px; color: var(--text);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .tbtn:hover { background: #f0efec; }
+  .tbtn.active { background: var(--accent); color: #fff; }
+  .tbtn:disabled { opacity: .35; cursor: default; }
+  .tbtn:disabled:hover { background: transparent; }
+  .sep { width: 1px; height: 24px; background: var(--border); margin: 0 2px; }
+
+  .swatch {
+    width: 26px; height: 26px; border-radius: 8px; cursor: pointer;
+    border: 2px solid transparent;
+  }
+  .swatch.active { border-color: var(--accent); transform: scale(1.1); }
+  #widthSlider { width: 90px; accent-color: var(--accent); }
+  #stylebar label { font-size: 11px; color: #8a877e; padding: 0 4px; }
+
+  #textOverlay {
+    position: fixed; z-index: 20; display: none; background: transparent;
+    border: 1px dashed var(--accent); border-radius: 4px; outline: none;
+    font: 20px/1.3 "Segoe UI", sans-serif; color: var(--text);
+    min-width: 60px; padding: 2px 4px;
+  }
+  #hint {
+    position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
+    font-size: 11px; color: #b0aca2; z-index: 5; user-select: none; text-align: center;
+  }
+</style>
+</head>
+<body>
+<canvas id="board"></canvas>
+
+<div id="brand">
+  <img src="logo.svg" alt="GHDraw">
+  <span class="tag">hand-drawn whiteboard</span>
+</div>
+
+<div class="panel" id="toolbar">
+  <button class="tbtn active" data-tool="pen" title="Pen (P)">&#9998;</button>
+  <button class="tbtn" data-tool="line" title="Line (L)">&#9585;</button>
+  <button class="tbtn" data-tool="arrow" title="Arrow (A)">&#8599;</button>
+  <button class="tbtn" data-tool="rect" title="Rectangle (R)">&#9645;</button>
+  <button class="tbtn" data-tool="ellipse" title="Ellipse (O)">&#9711;</button>
+  <button class="tbtn" data-tool="text" title="Text (T)">T</button>
+  <div class="sep"></div>
+  <button class="tbtn" data-tool="eraser" title="Eraser (E)">&#9003;</button>
+</div>
+
+<div class="panel" id="stylebar">
+  <div id="colors"></div>
+  <div class="sep"></div>
+  <label>Size</label>
+  <input type="range" id="widthSlider" min="1" max="12" value="3">
+</div>
+
+<div class="panel" id="actions">
+  <button class="tbtn" id="undoBtn" title="Undo (Ctrl+Z)">&#8630;</button>
+  <button class="tbtn" id="redoBtn" title="Redo (Ctrl+Shift+Z)">&#8631;</button>
+  <div class="sep"></div>
+  <button class="tbtn" id="exportBtn" title="Export PNG">&#8681;</button>
+  <button class="tbtn" id="clearBtn" title="Clear board">&#128465;</button>
+</div>
+
+<div id="textOverlay" contenteditable="true"></div>
+<div id="hint">P pen &middot; L line &middot; A arrow &middot; R rect &middot; O ellipse &middot; T text &middot; E eraser &middot; Ctrl+Z undo</div>
+
+<script>
+(function () {
+  "use strict";
+
+  const canvas = document.getElementById("board");
+  const ctx = canvas.getContext("2d");
+  const COLORS = ["#1b1b1f", "#e03131", "#1971c2", "#2f9e44", "#f08c00", "#6965db"];
+  const LS_KEY = "ghdraw-ops-v1";
+
+  let ops = [];        // committed drawing operations
+  let redoStack = [];  // undone operations
+  let current = null;  // in-progress operation
+  let tool = "pen";
+  let color = COLORS[0];
+  let strokeWidth = 3;
+  let drawing = false;
+
+  // ---------- canvas setup ----------
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.floor(window.innerWidth * dpr);
+    canvas.height = Math.floor(window.innerHeight * dpr);
+    canvas.style.width = window.innerWidth + "px";
+    canvas.style.height = window.innerHeight + "px";
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    redraw();
+  }
+  window.addEventListener("resize", resize);
+
+  // ---------- seeded jitter for hand-drawn look ----------
+  // small deterministic pseudo-random from a seed so a stroke renders the same each frame
+  function j(seed, i, amp) {
+    const x = Math.sin(seed * 127.1 + i * 311.7) * 43758.5453;
+    return ((x - Math.floor(x)) - 0.5) * 2 * amp;
+  }
+
+  function roughLine(c, x1, y1, x2, y2, seed, passes) {
+    for (let p = 0; p < passes; p++) {
+      const a = p === 0 ? 0 : 1.6;
+      c.beginPath();
+      c.moveTo(x1 + j(seed, p * 4 + 1, a), y1 + j(seed, p * 4 + 2, a));
+      c.lineTo(x2 + j(seed, p * 4 + 3, a), y2 + j(seed, p * 4 + 4, a));
+      c.stroke();
+    }
+  }
+
+  function roughRect(c, x, y, w, h, seed) {
+    roughLine(c, x, y, x + w, y, seed + 1, 2);
+    roughLine(c, x + w, y, x + w, y + h, seed + 2, 2);
+    roughLine(c, x + w, y + h, x, y + h, seed + 3, 2);
+    roughLine(c, x, y + h, x, y, seed + 4, 2);
+  }
+
+  function roughEllipse(c, cx, cy, rx, ry, seed) {
+    for (let p = 0; p < 2; p++) {
+      c.beginPath();
+      c.ellipse(cx + j(seed, p, 1.4), cy + j(seed, p + 9, 1.4),
+                Math.max(rx + j(seed, p + 3, 1.4), 1), Math.max(ry + j(seed, p + 6, 1.4), 1),
+                j(seed, p + 12, 0.02), 0, Math.PI * 2);
+      c.stroke();
+    }
+  }
+
+  function drawArrowHead(c, x1, y1, x2, y2, seed) {
+    const ang = Math.atan2(y2 - y1, x2 - x1);
+    const len = 12 + strokeWidthOf(c) * 1.5;
+    for (const off of [0.42, -0.42]) {
+      roughLine(c, x2, y2,
+        x2 - len * Math.cos(ang + off), y2 - len * Math.sin(ang + off),
+        seed + off * 100, 1);
+    }
+  }
+  function strokeWidthOf(c) { return c.lineWidth; }
+
+  function applyStyle(c, op, target) {
+    c.strokeStyle = op.color;
+    c.fillStyle = op.color;
+    c.lineWidth = op.width;
+    c.lineJoin = "round";
+    c.lineCap = "round";
+  }
+
+  function drawOp(c, op) {
+    applyStyle(c, op);
+    const seed = op.seed || 1;
+    if (op.type === "pen") {
+      if (op.points.length < 2) return;
+      c.beginPath();
+      c.moveTo(op.points[0][0], op.points[0][1]);
+      for (let i = 1; i < op.points.length; i++) c.lineTo(op.points[i][0], op.points[i][1]);
+      c.stroke();
+    } else if (op.type === "line") {
+      roughLine(c, op.x1, op.y1, op.x2, op.y2, seed, 2);
+    } else if (op.type === "arrow") {
+      roughLine(c, op.x1, op.y1, op.x2, op.y2, seed, 2);
+      const save = c.lineWidth;
+      drawArrowHead(c, op.x1, op.y1, op.x2, op.y2, seed);
+      c.lineWidth = save;
+    } else if (op.type === "rect") {
+      roughRect(c, Math.min(op.x1, op.x2), Math.min(op.y1, op.y2),
+                Math.abs(op.x2 - op.x1), Math.abs(op.y2 - op.y1), seed);
+    } else if (op.type === "ellipse") {
+      roughEllipse(c, (op.x1 + op.x2) / 2, (op.y1 + op.y2) / 2,
+                   Math.abs(op.x2 - op.x1) / 2, Math.abs(op.y2 - op.y1) / 2, seed);
+    } else if (op.type === "text") {
+      c.font = op.size + 'px "Segoe UI", sans-serif';
+      c.textBaseline = "top";
+      const lines = op.text.split("\n");
+      lines.forEach((ln, i) => c.fillText(ln, op.x, op.y + i * op.size * 1.3));
+    }
+  }
+
+  function drawGrid(c) {
+    c.save();
+    c.fillStyle = "#d8d5cc";
+    const step = 28;
+    for (let x = step; x < window.innerWidth; x += step)
+      for (let y = step; y < window.innerHeight; y += step)
+        c.fillRect(x, y, 1.4, 1.4);
+    c.restore();
+  }
+
+  function redraw() {
+    ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    drawGrid(ctx);
+    ops.forEach(op => drawOp(ctx, op));
+    if (current) drawOp(ctx, current);
+  }
+
+  // ---------- persistence ----------
+  function save() {
+    try { localStorage.setItem(LS_KEY, JSON.stringify(ops)); } catch (e) {}
+  }
+  function load() {
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (raw) ops = JSON.parse(raw) || [];
+    } catch (e) { ops = []; }
+  }
+
+  // ---------- pointer handling ----------
+  function pos(e) {
+    const r = canvas.getBoundingClientRect();
+    return [e.clientX - r.left, e.clientY - r.top];
+  }
+
+  canvas.addEventListener("pointerdown", e => {
+    if (e.button !== 0) return;
+    const [x, y] = pos(e);
+    if (tool === "text") { openTextOverlay(x, y); return; }
+    if (tool === "eraser") { drawing = true; eraseAt(x, y); return; }
+    drawing = true;
+    redoStack = [];
+    const seed = Math.random() * 1000;
+    if (tool === "pen") current = { type: "pen", points: [[x, y]], color, width: strokeWidth, seed };
+    else current = { type: tool, x1: x, y1: y, x2: x, y2: y, color, width: strokeWidth, seed };
+    redraw();
+  });
+
+  canvas.addEventListener("pointermove", e => {
+    if (!drawing) return;
+    const [x, y] = pos(e);
+    if (tool === "eraser") { eraseAt(x, y); return; }
+    if (!current) return;
+    if (current.type === "pen") current.points.push([x, y]);
+    else { current.x2 = x; current.y2 = y; }
+    redraw();
+  });
+
+  window.addEventListener("pointerup", () => {
+    if (!drawing) return;
+    drawing = false;
+    if (tool === "eraser") { save(); return; }
+    if (!current) return;
+    // ignore accidental zero-size shapes (except pen dots)
+    if (current.type !== "pen" && Math.abs(current.x2 - current.x1) < 2 && Math.abs(current.y2 - current.y1) < 2) {
+      current = null; redraw(); return;
+    }
+    ops.push(current);
+    current = null;
+    save();
+    updateUndoButtons();
+    redraw();
+  });
+
+  // ---------- eraser ----------
+  function distToSeg(px, py, x1, y1, x2, y2) {
+    const dx = x2 - x1, dy = y2 - y1;
+    const l2 = dx * dx + dy * dy;
+    if (l2 === 0) return Math.hypot(px - x1, py - y1);
+    let t = ((px - x1) * dx + (py - y1) * dy) / l2;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+  }
+
+  function hitOp(op, x, y) {
+    const tol = 10 + op.width / 2;
+    if (op.type === "pen") {
+      for (let i = 1; i < op.points.length; i++)
+        if (distToSeg(x, y, op.points[i-1][0], op.points[i-1][1], op.points[i][0], op.points[i][1]) < tol) return true;
+      return false;
+    }
+    if (op.type === "line" || op.type === "arrow")
+      return distToSeg(x, y, op.x1, op.y1, op.x2, op.y2) < tol;
+    if (op.type === "rect") {
+      const x1 = Math.min(op.x1, op.x2), y1 = Math.min(op.y1, op.y2);
+      const x2 = Math.max(op.x1, op.x2), y2 = Math.max(op.y1, op.y2);
+      const nearH = (Math.abs(y - y1) < tol || Math.abs(y - y2) < tol) && x > x1 - tol && x < x2 + tol;
+      const nearV = (Math.abs(x - x1) < tol || Math.abs(x - x2) < tol) && y > y1 - tol && y < y2 + tol;
+      return nearH || nearV;
+    }
+    if (op.type === "ellipse") {
+      const cx = (op.x1 + op.x2) / 2, cy = (op.y1 + op.y2) / 2;
+      const rx = Math.abs(op.x2 - op.x1) / 2, ry = Math.abs(op.y2 - op.y1) / 2;
+      if (rx < 1 || ry < 1) return false;
+      const v = ((x - cx) ** 2) / (rx ** 2) + ((y - cy) ** 2) / (ry ** 2);
+      return Math.abs(v - 1) < 0.35;
+    }
+    if (op.type === "text") {
+      return x >= op.x - 5 && x <= op.x + 200 && y >= op.y - 5 && y <= op.y + op.size * 1.5 * op.text.split("\n").length;
+    }
+    return false;
+  }
+
+  function eraseAt(x, y) {
+    const before = ops.length;
+    ops = ops.filter(op => !hitOp(op, x, y));
+    if (ops.length !== before) { redoStack = []; save(); updateUndoButtons(); redraw(); }
+  }
+
+  // ---------- text tool ----------
+  const overlay = document.getElementById("textOverlay");
+  let textPos = null;
+  function openTextOverlay(x, y) {
+    textPos = [x, y];
+    overlay.style.display = "block";
+    overlay.style.left = x + "px";
+    overlay.style.top = y + "px";
+    overlay.style.fontSize = (16 + strokeWidth * 2) + "px";
+    overlay.innerText = "";
+    overlay.focus();
+  }
+  function commitText() {
+    if (overlay.style.display === "none") return;
+    const txt = overlay.innerText.trim();
+    if (txt && textPos) {
+      ops.push({ type: "text", x: textPos[0], y: textPos[1], text: txt,
+                 color, width: strokeWidth, size: 16 + strokeWidth * 2, seed: Math.random() * 1000 });
+      redoStack = [];
+      save(); updateUndoButtons();
+    }
+    overlay.style.display = "none";
+    textPos = null;
+    redraw();
+  }
+  overlay.addEventListener("blur", commitText);
+  overlay.addEventListener("keydown", e => { if (e.key === "Escape") { overlay.innerText = ""; overlay.blur(); } e.stopPropagation(); });
+
+  // ---------- toolbar ----------
+  const toolButtons = document.querySelectorAll("#toolbar .tbtn");
+  function setTool(t) {
+    tool = t;
+    commitText();
+    toolButtons.forEach(b => b.classList.toggle("active", b.dataset.tool === t));
+    canvas.style.cursor = t === "eraser" ? "cell" : t === "text" ? "text" : "crosshair";
+  }
+  toolButtons.forEach(b => b.addEventListener("click", () => setTool(b.dataset.tool)));
+
+  const colorsDiv = document.getElementById("colors");
+  COLORS.forEach((c, i) => {
+    const s = document.createElement("div");
+    s.className = "swatch" + (i === 0 ? " active" : "");
+    s.style.background = c;
+    s.addEventListener("click", () => {
+      color = c;
+      colorsDiv.querySelectorAll(".swatch").forEach(el => el.classList.remove("active"));
+      s.classList.add("active");
+    });
+    colorsDiv.appendChild(s);
+  });
+
+  document.getElementById("widthSlider").addEventListener("input", e => { strokeWidth = +e.target.value; });
+
+  // ---------- actions ----------
+  const undoBtn = document.getElementById("undoBtn");
+  const redoBtn = document.getElementById("redoBtn");
+  function updateUndoButtons() {
+    undoBtn.disabled = ops.length === 0;
+    redoBtn.disabled = redoStack.length === 0;
+  }
+  function undo() { commitText(); if (!ops.length) return; redoStack.push(ops.pop()); save(); updateUndoButtons(); redraw(); }
+  function redo() { if (!redoStack.length) return; ops.push(redoStack.pop()); save(); updateUndoButtons(); redraw(); }
+  undoBtn.addEventListener("click", undo);
+  redoBtn.addEventListener("click", redo);
+
+  document.getElementById("clearBtn").addEventListener("click", () => {
+    if (!ops.length || confirm("Clear the whole board?")) {
+      ops = []; redoStack = []; save(); updateUndoButtons(); redraw();
+    }
+  });
+
+  document.getElementById("exportBtn").addEventListener("click", () => {
+    const out = document.createElement("canvas");
+    const dpr = 2;
+    out.width = window.innerWidth * dpr;
+    out.height = window.innerHeight * dpr;
+    const c = out.getContext("2d");
+    c.scale(dpr, dpr);
+    c.fillStyle = "#f8f7f4";
+    c.fillRect(0, 0, window.innerWidth, window.innerHeight);
+    ops.forEach(op => drawOp(c, op));
+    const a = document.createElement("a");
+    a.download = "ghdraw.png";
+    a.href = out.toDataURL("image/png");
+    a.click();
+  });
+
+  // ---------- keyboard ----------
+  const KEYMAP = { p: "pen", l: "line", a: "arrow", r: "rect", o: "ellipse", t: "text", e: "eraser" };
+  window.addEventListener("keydown", e => {
+    if (overlay.style.display !== "none") return;
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+      e.preventDefault();
+      e.shiftKey ? redo() : undo();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") { e.preventDefault(); redo(); return; }
+    const t = KEYMAP[e.key.toLowerCase()];
+    if (t) setTool(t);
+  });
+
+  // ---------- init ----------
+  load();
+  resize();
+  updateUndoButtons();
+})();
+</script>
+</body>
+</html>
