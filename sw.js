@@ -1,5 +1,5 @@
 /* GHDraw service worker: the app shell works offline. Cloud links need a connection. */
-const VERSION = 'ghdraw-v12-ai';
+const VERSION = 'ghdraw-v12-ai-3min';
 const SHELL = ['./', 'index.html', 'manifest.webmanifest', 'logo.svg'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => Promise.all(SHELL.map(u => c.add(u).catch(() => {})))).then(() => self.skipWaiting()));
