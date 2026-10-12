@@ -212,3 +212,7 @@ Open the shape library (**B** or the menu) and pick a tab:
 Everything works offline once the app shell is cached. No external service is called.
 
 **Licensing:** emoji are plain Unicode characters. No emoji image set, icon font or third-party artwork is bundled, so there is nothing to attribute. The glyphs are drawn by your device's own emoji font (Apple, Google Noto, Segoe), so they look different per platform. Emoji your system cannot draw are hidden from the picker. Templates and icons are original to this project and covered by the MIT license.
+
+## v14: mobile emoji picker fix
+
+The emoji grid now stays inside the picker with its own scroll area. Columns adapt to the available width, with 44px buttons instead of eight cramped columns. The mobile emoji panel has enough room for its controls and grid; short screens can scroll the panel. New emoji use the system sans-serif/emoji fallback rather than the current handwriting font. Existing boards are not changed.
