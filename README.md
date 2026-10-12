@@ -190,3 +190,13 @@ The Appwrite organization and project are managed under the assistant-operated G
 ### Collaboration limits
 
 Concurrent edits to different elements are merged transactionally; editing the same element uses the last accepted update. Cloud sync is periodic, not instant. Closing while an update is pending can leave unsent edits only in local autosave. Hidden tabs pause sync and refresh on return. Page order stays fixed during a room. Undo history resets after remote changes so an old snapshot does not overwrite peers. Desktop two-tab and mobile image-share tests passed in Chromium; other browsers and large multi-user sessions remain untested.
+
+### AI text tools 
+
+Select one text block, then choose **Translate** or **Fix spelling & grammar** in its properties. Pick a target language, read the data warning, then use **Send & preview**. Nothing on the board changes until **Apply to text**. Undo restores the old text. If the source text or page changes while the request runs, applying the stale result is blocked. Read-only boards have no AI controls.
+
+Only the selected text (1-2000 characters), operation and target language are sent to Groq, not the board or other elements. A random client identifier is also sent to Appwrite for limits. AI can change meaning or make mistakes, so review the preview. Do not submit personal, confidential or sensitive information. Groq's data policy: https://console.groq.com/docs/your-data . The app stores only quota counts and daily keyed client hashes, not AI input/output text. Provider processing and Appwrite execution metadata have their own policies; no claim of end-to-end secrecy is made.
+
+The app has no login, so limits are **per browser installation**, not per verified person: 20 requests/day and 2/minute, plus a site-wide 200/day and 10/minute ceiling. Daily limits reset at 00:00 UTC. Appwrite custom domains omit the documented client-IP header, so the fallback uses a random browser identifier. Clearing browser storage bypasses its individual cap; it is not verified-user protection. Quota is reserved before the provider call; failed provider calls can count. Global caps protect the provider allowance even if clients reset browser identifiers. The free provider and Appwrite quotas can still stop requests.
+
+Deployment: include `backend/src/ai.js` with `main.js`, and add `GROQ_API_KEY` as a secret function variable. Do not put the key in this file, the frontend, or GitHub. The chosen model is `openai/gpt-oss-20b`; model availability and free quotas can change. Run `node backend/src/ai.test.js` for backend validation and quota tests. A missing key fails closed, never calls a paid alternative, and never changes the drawing. No card, upgrade or paid overage is enabled.
