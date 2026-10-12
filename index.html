@@ -1595,6 +1595,7 @@ const EMOJI_RAW=[
 const EMO_OK=(()=>{let ref=null,cache=new Map();const c=document.createElement('canvas');c.width=c.height=28;const x=c.getContext('2d',{willReadFrequently:true});
  const sig=ch=>{x.clearRect(0,0,28,28);x.font='20px sans-serif';x.textBaseline='top';x.fillText(ch,2,2);const d=x.getImageData(0,0,28,28).data;let h='';for(let i=0;i<d.length;i+=16)h+=d[i]?'1':'0';return h};
  return ch=>{try{if(ref===null)ref=sig('\u{10FFFF}');if(!cache.has(ch)){const a=sig(ch);cache.set(ch,a!==ref&&a.indexOf('1')>=0)}return cache.get(ch)}catch(_){return true}}})();
+let emoTrust=null;const EMO_TRUST=()=>{if(emoTrust===null)emoTrust=EMOJI_RAW.filter(x=>EMO_OK(x.e)).length>=10;return emoTrust};
 let emojiCat=0,emojiQ='',emojiSize=+(localStorage.getItem('ghdraw:emojisize')||64);
 const nrm=s=>(s||'').toLocaleLowerCase('tr').replace(/ı/g,'i').replace(/ğ/g,'g').replace(/ü/g,'u').replace(/ş/g,'s').replace(/ö/g,'o').replace(/ç/g,'c').replace(/i̇/g,'i');
 function emojiGen(ch){return()=>[{type:'text',text:ch,__c:[0,0],size:emojiSize,align:'center'}]}
@@ -1607,7 +1608,7 @@ function buildEmoji(box){
   const grid=mk('div','eg');box.appendChild(grid);
   function fill(){
     grid.innerHTML='';const n=nrm(emojiQ.trim());
-    const list=EMOJI_RAW.filter(x=>(n?(nrm(x.k).includes(n)||x.e.includes(emojiQ.trim())):x.c===emojiCat)&&EMO_OK(x.e));
+    const list=EMOJI_RAW.filter(x=>(n?(nrm(x.k).includes(n)||x.e.includes(emojiQ.trim())):x.c===emojiCat)&&(!EMO_TRUST()||EMO_OK(x.e)));
     if(!list.length){const p=mk('p','cn');p.style.margin='6px';p.textContent=L2('Bulunamadı.','Nothing found.');grid.appendChild(p);return}
     for(const x of list){const b=mk('button','emo');b.textContent=x.e;b.title=x.k.split(' ').slice(0,2).join(', ');b.setAttribute('aria-label',x.k.split(' ')[0]);b.onclick=()=>insertLib(emojiGen(x.e),{plain:true});grid.appendChild(b)}
   }
@@ -2088,4 +2089,4 @@ window.__ghdraw={get els(){return els},set els(v){els=v;remeasure()},render,comm
 
 </script>
 </body>
- </html>
+                                                                                                                                                                                        </html>
