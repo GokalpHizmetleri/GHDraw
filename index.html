@@ -1159,6 +1159,7 @@ async function exportPDF_(){
 function svgRec(){
   const defs=[],body=[],stack=[];let d='',cid=0,st={fs:'#000',ss:'#000',lw:1,al:1,dash:[],cap:'butt',join:'miter',font:'',base:'alphabetic'};
   const fx=n=>+(+n).toFixed(2);
+  const mc=document.createElement('canvas').getContext('2d');
   const strokeAttrs=()=>`fill="none" stroke="${st.ss}" stroke-width="${fx(st.lw)}" stroke-opacity="${st.al}" stroke-linecap="${st.cap}" stroke-linejoin="${st.join}"`+(st.dash.length?` stroke-dasharray="${st.dash.map(fx).join(' ')}"`:'');
   const c={
     save(){stack.push({st:Object.assign({},st),n:0})},
@@ -1168,6 +1169,8 @@ function svgRec(){
     beginPath(){d=''},closePath(){d+='Z'},
     moveTo(x,y){d+=`M${fx(x)} ${fx(y)}`},lineTo(x,y){d+=`L${fx(x)} ${fx(y)}`},
     quadraticCurveTo(a,b,x,y){d+=`Q${fx(a)} ${fx(b)} ${fx(x)} ${fx(y)}`},
+    rect(x,y,w,h){d+=`M${fx(x)} ${fx(y)}h${fx(w)}v${fx(h)}h${fx(-w)}Z`},
+    measureText(s){mc.font=st.font;return mc.measureText(s)},
     arc(x,y,r){d+=`M${fx(x+r)} ${fx(y)}A${fx(r)} ${fx(r)} 0 1 0 ${fx(x-r)} ${fx(y)}A${fx(r)} ${fx(r)} 0 1 0 ${fx(x+r)} ${fx(y)}Z`},
     stroke(){if(d)body.push(`<path d="${d}" ${strokeAttrs()}/>`)},
     fill(){if(d)body.push(`<path d="${d}" fill="${st.fs}" fill-opacity="${st.al}"/>`)},
