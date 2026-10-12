@@ -559,7 +559,7 @@ function openTextAI(op){
  const original=e.text,pid=pages[pi].id,eid=e.id;
  collabModal=false;const box=$('#modalBox');box.innerHTML='';$('#modal').classList.add('open');
  const title=mk('h3');title.textContent=op==='translate'?L2('Metni çevir','Translate text'):L2('Yazımı düzelt','Fix spelling & grammar');box.appendChild(title);
- const note=mk('p','cn');note.textContent=L2('Yalnızca bu metin Groq yapay zeka hizmetine gönderilir. Gizli veya kişisel bilgi gönderme. Sonuç hatalı olabilir; uygulamadan önce kontrol et. Tarayıcı başına günlük 20, dakikada 2 işlem; ortak site kotası da var.','Only this text is sent to Groq AI. Do not submit confidential or personal information. Results can be wrong; review before applying. 20 requests/day and 2/minute per browser; a shared site quota also applies.');box.appendChild(note);
+ const note=mk('p','cn');note.textContent=L2('Yalnızca bu metin Groq yapay zeka hizmetine gönderilir. Gizli veya kişisel bilgi gönderme. Sonuç hatalı olabilir; uygulamadan önce kontrol et. Tarayıcı başına günlük 20, 3 dakikada 1 işlem; ortak site kotası da var.','Only this text is sent to Groq AI. Do not submit confidential or personal information. Results can be wrong; review before applying. 20 requests/day and 1 request every 3 minutes per browser; a shared site quota also applies.');box.appendChild(note);
  const source=mk('textarea','aiText');source.readOnly=true;source.value=original;source.setAttribute('aria-label',L2('Seçili metin','Selected text'));box.appendChild(source);
  const language=mk('select');language.id='aiLanguage';language.setAttribute('aria-label',L2('Hedef dil','Target language'));
  for(const[v,tr,en]of[['en','İngilizce','English'],['tr','Türkçe','Turkish'],['de','Almanca','German'],['fr','Fransızca','French'],['es','İspanyolca','Spanish'],['it','İtalyanca','Italian'],['pt','Portekizce','Portuguese'],['ar','Arapça','Arabic'],['ru','Rusça','Russian'],['ja','Japonca','Japanese'],['ko','Korece','Korean'],['zh','Çince','Chinese']]){const o=mk('option');o.value=v;o.textContent=L2(tr,en);language.appendChild(o)}
@@ -572,7 +572,7 @@ function openTextAI(op){
   go.disabled=true;apply.hidden=true;preview.hidden=true;status.textContent=L2('Hazırlanıyor...','Working...');
   try{
    const r=await fetch(CLOUD+'/ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({op,text:original,language:language.value,clientId:aiClientId()}),signal:AbortSignal.timeout(28000)}),d=await r.json();
-   if(!r.ok){const messages={not_configured:L2('AI henüz yapılandırılmadı.','AI is not configured yet.'),limit:L2('İşlem kotası doldu. Daha sonra dene.','Request limit reached. Try later.'),provider_limit:L2('AI hizmetinin ücretsiz kotası doldu. Daha sonra dene.','The AI service free quota is reached. Try later.'),incomplete:L2('Sonuç tamamlanamadı. Metni kısaltıp tekrar dene.','Result was incomplete. Shorten the text and try again.')};throw Error(messages[d.error]||L2('AI hizmetine ulaşılamadı. Metnin değiştirilmedi.','AI is unavailable. Your text was not changed.'))}
+   if(!r.ok){const wait=Math.max(1,Math.ceil(Number(d.retryAfter)||180));const messages={cooldown:L2('3 dakikada 1 işlem yapabilirsin. '+wait+' saniye sonra tekrar dene.','You can make 1 request every 3 minutes. Try again in '+wait+' seconds.'),daily_limit:L2('Günlük işlem kotası doldu. '+Math.ceil(wait/60)+' dakika sonra tekrar dene.','Daily request limit reached. Try again in '+Math.ceil(wait/60)+' minutes.'),site_limit:L2('Ortak site yoğunluk sınırına ulaştı. '+wait+' saniye sonra tekrar dene.','The shared site rate limit is reached. Try again in '+wait+' seconds.'),not_configured:L2('AI henüz yapılandırılmadı.','AI is not configured yet.'),limit:L2('İşlem kotası doldu. Daha sonra dene.','Request limit reached. Try later.'),provider_limit:L2('AI hizmetinin ücretsiz kotası doldu. Daha sonra dene.','The AI service free quota is reached. Try later.'),incomplete:L2('Sonuç tamamlanamadı. Metni kısaltıp tekrar dene.','Result was incomplete. Shorten the text and try again.')};throw Error(messages[d.error]||L2('AI hizmetine ulaşılamadı. Metnin değiştirilmedi.','AI is unavailable. Your text was not changed.'))}
    if(typeof d.text!=='string'||!d.text.trim()||d.text.length>6000)throw Error(L2('Geçersiz sonuç.','Invalid result.'));
    if(!box.isConnected||!preview.isConnected)return;
    preview.value=d.text;preview.hidden=false;apply.hidden=false;status.textContent=L2('Sonucu kontrol et. Uygulayana kadar çizim değişmez.','Review the result. The drawing stays unchanged until you apply it.');
@@ -2001,4 +2001,4 @@ window.__ghdraw={get els(){return els},set els(v){els=v;remeasure()},render,comm
 
 </script>
 </body>
- </html>
+   </html>
