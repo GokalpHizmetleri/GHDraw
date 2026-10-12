@@ -1,6 +1,7 @@
 import {Client,Databases,Query} from 'node-appwrite';
 import {randomBytes,createHash} from 'node:crypto';
 import {gzipSync,gunzipSync} from 'node:zlib';
+import {handleAI} from './ai.js';
 const DB='ghdraw',COL='boards',MAX=12*1024*1024;
 const validId=x=>typeof x==='string'&&x.length>0&&x.length<=128;
 const validThread=th=>th===undefined||Array.isArray(th)&&th.length<=300&&th.every(m=>m&&typeof m.t==='string'&&m.t.length<=500);
@@ -62,6 +63,7 @@ export default async ({req,res,error})=>{
    return reply({deleted});
   }
   const path=req.path.split('/').filter(Boolean),id=path[1];
+  if(req.method==='POST'&&req.path==='/ai'){const r=await handleAI(req,db,process.env.GROQ_API_KEY);return reply(r.body,r.status)}
   if(req.method==='GET'&&req.path==='/health')return reply({ok:true});
   if(req.method==='GET'&&['view','room'].includes(path[0])){const d=await read(id);if(d.kind!==path[0])throw {code:404};const {owner,...publicData}=d;return reply(publicData)}
   if(req.method==='POST'&&path[0]==='live'){
