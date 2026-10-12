@@ -200,3 +200,15 @@ Only the selected text (1-2000 characters), operation and target language are se
 The app has no login, so limits are **per browser installation**, not per verified person: 20 requests/day and 1 request every 3 minutes (a rolling 180-second wait between requests, also across minute boundaries and midnight UTC), plus a site-wide 200/day and 10/minute ceiling. Daily limits reset at 00:00 UTC. Appwrite custom domains omit the documented client-IP header, so the fallback uses a random browser identifier. Clearing browser storage bypasses its individual cap; it is not verified-user protection. A 429 response includes the remaining wait in seconds; the interface shows it in Turkish or English. Quota is reserved before the provider call; failed provider calls can count. Global caps protect the provider allowance even if clients reset browser identifiers. The free provider and Appwrite quotas can still stop requests.
 
 Deployment: include `backend/src/ai.js` with `main.js`, and add `GROQ_API_KEY` as a secret function variable. Do not put the key in this file, the frontend, or GitHub. The chosen model is `openai/gpt-oss-20b`; model availability and free quotas can change. Run `node backend/src/ai.test.js` for backend validation and quota tests. A missing key fails closed, never calls a paid alternative, and never changes the drawing. No card, upgrade or paid overage is enabled.
+
+## New in v13: templates, emoji and icons
+
+Open the shape library (**B** or the menu) and pick a tab:
+
+- **Templates:** flowchart, meeting notes, kanban board, mind map, SWOT and roadmap. A template inserts normal editable shapes and text, not an image. Each box and its label are grouped (double-click the label to edit the text, **Ctrl+Shift+G** to ungroup). Flowchart and mind-map connectors are bound to their shapes and follow when you move them. The view zooms out if the template is larger than the screen. Templates are inserted on the current page and sync in shared rooms like any other shapes. Labels follow the interface language when inserted.
+- **Emoji:** about 190 emoji in 7 groups with search (Turkish and English words, e.g. "kalp", "heart", "ok"). Pick Small, Medium or Large (large works as a sticker). Each emoji is inserted as an editable text element, so you can resize, recolor-opacity, copy and move it like other text.
+- **Icons:** the existing icon tab now also has calendar, folder, bell, flag, page, search, checkbox, play, plus, block arrow, cup and rocket. They are drawn from GHDraw's own shapes.
+
+Everything works offline once the app shell is cached. No external service is called.
+
+**Licensing:** emoji are plain Unicode characters. No emoji image set, icon font or third-party artwork is bundled, so there is nothing to attribute. The glyphs are drawn by your device's own emoji font (Apple, Google Noto, Segoe), so they look different per platform. Emoji your system cannot draw are hidden from the picker. Templates and icons are original to this project and covered by the MIT license.
