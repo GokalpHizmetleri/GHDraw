@@ -4,6 +4,10 @@ A hand-drawn style whiteboard for the browser, inspired by Excalidraw. No fronte
 
 <p align="center"><img src="logo.svg" alt="GHDraw" width="320"></p>
 
+## Demo videos
+
+Watch short demos on the [GHDraw YouTube channel](https://www.youtube.com/@GHDrawofficial).
+
 ## Features
 
 **Excalidraw-style interface**
