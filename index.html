@@ -629,7 +629,7 @@ function syncUI(){$('#undo').disabled=hidx<=0;$('#redo').disabled=hidx>=hist.len
 
 function buildMenu(){
   const m=$('#menu');m.innerHTML='';const close=mk('button','mi');close.textContent='× '+t('close');close.onclick=()=>m.classList.remove('open');m.appendChild(close);
-  const items=[[L2('Medya / GIF','Media / GIF'),'png',openMedia,''],['collab','users',()=>openCollab(),''],['lib','lib',()=>toggleLib(),'B'],[L2('Sunum modu','Present'),'play',()=>startPresent(),'Ctrl+Shift+P'],[L2('Sunum karesi ekle','Add presentation frame'),'rect',addFrame,''],[L2('Salt okunur link','Read-only link'),'share',openShare,''],[L2('Tahta geçmişi','Board history'),'lib',openHistory,''],...(installEvt?[[L2('Uygulama olarak yükle','Install as app'),'save',doInstall,'']]:[]),'sep',['open','open',()=>$('#fileIn').click(),'Ctrl+O'],['save','save',saveFile,'Ctrl+S'],['png','png',exportPNG,'Ctrl+Shift+E'],[L2('Dışa aktar...','Export...'),'png',openExport,''],['clear','trash',clearAll,''],'sep',['grid','grid',()=>{grid=!grid;save();render();buildMenu()},grid?'\u2713':''],['dark','moon',()=>{dark=!dark;document.body.classList.toggle('dark',dark);save();render();buildMenu()},dark?'\u2713':''],['lang','globe',()=>{lang=lang==='tr'?'en':'tr';localStorage.setItem('ghdraw:lang',lang);i18nApply()},''],'sep',['github','gh',()=>window.open('https://github.com/GokalpHizmetleri/GHDraw','_blank'),''],[L2('YouTube','YouTube'),'yt',()=>window.open('https://www.youtube.com/@GHDrawofficial','_blank'),'']];
+  const items=[[L2('Medya / GIF','Media / GIF'),'png',openMedia,''],['collab','users',()=>openCollab(),''],['lib','lib',()=>toggleLib(),'B'],[L2('Sunum modu','Present'),'play',()=>startPresent(),'Ctrl+Shift+P'],[L2('Sunum karesi ekle','Add presentation frame'),'rect',addFrame,''],[L2('Salt okunur link','Read-only link'),'share',openShare,''],[L2('Tahta geçmişi','Board history'),'lib',openHistory,''],'sep',[L2('Saat','Clock'),'wclock',()=>toggleWidget('clock'),''],[L2('Takvim','Calendar'),'wcal',()=>toggleWidget('cal'),''],[L2('Zamanlayıcı','Timer'),'wtimer',()=>toggleWidget('timer'),''],[L2('Yapılacaklar','Checklist'),'wtodo',()=>toggleWidget('todo'),''],...(installEvt?[[L2('Uygulama olarak yükle','Install as app'),'save',doInstall,'']]:[]),'sep',['open','open',()=>$('#fileIn').click(),'Ctrl+O'],['save','save',saveFile,'Ctrl+S'],['png','png',exportPNG,'Ctrl+Shift+E'],[L2('Dışa aktar...','Export...'),'png',openExport,''],['clear','trash',clearAll,''],'sep',['grid','grid',()=>{grid=!grid;save();render();buildMenu()},grid?'\u2713':''],['dark','moon',()=>{dark=!dark;document.body.classList.toggle('dark',dark);save();render();buildMenu()},dark?'\u2713':''],['lang','globe',()=>{lang=lang==='tr'?'en':'tr';localStorage.setItem('ghdraw:lang',lang);i18nApply()},''],'sep',['github','gh',()=>window.open('https://github.com/GokalpHizmetleri/GHDraw','_blank'),''],[L2('YouTube','YouTube'),'yt',()=>window.open('https://www.youtube.com/@GHDrawofficial','_blank'),'']];
   for(const it of items){
     if(it==='sep'){m.appendChild(mk('div','msep'));continue}
     const b=mk('button','mi');b.innerHTML=svg(it[1])+`<span>${t(it[0])}</span><span class="sc">${it[3]}</span>`;
@@ -641,7 +641,7 @@ function i18nApply(){
   $('#exportBtn').textContent=t('export');$('#wtxt').innerHTML=t('welcome').replace(/\n/g,'<br>');
   $('#undo').innerHTML=svg('undo');$('#redo').innerHTML=svg('redo');$('#undo').title=t('undo')+' (Ctrl+Z)';$('#redo').title=t('redo')+' (Ctrl+Shift+Z)';
   $('#menuBtn').innerHTML=svg('menu');updateCollabBtn();if(libOpen)buildLib();
-  buildMenu();buildTools();buildProps();buildPages();
+  buildMenu();buildTools();buildProps();buildPages();refreshWidgets();
 }
 function toast(s){const e=$('#toast');e.textContent=s;e.style.display='block';clearTimeout(toast.t);toast.t=setTimeout(()=>e.style.display='none',1600)}
 function openHelp(){
@@ -2103,6 +2103,96 @@ Promise.all(FONTS.map(f=>document.fonts.load(`20px "${f}"`).catch(()=>{}))).then
 document.fonts.ready.then(remeasure);
 {const m=viewOnly?null:location.hash.match(/room=([\w-]+)/);if(m){const saved=localStorage.getItem('ghdraw:hostRoom');if(saved===m[1]){collabStart()}else{toast(L2('Ortak çizime bağlanıyor...','Joining the shared board...'));collabJoin(m[1])}}}
 {const m=location.hash.match(/collab=([a-f0-9]{32})/);if(m){cloudOwner=localStorage.getItem('ghdraw:cloudOwner:'+m[1]);cloudJoin(m[1],!!cloudOwner)}}
+
+/* ---- Widgets: floating panels. Pure DOM overlay; board data, save/open and exports are untouched. ---- */
+Object.assign(ICON,{wclock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>',wcal:'<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 10h18"/>',wtimer:'<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.6 2.6M9 2h6"/>',wtodo:'<path d="M10 6h10M10 12h10M10 18h10"/><path d="M3.5 5.5 5 7l2.5-2.5M3.5 11.5 5 13l2.5-2.5M3.5 17.5 5 19l2.5-2.5"/>'});
+{const s=document.createElement('style');s.textContent=`.widget{position:fixed;min-width:230px;background:var(--panel);border-radius:10px;box-shadow:var(--shadow);font-size:14px;color:var(--text)}
+.widget .wh{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;cursor:move;border-bottom:1px solid var(--border);font-size:13px}
+.widget .wx{width:26px;height:26px;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;color:var(--muted);font-size:16px}
+.widget .wx:hover{background:var(--hover);color:var(--text)}
+.widget .wb{padding:10px 12px}
+.widget .wtime{font-size:30px;font-weight:700;font-variant-numeric:tabular-nums;text-align:center}
+.widget .wdate{text-align:center;color:var(--muted);margin-top:2px;font-size:12px;text-transform:capitalize}
+.widget .wnav{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;text-transform:capitalize}
+.widget .wnav button{width:26px;height:26px;border-radius:6px;color:var(--text);font-size:16px}
+.widget .wnav button:hover{background:var(--hover)}
+.widget table{width:100%;border-collapse:collapse;text-align:center}
+.widget th{color:var(--muted);font-weight:600;font-size:11px;padding:3px 0}
+.widget td{padding:3px 0;border-radius:6px;font-variant-numeric:tabular-nums}
+.widget td.today{background:var(--sel);color:var(--sel-t)}
+.widget .wt{font-size:30px;font-weight:700;font-variant-numeric:tabular-nums;text-align:center}
+.widget .wt.done{color:#e5484d}
+.widget .wr{display:flex;gap:6px;justify-content:center;margin-top:8px;align-items:center}
+.widget .wr input{width:64px}
+.widget .wadd{display:flex;gap:6px;margin-top:8px}
+.widget .wadd input{flex:1;min-width:0}
+.widget .wr input,.widget .wadd input{background:var(--canvas);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 6px;font:inherit}
+.widget .wbtn{background:var(--sel);color:var(--sel-t);border-radius:6px;padding:4px 10px;font:inherit;white-space:nowrap}
+.widget .wbtn.alt{background:var(--hover);color:var(--text)}
+.widget ul{list-style:none;max-height:180px;overflow:auto}
+.widget li{display:flex;align-items:center;gap:8px;padding:3px 0}
+.widget li span{flex:1;word-break:break-word}
+.widget li.done span{text-decoration:line-through;color:var(--muted)}
+.widget .wdel{color:var(--muted);width:22px;height:22px;border-radius:6px;flex:none}
+.widget .wdel:hover{background:var(--hover);color:var(--text)}`;document.head.appendChild(s)}
+const widgets={open:{},z:20};
+const wLoc=()=>lang==='tr'?'tr-TR':'en-US';
+function toggleWidget(k){widgets.open[k]?closeWidget(k):openWidget(k)}
+function closeWidget(k){const w=widgets.open[k];if(!w)return;clearInterval(w.iv);w.el.remove();delete widgets.open[k]}
+function refreshWidgets(){for(const k in widgets.open)renderWidget(k)}
+function openWidget(k){
+  const el=document.createElement('div');el.className='widget';
+  const n=Object.keys(widgets.open).length;
+  el.style.left=Math.max(8,Math.min(innerWidth-260,90+n*34))+'px';el.style.top=(90+n*34)+'px';el.style.zIndex=++widgets.z;
+  document.body.appendChild(el);
+  const w={el,iv:0,st:{}};widgets.open[k]=w;
+  if(k==='cal'){const d=new Date();w.st={y:d.getFullYear(),m:d.getMonth()}}
+  if(k==='timer')w.st={mins:5,left:300,run:false,end:0};
+  el.addEventListener('pointerdown',()=>{el.style.zIndex=++widgets.z});
+  renderWidget(k);
+}
+function renderWidget(k){
+  const w=widgets.open[k];if(!w)return;const el=w.el;clearInterval(w.iv);
+  const titles={clock:L2('Saat','Clock'),cal:L2('Takvim','Calendar'),timer:L2('Zamanlayıcı','Timer'),todo:L2('Yapılacaklar','Checklist')};
+  let body='';
+  if(k==='clock')body='<div class="wtime"></div><div class="wdate"></div>';
+  else if(k==='cal')body='<div class="wnav"><button data-a="-1">\u2039</button><b class="wmn"></b><button data-a="1">\u203A</button></div><table><thead></thead><tbody></tbody></table>';
+  else if(k==='timer')body=`<div class="wt"></div><div class="wr"><input type="number" min="1" max="999" value="${w.st.mins}"><button class="wbtn wstart"></button><button class="wbtn alt wreset">${L2('Sıfırla','Reset')}</button></div>`;
+  else if(k==='todo')body=`<ul></ul><div class="wadd"><input maxlength="60" placeholder="${L2('Yeni görev...','New task...')}"><button class="wbtn">${L2('Ekle','Add')}</button></div>`;
+  el.innerHTML=`<div class="wh"><b>${titles[k]}</b><button class="wx" aria-label="${t('close')}">\u00d7</button></div><div class="wb">${body}</div>`;
+  el.querySelector('.wx').onclick=()=>closeWidget(k);
+  const hd=el.querySelector('.wh');
+  hd.addEventListener('pointerdown',e=>{if(e.target.closest('.wx'))return;e.preventDefault();const r=el.getBoundingClientRect(),dx=e.clientX-r.left,dy=e.clientY-r.top;const mv=ev=>{el.style.left=Math.max(0,Math.min(innerWidth-60,ev.clientX-dx))+'px';el.style.top=Math.max(0,Math.min(innerHeight-40,ev.clientY-dy))+'px'};const up=()=>{removeEventListener('pointermove',mv);removeEventListener('pointerup',up)};addEventListener('pointermove',mv);addEventListener('pointerup',up)});
+  if(k==='clock'){const tm=el.querySelector('.wtime'),dt=el.querySelector('.wdate');const f=()=>{const d=new Date();tm.textContent=d.toLocaleTimeString(wLoc(),{hour:'2-digit',minute:'2-digit',second:'2-digit'});dt.textContent=d.toLocaleDateString(wLoc(),{weekday:'long',day:'numeric',month:'long',year:'numeric'})};f();w.iv=setInterval(f,1000)}
+  else if(k==='cal'){const draw=()=>{const{y,m}=w.st,now=new Date(),first=new Date(y,m,1),dim=new Date(y,m+1,0).getDate(),off=(first.getDay()+6)%7;
+      el.querySelector('.wmn').textContent=first.toLocaleDateString(wLoc(),{month:'long',year:'numeric'});
+      const dn=[];for(let i=0;i<7;i++)dn.push(new Date(2024,0,1+i).toLocaleDateString(wLoc(),{weekday:'short'}));
+      el.querySelector('thead').innerHTML='<tr>'+dn.map(d=>`<th>${d}</th>`).join('')+'</tr>';
+      let h='',d=1;for(let r=0;r<6&&d<=dim;r++){h+='<tr>';for(let c=0;c<7;c++){if(r===0&&c<off)h+='<td></td>';else if(d<=dim){h+=`<td class="${d===now.getDate()&&m===now.getMonth()&&y===now.getFullYear()?'today':''}">${d++}</td>`}else h+='<td></td>'}h+='</tr>'}
+      el.querySelector('tbody').innerHTML=h};
+    el.querySelectorAll('.wnav button').forEach(b=>b.onclick=()=>{w.st.m+=+b.dataset.a;if(w.st.m<0){w.st.m=11;w.st.y--}if(w.st.m>11){w.st.m=0;w.st.y++}draw()});
+    draw()}
+  else if(k==='timer'){const wt=el.querySelector('.wt'),inp=el.querySelector('.wr input'),bs=el.querySelector('.wstart'),br=el.querySelector('.wreset'),st=w.st;
+    const show=()=>{const s=st.run?Math.max(0,Math.ceil((st.end-Date.now())/1000)):st.left;wt.textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0');
+      if(st.run&&s<=0){st.run=false;st.left=0;clearInterval(w.iv);bs.textContent=L2('Başlat','Start');wt.classList.add('done');setTimeout(()=>wt.classList.remove('done'),2000)}};
+    const upd=()=>{bs.textContent=st.run?L2('Duraklat','Pause'):L2('Başlat','Start')};
+    bs.onclick=()=>{if(st.run){st.left=Math.max(0,Math.ceil((st.end-Date.now())/1000));st.run=false;clearInterval(w.iv)}else{if(st.left<=0)st.left=Math.max(1,inp.value|0)*60;st.end=Date.now()+st.left*1000;st.run=true;w.iv=setInterval(show,250)}upd();show()};
+    br.onclick=()=>{st.run=false;clearInterval(w.iv);st.left=Math.max(1,inp.value|0)*60;upd();show()};
+    inp.onchange=()=>{st.mins=Math.max(1,inp.value|0);if(!st.run){st.left=st.mins*60;show()}};
+    upd();show();if(st.run)w.iv=setInterval(show,250)}
+  else if(k==='todo'){const ul=el.querySelector('ul'),inp=el.querySelector('.wadd input');
+    const load=()=>{try{return JSON.parse(localStorage.getItem('ghdraw:todo')||'[]')}catch(e){return[]}};
+    const persist=a=>localStorage.setItem('ghdraw:todo',JSON.stringify(a));
+    const draw=()=>{const a=load();ul.innerHTML='';a.forEach((it,i)=>{const li=document.createElement('li');if(it.d)li.className='done';
+      const cb=document.createElement('input');cb.type='checkbox';cb.checked=!!it.d;cb.onchange=()=>{it.d=cb.checked;persist(a);draw()};
+      const sp=document.createElement('span');sp.textContent=it.t;
+      const del=document.createElement('button');del.className='wdel';del.textContent='\u00d7';del.onclick=()=>{a.splice(i,1);persist(a);draw()};
+      li.append(cb,sp,del);ul.appendChild(li)})};
+    const add=()=>{const v=inp.value.trim();if(!v)return;const a=load();a.push({t:v,d:false});persist(a);inp.value='';draw()};
+    el.querySelector('.wadd .wbtn').onclick=add;inp.onkeydown=e=>{if(e.key==='Enter')add()};
+    draw()}
+}
+
 window.__ghdraw={get els(){return els},set els(v){els=v;remeasure()},render,commit,setTool,defaults};
 })();
 
