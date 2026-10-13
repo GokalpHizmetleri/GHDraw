@@ -2132,7 +2132,7 @@ function refreshWidgets(){for(const k in widgets.open)renderWidget(k)}
 function openWidget(k){
   const el=document.createElement('div');el.className='widget';
   const n=Object.keys(widgets.open).length;
-  el.style.left=Math.max(8,Math.min(innerWidth-260,90+n*34))+'px';el.style.top=(90+n*34)+'px';el.style.zIndex=++widgets.z;
+  el.style.left=Math.max(8,Math.min(innerWidth-260,90+(n%4)*265))+'px';el.style.top=(90+Math.floor(n/4)*200)+'px';el.style.zIndex=++widgets.z;
   document.body.appendChild(el);
   const w={el,iv:0,st:{}};widgets.open[k]=w;
   if(k==='cal'){const d=new Date();w.st={y:d.getFullYear(),m:d.getMonth()}}
