@@ -641,7 +641,7 @@ function i18nApply(){
   $('#exportBtn').textContent=t('export');$('#wtxt').innerHTML=t('welcome').replace(/\n/g,'<br>');
   $('#undo').innerHTML=svg('undo');$('#redo').innerHTML=svg('redo');$('#undo').title=t('undo')+' (Ctrl+Z)';$('#redo').title=t('redo')+' (Ctrl+Shift+Z)';
   $('#menuBtn').innerHTML=svg('menu');updateCollabBtn();if(libOpen)buildLib();
-  buildMenu();buildTools();buildProps();
+  buildMenu();buildTools();buildProps();buildPages();
 }
 function toast(s){const e=$('#toast');e.textContent=s;e.style.display='block';clearTimeout(toast.t);toast.t=setTimeout(()=>e.style.display='none',1600)}
 function openHelp(){
@@ -650,12 +650,25 @@ function openHelp(){
 }
 function clearAll(){if(!els.length||confirm(t('confirmClear'))){els=[];sel=new Set();commit();render()}}
 function saveFile(){
-  const blob=new Blob([JSON.stringify({type:'ghdraw',version:4,elements:els})],{type:'application/json'});
+  syncPage();
+  const blob=new Blob([JSON.stringify({type:'ghdraw',version:5,elements:els,cam,pages:pages.map(p=>({id:p.id,name:p.name,els:p.els,cam:p.cam})),pi})],{type:'application/json'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='ghdraw-'+new Date().toISOString().slice(0,10)+'.ghdraw';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2000);toast(t('saved'));
 }
 $('#fileIn').onchange=e=>{
   const f=e.target.files[0];if(!f)return;const r=new FileReader();
-  r.onload=()=>{try{const d=JSON.parse(r.result);els=d.elements||[];els.forEach(x=>{if(x.type==='text')measure(x)});sel=new Set();commit();render()}catch(_){toast('Invalid file')}};
+  r.onload=()=>{try{
+    const d=JSON.parse(r.result);
+    if(Array.isArray(d.pages)&&d.pages.length){
+      pages=d.pages.map(p=>({id:p.id||uid(),name:p.name||'',els:Array.isArray(p.els)?p.els:[],cam:p.cam||{x:0,y:0,z:1}}));
+      pi=Math.max(0,Math.min(d.pi||0,pages.length-1));
+      els=pages[pi].els;cam=pages[pi].cam||{x:0,y:0,z:1};
+    }else{
+      els=d.elements||[];
+      pages=[{id:uid(),name:'',els,cam}];pi=0;
+    }
+    pages.forEach(p=>p.els.forEach(x=>{if(x.type==='text')measure(x)}));
+    sel=new Set();hist=[snap()];hidx=0;save();syncUI();render();buildPages();
+  }catch(_){toast('Invalid file')}};
   r.readAsText(f);e.target.value='';
 };
 const CRC_T=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0}return t})();
