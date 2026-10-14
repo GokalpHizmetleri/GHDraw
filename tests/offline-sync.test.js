@@ -126,6 +126,20 @@ test('cloudJoin backs up the newer in-memory board when ghdraw:v2 is stale',()=>
 
 
 
+
+test('validator rejects finite but unsafe geometry, text sizes, points and camera zoom',()=>{
+  const parse=(element,cam={x:0,y:0,z:1})=>parseLocalBoardRecord(JSON.stringify({els:[element],cam,defaults:{},pi:0,pages:[{id:'safe-page',name:'Safe',els:[element],cam}]}));
+  assert.equal(parse(recordElement('negative','rect',{w:-1,h:-1})),null,'negative shape dimensions are invalid');
+  assert.equal(parse(recordElement('huge-coordinate','rect',{x:Number.MAX_VALUE})),null,'unbounded finite coordinates are invalid');
+  assert.equal(parse(recordElement('huge-text','text',{size:Number.MAX_VALUE})),null,'text size cannot overflow measurement');
+  assert.equal(parse(recordElement('tiny-text','text',{size:Number.MIN_VALUE})),null,'text size cannot underflow measurement');
+  assert.equal(parse(recordElement('huge-point','line',{pts:[[Number.MAX_VALUE,0],[1,1]]})),null,'line points are bounded');
+  const camera={x:0,y:0,z:Number.MAX_VALUE};
+  assert.equal(parse(recordElement('camera-test'),camera),null,'camera zoom above the app range is invalid');
+  assert.equal(parse(recordElement('tiny-camera'),{x:0,y:0,z:Number.MIN_VALUE}),null,'camera zoom below the app range is invalid');
+  assert.ok(parse(recordElement('valid-text','text',{text:'Readable',size:300})),'the UI-supported maximum text size remains valid');
+});
+
 test('malformed backups stay untouched and cannot partially replace the live board',()=>{
   storage.clear();
   const malformed=JSON.stringify({els:[],pages:[{id:'p',name:'bad',els:[null],cam:{x:0,y:0,z:1}}],pi:0});
