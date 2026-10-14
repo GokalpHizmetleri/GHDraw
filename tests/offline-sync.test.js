@@ -11,11 +11,19 @@ function extract(name,next){
   assert.notEqual(end,-1,`missing function following ${name}`);
   return html.slice(start,end);
 }
+const loadStart=html.indexOf('function load(){');
+const loadEnd=html.indexOf('\nconst TOOLS=',loadStart);
+assert.ok(loadStart>=0&&loadEnd>loadStart,'missing load function');
+const loadSource=html.slice(loadStart,loadEnd);
 const source=[
   extract('cloudJoinCanContinue','cloudSelectRejoinBoard'),
   extract('cloudSelectRejoinBoard','cloudDiff'),
   extract('localBoardRecord','save'),
+  extract('isBoardObject','validBoardCamera'),
+  extract('validBoardCamera','validBoardElement'),
+  extract('validBoardElement','parseLocalBoardRecord'),
   extract('parseLocalBoardRecord','localBoardBackupKeys'),
+  loadSource,
   extract('localBoardBackupKeys','writeLocalBoardBackup'),
   extract('writeLocalBoardBackup','localBoardBackupEntries'),
   extract('localBoardBackupEntries','hasLocalBoardBackups'),
@@ -26,15 +34,15 @@ const source=[
   extract('cloudApplyChanges','cloudRebase'),
   extract('cloudRebase','cloudMerge'),
   extract('cloudProtocolCompatible','blockCloudProtocol'),
-  'globalThis.api={cloudJoinCanContinue,localBoardRecord,parseLocalBoardRecord,localBoardBackupKeys,writeLocalBoardBackup,localBoardBackupEntries,hasLocalBoardBackups,preserveLocalBoardBeforeCloudJoin,restoreLocalBoardRecord,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudApplyChanges,cloudRebase};'
+  'globalThis.api={cloudJoinCanContinue,localBoardRecord,parseLocalBoardRecord,localBoardBackupKeys,writeLocalBoardBackup,localBoardBackupEntries,hasLocalBoardBackups,preserveLocalBoardBeforeCloudJoin,restoreLocalBoardRecord,load,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudApplyChanges,cloudRebase};'
 ].join('\n');
 const storage=new Map();
 const mockLocalStorage={getItem:key=>storage.has(key)?storage.get(key):null,setItem:(key,value)=>storage.set(key,String(value)),key:index=>[...storage.keys()][index]??null,get length(){return storage.size}};
-const context={structuredClone,localStorage:mockLocalStorage,els:[],cam:{x:0,y:0,z:1},defaults:{},grid:false,dark:false,pi:0,pages:[{id:'p1',name:'Board',els:[],cam:{x:0,y:0,z:1}}],cloudRoom:null,collabOn:false,editing:null};
+const context={structuredClone,localStorage:mockLocalStorage,els:[],cam:{x:0,y:0,z:1},defaults:{},grid:false,dark:false,pi:0,pages:[{id:'p1',name:'Board',els:[],cam:{x:0,y:0,z:1}}],cloudRoom:null,collabOn:false,editing:null,measure:()=>{},uid:()=>'recovery-page'};
 context.syncPage=()=>{const page=context.pages[context.pi];if(page){page.els=context.els;page.cam=context.cam}};
 context.finishEdit=()=>{context.editing=null};context.cloudEnd=()=>{context.cloudRoom=null;context.collabOn=false};
 vm.runInNewContext(source,context);
-const {cloudJoinCanContinue,localBoardRecord,parseLocalBoardRecord,localBoardBackupKeys,writeLocalBoardBackup,localBoardBackupEntries,hasLocalBoardBackups,preserveLocalBoardBeforeCloudJoin,restoreLocalBoardRecord,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudApplyChanges,cloudRebase}=context.api;
+const {cloudJoinCanContinue,localBoardRecord,parseLocalBoardRecord,localBoardBackupKeys,writeLocalBoardBackup,localBoardBackupEntries,hasLocalBoardBackups,preserveLocalBoardBeforeCloudJoin,restoreLocalBoardRecord,load,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudApplyChanges,cloudRebase}=context.api;
 
 const base={v:2,d:0,p:[
   {id:'p1',n:'Board',e:[
@@ -51,6 +59,7 @@ local.p[0].e.splice(1,1);
 local.p[0].e.push({id:'shape-new',type:'ellipse',x:8});
 
 function json(value){return JSON.parse(JSON.stringify(value))}
+function recordElement(id,type='rect',extra={}){const base={id,type,x:0,y:0,w:10,h:10,seed:1};if(type==='text')Object.assign(base,{text:'',font:'Caveat',size:28});return{...base,...extra}}
 
 test('cloud rebase retains offline edits while preserving unrelated remote edits',()=>{
   const remote=structuredClone(base);
@@ -77,7 +86,7 @@ test('cloudJoin backs up the newer in-memory board when ghdraw:v2 is stale',()=>
   storage.clear();
   const stale=JSON.stringify({savedAt:1,cloudRoomId:'private',els:[{id:'stale'}],pages:[{id:'private-page',name:'Private',els:[{id:'stale'}],cam:{x:0,y:0,z:1}}]});
   storage.set('ghdraw:v2',stale);
-  context.els=[{id:'memory-latest',type:'rect',x:77}];
+  context.els=[recordElement('memory-latest','rect',{x:77})];
   context.cam={x:5,y:6,z:1};context.defaults={stroke:'#123456'};context.grid=true;context.dark=true;context.pi=0;
   context.pages=[{id:'live-page',name:'Live',els:[],cam:{x:0,y:0,z:1}}];context.cloudRoom=null;
   assert.equal(preserveLocalBoardBeforeCloudJoin(),true);
@@ -91,7 +100,7 @@ test('cloudJoin backs up the newer in-memory board when ghdraw:v2 is stale',()=>
   const firstBackup=backup;
   assert.equal(preserveLocalBoardBeforeCloudJoin(),true,'unchanged content reuses its existing backup');
   assert.equal(localBoardBackupEntries().length,1,'a new timestamp alone does not create duplicate archives');
-  context.els=[{id:'later-live-board',type:'ellipse'}];context.pages=[{id:'later-page',name:'Later',els:[],cam:{x:0,y:0,z:1}}];
+  context.els=[recordElement('later-live-board','ellipse')];context.pages=[{id:'later-page',name:'Later',els:[],cam:{x:0,y:0,z:1}}];
   assert.equal(preserveLocalBoardBeforeCloudJoin(),true,'a later join gets a unique archive');
   assert.equal(storage.get('ghdraw:backup-before-collab'),firstBackup,'the original recovery copy is never overwritten');
   const entries=localBoardBackupEntries();
@@ -108,7 +117,7 @@ test('cloudJoin backs up the newer in-memory board when ghdraw:v2 is stale',()=>
 
   const cyclic={};cyclic.self=cyclic;context.els=[cyclic];context.pages=[{id:'cycle',name:'',els:[],cam:{x:0,y:0,z:1}}];
   assert.equal(preserveLocalBoardBeforeCloudJoin(),false,'unserializable live state is fail-closed');
-  context.els=[{id:'memory-latest',type:'rect',x:77}];context.pages=[{id:'live-page',name:'Live',els:[],cam:{x:0,y:0,z:1}}];
+  context.els=[recordElement('memory-latest','rect',{x:77})];context.pages=[{id:'live-page',name:'Live',els:[],cam:{x:0,y:0,z:1}}];
   context.localStorage={getItem:()=>stale,setItem:()=>{throw new Error('quota')}};
   assert.equal(preserveLocalBoardBeforeCloudJoin(),false,'failed backup write is fail-closed');
   context.localStorage=mockLocalStorage;
@@ -116,10 +125,30 @@ test('cloudJoin backs up the newer in-memory board when ghdraw:v2 is stale',()=>
 
 
 
+
+test('malformed backups stay untouched and cannot partially replace the live board',()=>{
+  storage.clear();
+  const malformed=JSON.stringify({els:[],pages:[{id:'p',name:'bad',els:[null],cam:{x:0,y:0,z:1}}],pi:0});
+  storage.set('ghdraw:backup-before-collab',malformed);
+  assert.equal(parseLocalBoardRecord(malformed),null,'null elements are rejected');
+  assert.equal(localBoardBackupEntries().length,0,'malformed backups are excluded from restore choices');
+  assert.equal(hasLocalBoardBackups(),true,'the original backup key remains visible for recovery diagnostics');
+  context.els=[recordElement('live-board')];context.cam={x:4,y:5,z:1};context.defaults={stroke:'#123456'};context.grid=true;context.dark=false;context.pi=0;context.pages=[{id:'live-page',name:'Live',els:context.els,cam:context.cam}];
+  storage.set('ghdraw:v2',malformed);
+  const before=json({els:context.els,cam:context.cam,defaults:context.defaults,grid:context.grid,dark:context.dark,pages:context.pages,pi:context.pi});
+  assert.equal(restoreLocalBoardRecord(malformed,true),false,'malformed data cannot be explicitly applied');
+  load();
+  assert.deepEqual(json({els:context.els,cam:context.cam,defaults:context.defaults,grid:context.grid,dark:context.dark,pages:context.pages,pi:context.pi}),before,'load validates the full record before changing app state');
+  assert.equal(storage.get('ghdraw:backup-before-collab'),malformed,'unreadable backup remains intact');
+  assert.equal(storage.get('ghdraw:v2'),malformed,'failed load does not rewrite the stored record');
+  const legacy=parseLocalBoardRecord(JSON.stringify({els:[recordElement('legacy')],cam:{x:0,y:0,z:1}}));
+  assert.equal(legacy.pages.length,1,'valid legacy single-page records remain recoverable');
+});
+
 test('pre-collaboration backup finalizes an active edit before serialization',()=>{
-  storage.clear();context.els=[{id:'pre-edit'}];context.pages=[{id:'edit-page',name:'Edit',els:[],cam:{x:0,y:0,z:1}}];context.editing={active:true};
+  storage.clear();context.els=[recordElement('pre-edit')];context.pages=[{id:'edit-page',name:'Edit',els:[],cam:{x:0,y:0,z:1}}];context.editing={active:true};
   const finish=context.finishEdit;
-  context.finishEdit=()=>{context.els=[{id:'finished-edit',text:'latest text'}];context.editing=null};
+  context.finishEdit=()=>{context.els=[recordElement('finished-edit','text',{text:'latest text'})];context.editing=null};
   assert.equal(preserveLocalBoardBeforeCloudJoin(),true);
   const saved=JSON.parse(storage.get('ghdraw:backup-before-collab'));
   assert.equal(saved.els[0].text,'latest text');
@@ -128,11 +157,11 @@ test('pre-collaboration backup finalizes an active edit before serialization',()
 
 test('restoring a backup requires confirmation and keeps both the selected copy and current board',()=>{
   storage.clear();
-  context.els=[{id:'saved-private'}];context.pages=[{id:'private-page',name:'Private',els:[],cam:{x:0,y:0,z:1}}];context.pi=0;context.cloudRoom=null;context.collabOn=false;
+  context.els=[recordElement('saved-private')];context.pages=[{id:'private-page',name:'Private',els:[],cam:{x:0,y:0,z:1}}];context.pi=0;context.cloudRoom=null;context.collabOn=false;
   const selected=localBoardRecord();storage.set('ghdraw:backup-before-collab',selected);
-  context.els=[{id:'current-room-board'}];context.pages=[{id:'room-page',name:'Room',els:[],cam:{x:0,y:0,z:1}}];context.cloudRoom={id:'live-room'};context.collabOn=true;
+  context.els=[recordElement('current-room-board')];context.pages=[{id:'room-page',name:'Room',els:[],cam:{x:0,y:0,z:1}}];context.cloudRoom={id:'live-room'};context.collabOn=true;
   const current=localBoardRecord();storage.set('ghdraw:v2',current);
-  const finish=context.finishEdit;context.editing={active:true};context.finishEdit=()=>{context.els=[{id:'current-room-board',text:'latest room edit'}];context.editing=null};
+  const finish=context.finishEdit;context.editing={active:true};context.finishEdit=()=>{context.els=[recordElement('current-room-board','text',{text:'latest room edit'})];context.editing=null};
   assert.equal(restoreLocalBoardRecord(selected,false),false,'cancel does not restore');
   assert.equal(storage.get('ghdraw:v2'),current,'cancel leaves current board storage unchanged');
   assert.equal(restoreLocalBoardRecord(selected,true),true,'confirmed restore succeeds');
