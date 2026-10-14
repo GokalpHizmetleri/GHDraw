@@ -14,6 +14,7 @@ function extract(name,next){
 const source=[
   extract('cloudJoinCanContinue','cloudSelectRejoinBoard'),
   extract('cloudSelectRejoinBoard','cloudDiff'),
+  extract('localBoardRecord','save'),
   extract('preserveLocalBoardBeforeCloudJoin','localBoardRoomId'),
   extract('cloudDiff','cloudApplyChanges'),
   extract('cloudApplyChanges','cloudRebase'),
@@ -23,7 +24,8 @@ const source=[
 ].join('\n');
 const storage=new Map();
 const mockLocalStorage={getItem:key=>storage.has(key)?storage.get(key):null,setItem:(key,value)=>storage.set(key,String(value))};
-const context={structuredClone,localStorage:mockLocalStorage};
+const context={structuredClone,localStorage:mockLocalStorage,els:[],cam:{x:0,y:0,z:1},defaults:{},grid:false,dark:false,pi:0,pages:[{id:'p1',name:'Board',els:[],cam:{x:0,y:0,z:1}}],cloudRoom:null};
+context.syncPage=()=>{const page=context.pages[context.pi];if(page){page.els=context.els;page.cam=context.cam}};
 vm.runInNewContext(source,context);
 const {cloudJoinCanContinue,preserveLocalBoardBeforeCloudJoin,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudApplyChanges,cloudRebase}=context.api;
 
@@ -64,20 +66,33 @@ test('cloud rebase retains offline edits while preserving unrelated remote edits
   assert.ok(result.pending.length>0);
 });
 
-test('cloudJoin preserves the existing local board before loading a room',()=>{
+test('cloudJoin backs up the newer in-memory board when ghdraw:v2 is stale',()=>{
   storage.clear();
-  const original=JSON.stringify({savedAt:123,cloudRoomId:'private',pages:[{id:'private-page'}]});
-  storage.set('ghdraw:v2',original);
+  const stale=JSON.stringify({savedAt:1,cloudRoomId:'private',els:[{id:'stale'}],pages:[{id:'private-page',name:'Private',els:[{id:'stale'}],cam:{x:0,y:0,z:1}}]});
+  storage.set('ghdraw:v2',stale);
+  context.els=[{id:'memory-latest',type:'rect',x:77}];
+  context.cam={x:5,y:6,z:1};context.defaults={stroke:'#123456'};context.grid=true;context.dark=true;context.pi=0;
+  context.pages=[{id:'live-page',name:'Live',els:[],cam:{x:0,y:0,z:1}}];context.cloudRoom=null;
   assert.equal(preserveLocalBoardBeforeCloudJoin(),true);
-  assert.equal(storage.get('ghdraw:backup-before-collab'),original);
+  const backup=storage.get('ghdraw:backup-before-collab'),decoded=JSON.parse(backup);
+  assert.notEqual(backup,stale);
+  assert.deepEqual(json(decoded.els),json(context.els),'backup stores live elements, not stale autosave');
+  assert.deepEqual(json(decoded.pages[0].els),json(context.els),'active page is synchronized before serialization');
+  assert.equal(decoded.savedAt>1,true);
+  assert.equal(storage.get('ghdraw:v2'),stale,'the stale record is not mistaken for the backup');
 
   const start=html.indexOf('async function cloudJoin(id,host=false,createdHere=false){');
   const join=html.slice(start,html.indexOf("\naddEventListener('offline'",start));
+  const backupGate=join.indexOf('if(!preserveLocalBoardBeforeCloudJoin())');
+  assert.ok(backupGate>=0&&join.indexOf('return}',backupGate)<join.indexOf('cloudCheckpoint(id)'), 'failed backup aborts before storage reads');
   assert.ok(join.indexOf('preserveLocalBoardBeforeCloudJoin()')<join.indexOf('cloudCheckpoint(id)'), 'backup precedes storage reads');
   assert.ok(join.indexOf('preserveLocalBoardBeforeCloudJoin()')<join.indexOf('restoreCloudSnapshot'), 'backup precedes any board restore');
 
-  context.localStorage={getItem:()=>original,setItem:()=>{throw new Error('quota')}};
-  assert.equal(preserveLocalBoardBeforeCloudJoin(),false,'failed backup is fail-closed');
+  const cyclic={};cyclic.self=cyclic;context.els=[cyclic];context.pages=[{id:'cycle',name:'',els:[],cam:{x:0,y:0,z:1}}];
+  assert.equal(preserveLocalBoardBeforeCloudJoin(),false,'unserializable live state is fail-closed');
+  context.els=[{id:'memory-latest',type:'rect',x:77}];context.pages=[{id:'live-page',name:'Live',els:[],cam:{x:0,y:0,z:1}}];
+  context.localStorage={getItem:()=>stale,setItem:()=>{throw new Error('quota')}};
+  assert.equal(preserveLocalBoardBeforeCloudJoin(),false,'failed backup write is fail-closed');
   context.localStorage=mockLocalStorage;
 });
 
