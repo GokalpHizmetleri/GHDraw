@@ -2129,10 +2129,13 @@ const wLoc=()=>lang==='tr'?'tr-TR':'en-US';
 function toggleWidget(k){widgets.open[k]?closeWidget(k):openWidget(k)}
 function closeWidget(k){const w=widgets.open[k];if(!w)return;clearInterval(w.iv);w.el.remove();delete widgets.open[k]}
 function refreshWidgets(){for(const k in widgets.open)renderWidget(k)}
+function widgetStartPosition(k,width=innerWidth,height=innerHeight){
+  const slot=Math.max(0,['clock','cal','timer','todo'].indexOf(k)),cols=Math.max(1,Math.min(4,Math.floor((width-16)/272))),rows=Math.ceil(4/cols),row=Math.floor(slot/cols),col=slot%cols,maxLeft=Math.max(8,width-260),maxTop=Math.max(8,height-48),rowStep=rows>1?Math.min(44,(maxTop-8)/(rows-1)):0;
+  return {left:Math.min(maxLeft,8+col*272),top:Math.min(maxTop,8+row*rowStep)};
+}
 function openWidget(k){
   const el=document.createElement('div');el.className='widget';
-  const n=Object.keys(widgets.open).length;
-  el.style.left=Math.max(8,Math.min(innerWidth-260,90+(n%4)*265))+'px';el.style.top=(90+Math.floor(n/4)*200)+'px';el.style.zIndex=++widgets.z;
+  const pos=widgetStartPosition(k);el.style.left=pos.left+'px';el.style.top=pos.top+'px';el.style.zIndex=++widgets.z;
   document.body.appendChild(el);
   const w={el,iv:0,st:{}};widgets.open[k]=w;
   if(k==='cal'){const d=new Date();w.st={y:d.getFullYear(),m:d.getMonth()}}
