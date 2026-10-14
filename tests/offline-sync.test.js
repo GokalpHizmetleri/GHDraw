@@ -15,19 +15,26 @@ const source=[
   extract('cloudJoinCanContinue','cloudSelectRejoinBoard'),
   extract('cloudSelectRejoinBoard','cloudDiff'),
   extract('localBoardRecord','save'),
-  extract('preserveLocalBoardBeforeCloudJoin','localBoardRoomId'),
+  extract('parseLocalBoardRecord','localBoardBackupKeys'),
+  extract('localBoardBackupKeys','writeLocalBoardBackup'),
+  extract('writeLocalBoardBackup','localBoardBackupEntries'),
+  extract('localBoardBackupEntries','hasLocalBoardBackups'),
+  extract('hasLocalBoardBackups','preserveLocalBoardBeforeCloudJoin'),
+  extract('preserveLocalBoardBeforeCloudJoin','restoreLocalBoardRecord'),
+  extract('restoreLocalBoardRecord','localBoardRoomId'),
   extract('cloudDiff','cloudApplyChanges'),
   extract('cloudApplyChanges','cloudRebase'),
   extract('cloudRebase','cloudMerge'),
   extract('cloudProtocolCompatible','blockCloudProtocol'),
-  'globalThis.api={cloudJoinCanContinue,preserveLocalBoardBeforeCloudJoin,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudApplyChanges,cloudRebase};'
+  'globalThis.api={cloudJoinCanContinue,localBoardRecord,parseLocalBoardRecord,localBoardBackupKeys,writeLocalBoardBackup,localBoardBackupEntries,hasLocalBoardBackups,preserveLocalBoardBeforeCloudJoin,restoreLocalBoardRecord,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudApplyChanges,cloudRebase};'
 ].join('\n');
 const storage=new Map();
-const mockLocalStorage={getItem:key=>storage.has(key)?storage.get(key):null,setItem:(key,value)=>storage.set(key,String(value))};
-const context={structuredClone,localStorage:mockLocalStorage,els:[],cam:{x:0,y:0,z:1},defaults:{},grid:false,dark:false,pi:0,pages:[{id:'p1',name:'Board',els:[],cam:{x:0,y:0,z:1}}],cloudRoom:null};
+const mockLocalStorage={getItem:key=>storage.has(key)?storage.get(key):null,setItem:(key,value)=>storage.set(key,String(value)),key:index=>[...storage.keys()][index]??null,get length(){return storage.size}};
+const context={structuredClone,localStorage:mockLocalStorage,els:[],cam:{x:0,y:0,z:1},defaults:{},grid:false,dark:false,pi:0,pages:[{id:'p1',name:'Board',els:[],cam:{x:0,y:0,z:1}}],cloudRoom:null,collabOn:false,editing:null};
 context.syncPage=()=>{const page=context.pages[context.pi];if(page){page.els=context.els;page.cam=context.cam}};
+context.finishEdit=()=>{context.editing=null};context.cloudEnd=()=>{context.cloudRoom=null;context.collabOn=false};
 vm.runInNewContext(source,context);
-const {cloudJoinCanContinue,preserveLocalBoardBeforeCloudJoin,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudApplyChanges,cloudRebase}=context.api;
+const {cloudJoinCanContinue,localBoardRecord,parseLocalBoardRecord,localBoardBackupKeys,writeLocalBoardBackup,localBoardBackupEntries,hasLocalBoardBackups,preserveLocalBoardBeforeCloudJoin,restoreLocalBoardRecord,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudApplyChanges,cloudRebase}=context.api;
 
 const base={v:2,d:0,p:[
   {id:'p1',n:'Board',e:[
@@ -81,6 +88,17 @@ test('cloudJoin backs up the newer in-memory board when ghdraw:v2 is stale',()=>
   assert.equal(decoded.savedAt>1,true);
   assert.equal(storage.get('ghdraw:v2'),stale,'the stale record is not mistaken for the backup');
 
+  const firstBackup=backup;
+  assert.equal(preserveLocalBoardBeforeCloudJoin(),true,'unchanged content reuses its existing backup');
+  assert.equal(localBoardBackupEntries().length,1,'a new timestamp alone does not create duplicate archives');
+  context.els=[{id:'later-live-board',type:'ellipse'}];context.pages=[{id:'later-page',name:'Later',els:[],cam:{x:0,y:0,z:1}}];
+  assert.equal(preserveLocalBoardBeforeCloudJoin(),true,'a later join gets a unique archive');
+  assert.equal(storage.get('ghdraw:backup-before-collab'),firstBackup,'the original recovery copy is never overwritten');
+  const entries=localBoardBackupEntries();
+  assert.equal(entries.length,2,'both backups remain restorable');
+  assert.ok(entries.some(entry=>entry.record!==firstBackup&&entry.data.els[0]?.id==='later-live-board'));
+  assert.equal(hasLocalBoardBackups(),true);
+
   const start=html.indexOf('async function cloudJoin(id,host=false,createdHere=false){');
   const join=html.slice(start,html.indexOf("\naddEventListener('offline'",start));
   const backupGate=join.indexOf('if(!preserveLocalBoardBeforeCloudJoin())');
@@ -94,6 +112,41 @@ test('cloudJoin backs up the newer in-memory board when ghdraw:v2 is stale',()=>
   context.localStorage={getItem:()=>stale,setItem:()=>{throw new Error('quota')}};
   assert.equal(preserveLocalBoardBeforeCloudJoin(),false,'failed backup write is fail-closed');
   context.localStorage=mockLocalStorage;
+});
+
+
+
+test('pre-collaboration backup finalizes an active edit before serialization',()=>{
+  storage.clear();context.els=[{id:'pre-edit'}];context.pages=[{id:'edit-page',name:'Edit',els:[],cam:{x:0,y:0,z:1}}];context.editing={active:true};
+  const finish=context.finishEdit;
+  context.finishEdit=()=>{context.els=[{id:'finished-edit',text:'latest text'}];context.editing=null};
+  assert.equal(preserveLocalBoardBeforeCloudJoin(),true);
+  const saved=JSON.parse(storage.get('ghdraw:backup-before-collab'));
+  assert.equal(saved.els[0].text,'latest text');
+  context.finishEdit=finish;context.editing=null;
+});
+
+test('restoring a backup requires confirmation and keeps both the selected copy and current board',()=>{
+  storage.clear();
+  context.els=[{id:'saved-private'}];context.pages=[{id:'private-page',name:'Private',els:[],cam:{x:0,y:0,z:1}}];context.pi=0;context.cloudRoom=null;context.collabOn=false;
+  const selected=localBoardRecord();storage.set('ghdraw:backup-before-collab',selected);
+  context.els=[{id:'current-room-board'}];context.pages=[{id:'room-page',name:'Room',els:[],cam:{x:0,y:0,z:1}}];context.cloudRoom={id:'live-room'};context.collabOn=true;
+  const current=localBoardRecord();storage.set('ghdraw:v2',current);
+  const finish=context.finishEdit;context.editing={active:true};context.finishEdit=()=>{context.els=[{id:'current-room-board',text:'latest room edit'}];context.editing=null};
+  assert.equal(restoreLocalBoardRecord(selected,false),false,'cancel does not restore');
+  assert.equal(storage.get('ghdraw:v2'),current,'cancel leaves current board storage unchanged');
+  assert.equal(restoreLocalBoardRecord(selected,true),true,'confirmed restore succeeds');
+  assert.equal(storage.get('ghdraw:v2'),selected,'confirmed restore installs the selected board');
+  assert.equal(storage.get('ghdraw:backup-before-collab'),selected,'selected backup is retained');
+  assert.ok(localBoardBackupEntries().some(entry=>entry.data.els[0]?.text==='latest room edit'),'the latest current edit is retained as another backup');
+  assert.equal(context.cloudRoom,null,'restoring from a cloud room closes it locally');
+  assert.equal(context.collabOn,false);context.finishEdit=finish;
+
+  const start=html.indexOf('function openLocalBoardBackupRestore(){');
+  const restore=html.slice(start,html.indexOf('\nfunction buildMenu()',start));
+  assert.ok(restore.indexOf('confirm(preview)')<restore.indexOf('restoreLocalBoardRecord(selected.record,true)'), 'explicit preview confirmation precedes restore');
+  assert.ok(restore.includes('localBoardBackupSummary(selected.data,selected.key)'), 'confirmation displays the selected backup summary');
+  assert.ok(html.includes('openLocalBoardBackupRestore'), 'restore flow is wired into the menu');
 });
 
 test('offline join without a room checkpoint exits before loading an IndexedDB snapshot',()=>{
