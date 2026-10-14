@@ -2,11 +2,11 @@ import {Client,Databases,Query} from 'node-appwrite';
 import {randomBytes,createHash} from 'node:crypto';
 import {gzipSync,gunzipSync} from 'node:zlib';
 import {handleAI} from './ai.js';
+import {applyRoomUpdate,validOpId} from './room-sync.js';
 const DB='ghdraw',COL='boards',MAX=12*1024*1024;
 const validId=x=>typeof x==='string'&&x.length>0&&x.length<=128;
 const validThread=th=>th===undefined||Array.isArray(th)&&th.length<=300&&th.every(m=>m&&typeof m.t==='string'&&m.t.length<=500);
 const validElement=e=>e&&validId(e.id)&&['rect','diamond','ellipse','arrow','line','pen','text','image','video','frame','poly'].includes(e.type)&&validThread(e.th);
-const msgKey=m=>m.id||(m.ts+'|'+m.n+'|'+m.t);
 // Board history: one side document per room ('h'+id), same expiry as the room. Newest 20 versions, gzip+base64, 8 MB total.
 const HID=id=>'h'+id.slice(0,31),HMAX_N=20,HMAX_TOTAL=8e6,HMAX_ONE=3e6,HGAP=120000;
 const validPage=p=>p&&validId(p.id)&&typeof p.n==='string'&&p.n.length<=100&&Array.isArray(p.e)&&p.e.length<=10000&&p.e.every(validElement)&&new Set(p.e.map(e=>e.id)).size===p.e.length;
@@ -65,7 +65,7 @@ export default async ({req,res,error})=>{
   const path=req.path.split('/').filter(Boolean),id=path[1];
   if(req.method==='POST'&&req.path==='/ai'){const r=await handleAI(req,db,process.env.GROQ_API_KEY);return reply(r.body,r.status)}
   if(req.method==='GET'&&req.path==='/health')return reply({ok:true});
-  if(req.method==='GET'&&['view','room'].includes(path[0])){const d=await read(id);if(d.kind!==path[0])throw {code:404};const {owner,...publicData}=d;return reply(publicData)}
+  if(req.method==='GET'&&['view','room'].includes(path[0])){const d=await read(id);if(d.kind!==path[0])throw {code:404};const {owner,ops,...publicData}=d;return reply(publicData)}
   if(req.method==='POST'&&path[0]==='live'){
    // Presence and chat live in one small side document per room; same expiry as the room.
    const room=await read(id);if(room.kind!=='room')throw {code:404};
@@ -101,9 +101,9 @@ export default async ({req,res,error})=>{
     return await withLock(db,id,async()=>{const cur=await read(id);await histSnap(db,id,cur.board,cur.expires,true);
     for(let attempt=0;attempt<4;attempt++){
      const tx=await db.createTransaction({ttl:60});
-     try{const d=await read(id,tx.$id);d.board=board;
+     try{const d=await read(id,tx.$id);d.board=board;d.rev=(Number.isSafeInteger(d.rev)?d.rev:0)+1;
       await db.updateDocument({databaseId:DB,collectionId:COL,documentId:id,data:{payload:JSON.stringify(d)},transactionId:tx.$id});
-      await db.updateTransaction({transactionId:tx.$id,commit:true});const {owner,...publicData}=d;return reply(publicData);
+      await db.updateTransaction({transactionId:tx.$id,commit:true});const {owner,ops,...publicData}=d;return reply(publicData);
      }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});if(e.code!==409||attempt===3)throw e}
     }});
    }
@@ -115,32 +115,24 @@ export default async ({req,res,error})=>{
    // A project-wide bound stops anonymous creation from exhausting free storage.
    const count=await db.listDocuments({databaseId:DB,collectionId:COL,queries:[Query.select(['$id']),Query.limit(500)]});if(count.documents.filter(d=>!/^[phk]/.test(d.$id)).length>=150)return reply({error:'Free storage is full; ask the project owner to remove old links.'},429);
    const id=randomBytes(16).toString('hex'),owner=randomBytes(24).toString('hex'),expires=Date.now()+(b.kind==='view'?7*24:48)*3600000;
-   const d={kind:b.kind,expires,board:b.board,room:b.room||null,owner};
+   const d={kind:b.kind,expires,board:b.board,room:b.room||null,owner,...(b.kind==='room'?{rev:0,ops:[]}: {})};
    await db.createDocument({databaseId:DB,collectionId:COL,documentId:id,data:{payload:JSON.stringify(d)},permissions:[]});
    return reply({id,expires,owner},201);
   }
   if(req.method==='POST'&&path[0]==='room'){
    if(Buffer.byteLength(req.bodyText||'')>MAX)return reply({error:'Update exceeds 12 MB'},413);
-   const b=req.bodyJson;if(!Array.isArray(b.changes)||b.changes.length>5000||!b.changes.every(validChange))return reply({error:'Invalid update'},400);
+   const b=req.bodyJson;if(!Array.isArray(b.changes)||b.changes.length>5000||!b.changes.every(validChange)||(b.opId!==undefined&&!validOpId(b.opId))||(b.baseRev!==undefined&&(!Number.isSafeInteger(b.baseRev)||b.baseRev<0)))return reply({error:'Invalid update'},400);
    return await withLock(db,id,async()=>{for(let attempt=0;attempt<6;attempt++){
     const tx=await db.createTransaction({ttl:60});
     try{
      const d=await read(id,tx.$id);if(d.kind!=='room')throw {code:404};
-     for(const c of b.changes){
-      if(c.t==='addPage'&&!d.board.p.some(p=>p.id===c.p.id))d.board.p.push(c.p);
-      else if(c.t==='delPage'&&d.board.p.length>1)d.board.p=d.board.p.filter(p=>p.id!==c.pid);
-      else {const p=d.board.p.find(p=>p.id===c.pid);if(!p)continue;
-       if(c.t==='rename')p.n=String(c.n||'').slice(0,24);
-       if(c.t==='put'){const i=p.e.findIndex(e=>e.id===c.e.id);if(i<0)p.e.push(c.e);else{const ne=c.e;if(ne.cm||ne.th){const cur=p.e[i],have=new Set((cur.th||[]).map(msgKey));ne.th=(cur.th||[]).concat((ne.th||[]).filter(m=>!have.has(msgKey(m))))}p.e[i]=ne}}
-       if(c.t==='del')p.e=p.e.filter(e=>e.id!==c.eid);
-       if(c.t==='order'){const order=new Map(c.ids.map((id,i)=>[id,i]));p.e.sort((a,b)=>(order.get(a.id)??99999)-(order.get(b.id)??99999))}
-      }
-     }
+     const op=applyRoomUpdate(d,b);
+     if(op.duplicate){await db.updateTransaction({transactionId:tx.$id,rollback:true});const {owner,ops,...publicData}=d;return reply({...publicData,ack:op.ack,duplicate:true,rebased:op.rebased})}
      if(!validBoard(d.board))throw {code:400};if(Buffer.byteLength(JSON.stringify(d))>MAX)throw {code:413};
      await db.updateDocument({databaseId:DB,collectionId:COL,documentId:id,data:{payload:JSON.stringify(d)},transactionId:tx.$id});
      await db.updateTransaction({transactionId:tx.$id,commit:true});
      if(b.changes.length)await histSnap(db,id,d.board,d.expires,false).catch(()=>{});
-     const {owner,...publicData}=d;return reply(publicData);
+     const {owner,ops,...publicData}=d;return reply({...publicData,ack:op.ack,rebased:op.rebased});
     }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});if(e.code!==409||attempt===5)throw e}
    }});
   }

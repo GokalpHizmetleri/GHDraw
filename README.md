@@ -32,7 +32,7 @@ Watch short demos on the [GHDraw YouTube channel](https://www.youtube.com/@GHDra
 - Dark mode, optional grid, Turkish and English interface (switch in the menu)
 - Sticky notes, comment pins, live cursors and chat, board history, installable app (see New in v10)
 - Export to PNG (2x) or animated PNG, animated GIF, MP4 / video, PDF (all pages), SVG (vector), each with a progress bar; save and open `.ghdraw` files
-- Autosave to `localStorage`
+- Autosave to `localStorage`; shared rooms also keep a durable local snapshot and retryable sync outbox in IndexedDB
 - Zero build: a single `index.html` with vanilla JS. Works from `file://`, any static host, or Vercel
 
 > The fonts load from Google Fonts, so the font picker needs an internet connection. Without it, text falls back to a system font.
@@ -92,7 +92,7 @@ Every push to `main` after that redeploys automatically.
 - Every shape, stroke and text block is a plain JSON element in an ordered list (the order is the layer order).
 - Rendering draws that list onto a `<canvas>` through a pan/zoom transform. Undo and redo move through snapshots of the list, and export draws the same list onto an offscreen canvas.
 - The hand-drawn look comes from drawing each shape twice with small seeded offsets, so lines wobble without flickering between frames.
-- Autosave serializes the element list, view and style defaults to `localStorage` on every change. During cloud collaboration all participants autosave, including received changes. Joining backs up the previous local board.
+- Autosave serializes the element list, view and style defaults to `localStorage` on every change. During cloud collaboration, the app also stores the room snapshot and an in-flight update in IndexedDB before sending it. The same operation ID is retried after a lost response; the backend acknowledges duplicate requests and returns a monotonically increasing room revision. Joining backs up the previous local board and rebases edits made since that device's last checkpoint onto the latest room state.
 
 ## Files
 
@@ -170,7 +170,7 @@ Choose **Export > MP4 / Video**. Browser-supported MP4 (H.264) is preferred; bro
 - **Live presence in shared boards:** colored avatars show who is connected, and each person's cursor with their name appears on the page they are on. A chat panel (speech bubble next to the avatars) keeps the last 100 messages of the room. Presence and chat use a small extra document per room with the same 48 hour expiry; they refresh about every 1.5 seconds with other people present (4 seconds when alone, paused in hidden tabs).
 - **Smart arrows** already existed (v7): arrow ends attach to shapes and follow when the shape moves. Unchanged in v10.
 - **Board history:** menu > Board history. In a shared (cloud) board the server keeps the 20 newest versions of the whole board for the room: one is taken automatically after a change when at least 2 minutes passed since the last, plus "Save a version now". Restoring saves the current state first, then replaces the shared board for everyone. The history lives in a side document of the room and expires with it (48 hours); deleting the room deletes it too. Caps: 20 versions, 8 MB compressed in total, 3 MB compressed per version (a larger version is not stored). Boards that are not shared have no server session, so they keep the 20 newest versions in this browser (IndexedDB) instead.
-- **Install as an app (PWA):** `manifest.webmanifest` (icons embedded as data URLs, so no binary files) and `sw.js`. Chrome and Edge offer Install in the menu; on iOS use Share > Add to Home Screen. The app shell and fonts you already loaded open offline; cloud links, collaboration and not-yet-loaded fonts need a connection. The service worker never caches Appwrite data.
+- **Install as an app (PWA):** `manifest.webmanifest` (icons embedded as data URLs, so no binary files) and `sw.js`. Chrome and Edge offer Install in the menu; on iOS use Share > Add to Home Screen. The app shell and fonts you already loaded open offline; creating or first opening a cloud link, live presence/chat and not-yet-loaded fonts need a connection. A collaboration room already opened on this device can be reopened offline and edited; changes are kept locally and retried when the device reconnects. The service worker never caches Appwrite data.
 
 ## Cloud backend
 
@@ -188,12 +188,12 @@ The Appwrite organization and project are managed under the assistant-operated G
 
 1. Create an Appwrite project, then a private database `ghdraw` and private collection `boards` with one required string attribute `payload` (16,777,216 characters). No public collection permissions.
 2. Create a Node.js 22 function, entrypoint `src/main.js`, install command `npm install`, public execute permission `any` and only the four scopes listed above.
-3. Deploy `backend/package.json` and `backend/src/main.js`, and set cron `17 * * * *`.
+3. Deploy `backend/package.json`, `backend/src/main.js` and `backend/src/room-sync.js`, and set cron `17 * * * *`.
 4. Add a function domain. Replace the frontend `CLOUD_API` endpoint and the backend CORS origin with your own app URL. Do not add a persistent server key to frontend code.
 
 ### Collaboration limits
 
-Concurrent edits to different elements are merged transactionally; editing the same element uses the last accepted update. Cloud sync is periodic, not instant. Closing while an update is pending can leave unsent edits only in local autosave. Hidden tabs pause sync and refresh on return. Page order stays fixed during a room. Undo history resets after remote changes so an old snapshot does not overwrite peers. Desktop two-tab and mobile image-share tests passed in Chromium; other browsers and large multi-user sessions remain untested.
+Concurrent edits to different elements are merged transactionally; editing the same element uses the last accepted update. Cloud sync is periodic, not instant. A room opened on a device keeps an IndexedDB snapshot and durable in-flight outbox; reconnect retries the same operation ID, and reopening rebases local edits onto the latest server revision. Hidden tabs pause sync and refresh on return. Page order stays fixed during a room. Undo history resets after remote changes so an old snapshot does not overwrite peers. Validate touch, stylus, safe-area and PWA behavior on actual iOS/Android devices before claiming hardware coverage.
 
 ### AI text tools 
 
@@ -224,3 +224,11 @@ The emoji grid now stays inside the picker with its own scroll area. Columns ada
 ## v15: floating utility widgets
 
 Open the menu to add a **Clock**, **Calendar**, **Timer** or **Checklist** panel. Drag a panel by its title bar; close it with the × button. The checklist is saved in this browser and is separate from the drawing board. On narrow screens, panels open with staggered title bars so one widget does not completely cover another; each panel can still be moved freely.
+
+## v16: offline collaboration and mobile/tablet polish
+
+- Collaboration rooms already opened on a device can be reopened and edited without a network connection. Local board snapshots and a pending operation are stored in IndexedDB; queued writes are persisted before sending, carry an operation ID and base revision, and retry unchanged after a timeout or page restart.
+- Room writes are idempotent and return an ACK and monotonically increasing revision. A reconnect or app resume fetches the latest server board, rebases local changes, then retries; stale revisions are applied transactionally on the latest room state. The last 256 operation IDs are retained per room.
+- A compact sync badge distinguishes offline, pending, syncing and local queue-storage errors. The app retries on reconnect and when a hidden tab becomes visible. Existing localStorage autosave remains the fast local recovery path.
+- Mobile/tablet layout uses dynamic viewport sizing, safe-area insets, larger touch targets and a visible collaboration/sync control cluster. Short landscape screens get a compact toolbar and panels.
+- The new frontend and Appwrite function must be deployed together for server ACK/revision/idempotency guarantees. No live deployment was made for this change.
