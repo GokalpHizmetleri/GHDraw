@@ -1044,6 +1044,7 @@ function saveCloudLocalSnapshot(id,board,updatedAt=Date.now()){return cloudDB().
 function saveCloudCheckpoint(id,base,rev,expires,inflight,local){return cloudDB().then(db=>new Promise((resolve,reject)=>{const tx=db.transaction(['rooms','snapshots'],'readwrite'),now=Date.now();tx.objectStore('rooms').put({id,base,rev:rev||0,expires:expires||0,inflight:inflight||null,updatedAt:now});stageCloudSnapshot(tx,id,local,now);tx.oncomplete=()=>resolve(true);tx.onerror=()=>reject(tx.error||new Error('IndexedDB write failed'));tx.onabort=()=>reject(tx.error||new Error('IndexedDB write aborted'))}))}
 function scheduleCloudSnapshot(id){clearTimeout(cloudSnapshotTimer);const board=cloudBoard(),updatedAt=Date.now();cloudSnapshotTimer=setTimeout(()=>saveCloudLocalSnapshot(id,board,updatedAt).catch(()=>setSyncBadge('storage')),250)}
 function localBoardSavedAt(){try{return Number(JSON.parse(localStorage.getItem('ghdraw:v2')||'null')?.savedAt)||0}catch(_){return 0}}
+function preserveLocalBoardBeforeCloudJoin(){try{const record=localStorage.getItem('ghdraw:v2');localStorage.setItem('ghdraw:backup-before-collab',record===null?'':record);return true}catch(_){return false}}
 function localBoardRoomId(){try{return String(JSON.parse(localStorage.getItem('ghdraw:v2')||'null')?.cloudRoomId||'')}catch(_){return ''}}
 function restoreCloudSnapshot(record,roomId=''){const b=record&&record.board;if(!b||!Array.isArray(b.p)||!b.p.length)return false;pages=b.p.map(p=>({id:p.id,name:p.n||'',els:structuredClone(p.e||[]),cam:{x:0,y:0,z:1}}));pi=0;els=pages[0].els;cam={x:0,y:0,z:1};dark=!!b.d;document.body.classList.toggle('dark',dark);sel=new Set();hist=[snap()];hidx=0;syncUI();render();save(roomId);return true}
 async function cloudRequest(path,body,method){
@@ -1051,6 +1052,7 @@ async function cloudRequest(path,body,method){
  const d=await r.json();if(!r.ok)throw Object.assign(new Error(d.error||'Cloud error'),{status:r.status});return d;
 }
 function cloudBoard(){syncPage();return {v:2,d:dark?1:0,p:pages.map(p=>({id:p.id,n:p.name||'',e:p.els.filter(e=>!('__bak' in e)).map(e=>JSON.parse(ser(e)))}))}}
+function cloudJoinCanContinue(isOnline,cached){return !!isOnline||!!(cached&&cached.base&&Array.isArray(cached.base.p)&&cached.base.p.length>0&&cached.base.p.every(p=>p&&Array.isArray(p.e)))}
 function cloudSelectRejoinBoard(id,savedId,current,snapshot,checkpoint,remote){const valid=b=>!!b&&Array.isArray(b.p)&&b.p.length>0&&b.p.every(p=>p&&Array.isArray(p.e));if(valid(snapshot))return snapshot;if(savedId===id&&valid(current))return current;if(valid(checkpoint))return checkpoint;return valid(remote)?remote:null}
 function cloudDiff(a,b){
  const changes=[],old=new Map(a.p.map(p=>[p.id,p]));
@@ -1102,12 +1104,15 @@ function activateOfflineCloud(id,host,cached,protocolBlocked=false){
  cloudProtocolBlocked=protocolBlocked;cloudProtocolVerified=false;cloudRoom={id,expires:cached.expires||0};cloudBase=structuredClone(cached.base);cloudRev=Number.isSafeInteger(cached.rev)?cached.rev:0;cloudInflight=cached.inflight||null;collabOn=true;isHost=host;roomId=id;conns=[];peersN=1;hostConn={cloud:true};cloudPending=!!cloudInflight||cloudDiff(cloudBase,cloudBoard()).length>0;setStatus();clearInterval(cloudTimer);cloudTimer=0;if(!protocolBlocked)cloudTimer=setInterval(cloudSync,4000);setSyncBadge(protocolBlocked?'protocol':'offline');toast(protocolBlocked?L2('Bu sunucu güvenli eşitleme için güncel değil. Düzenlemeler cihazda saklanacak; backend güncellendikten sonra sayfayı yenile.','This server is outdated for safe sync. Edits stay on this device; reload after the backend is updated.'):L2('Çevrimdışı açıldı. Düzenlemeler cihazda kalacak ve bağlantı gelince eşitlenecek.','Opened offline. Edits stay on this device and will sync when reconnected.'));
 }
 async function cloudJoin(id,host=false,createdHere=false){
- cloudProtocolBlocked=false;cloudProtocolVerified=false;let cached=null,localSnapshot=null;try{cached=await cloudCheckpoint(id)}catch(_){}try{localSnapshot=await cloudLocalSnapshot(id)}catch(_){}
+ cloudProtocolBlocked=false;cloudProtocolVerified=false;
+ if(!preserveLocalBoardBeforeCloudJoin()){toast(L2('Mevcut pano yedeklenemedi; güvenli ortak tahta açılışı durduruldu. Depolamada yer açıp tekrar dene.','Could not back up the current board; opening collaboration was stopped. Free storage and try again.'));return}
+ let cached=null;try{cached=await cloudCheckpoint(id)}catch(_){}
+ if(!cloudJoinCanContinue(navigator.onLine,cached)){setSyncBadge('offline');toast(L2('Bu ortak tahta için bu cihazda çevrimdışı checkpoint yok. Mevcut pano korunuyor; bağlantı kurulduğunda yeniden aç.','No offline checkpoint for this shared board. Your current board is preserved; reopen when connected.'));return}
+ let localSnapshot=null;try{localSnapshot=await cloudLocalSnapshot(id)}catch(_){}
  const savedRoomId=createdHere?id:localBoardRoomId(),current=cloudBoard(),snapshotBoard=localSnapshot&&(localSnapshot.updatedAt>localBoardSavedAt()||savedRoomId!==id)?localSnapshot.board:null,safeLocal=cloudSelectRejoinBoard(id,savedRoomId,current,snapshotBoard,cached?.base,null);
  if(safeLocal&&safeLocal!==current)restoreCloudSnapshot({board:safeLocal},id);
- if(!navigator.onLine){if(cached&&cached.base){activateOfflineCloud(id,host,cached)}else{setSyncBadge('offline');toast(L2('Bu ortak tahta için bu cihazda çevrimdışı kopya yok. Bağlantı kurulduğunda yeniden aç.','No offline copy of this shared board is on this device. Reopen it when connected.'))}return}
+ if(!navigator.onLine){activateOfflineCloud(id,host,cached);return}
  try{
-  try{localStorage.setItem('ghdraw:backup-before-collab',localStorage.getItem('ghdraw:v2')||'')}catch(_){}
   const d=await cloudRequest('/room/'+id);if(d.kind&&d.kind!=='room')throw Object.assign(new Error('room'),{status:404});
   if(!cloudProtocolCompatible(d)){if(cached&&cached.base)activateOfflineCloud(id,host,cached,true);else blockCloudProtocol();return}
   cloudProtocolVerified=true;if(!safeLocal&&!createdHere)restoreCloudSnapshot({board:d.board},id);

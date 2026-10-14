@@ -12,16 +12,20 @@ function extract(name,next){
   return html.slice(start,end);
 }
 const source=[
+  extract('cloudJoinCanContinue','cloudSelectRejoinBoard'),
   extract('cloudSelectRejoinBoard','cloudDiff'),
+  extract('preserveLocalBoardBeforeCloudJoin','localBoardRoomId'),
   extract('cloudDiff','cloudApplyChanges'),
   extract('cloudApplyChanges','cloudRebase'),
   extract('cloudRebase','cloudMerge'),
   extract('cloudProtocolCompatible','blockCloudProtocol'),
-  'globalThis.api={cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudApplyChanges,cloudRebase};'
+  'globalThis.api={cloudJoinCanContinue,preserveLocalBoardBeforeCloudJoin,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudApplyChanges,cloudRebase};'
 ].join('\n');
-const context={structuredClone};
+const storage=new Map();
+const mockLocalStorage={getItem:key=>storage.has(key)?storage.get(key):null,setItem:(key,value)=>storage.set(key,String(value))};
+const context={structuredClone,localStorage:mockLocalStorage};
 vm.runInNewContext(source,context);
-const {cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudApplyChanges,cloudRebase}=context.api;
+const {cloudJoinCanContinue,preserveLocalBoardBeforeCloudJoin,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudApplyChanges,cloudRebase}=context.api;
 
 const base={v:2,d:0,p:[
   {id:'p1',n:'Board',e:[
@@ -58,6 +62,36 @@ test('cloud rebase retains offline edits while preserving unrelated remote edits
   assert.ok(p.e.some(x=>x.id==='remote-shape'),'unrelated peer addition is retained');
   assert.ok(result.board.p.some(x=>x.id==='remote-page'),'remote page is retained');
   assert.ok(result.pending.length>0);
+});
+
+test('cloudJoin preserves the existing local board before loading a room',()=>{
+  storage.clear();
+  const original=JSON.stringify({savedAt:123,cloudRoomId:'private',pages:[{id:'private-page'}]});
+  storage.set('ghdraw:v2',original);
+  assert.equal(preserveLocalBoardBeforeCloudJoin(),true);
+  assert.equal(storage.get('ghdraw:backup-before-collab'),original);
+
+  const start=html.indexOf('async function cloudJoin(id,host=false,createdHere=false){');
+  const join=html.slice(start,html.indexOf("\naddEventListener('offline'",start));
+  assert.ok(join.indexOf('preserveLocalBoardBeforeCloudJoin()')<join.indexOf('cloudCheckpoint(id)'), 'backup precedes storage reads');
+  assert.ok(join.indexOf('preserveLocalBoardBeforeCloudJoin()')<join.indexOf('restoreCloudSnapshot'), 'backup precedes any board restore');
+
+  context.localStorage={getItem:()=>original,setItem:()=>{throw new Error('quota')}};
+  assert.equal(preserveLocalBoardBeforeCloudJoin(),false,'failed backup is fail-closed');
+  context.localStorage=mockLocalStorage;
+});
+
+test('offline join without a room checkpoint exits before loading an IndexedDB snapshot',()=>{
+  assert.equal(cloudJoinCanContinue(false,null),false);
+  assert.equal(cloudJoinCanContinue(false,{base:null}),false);
+  assert.equal(cloudJoinCanContinue(false,{base}),true);
+  assert.equal(cloudJoinCanContinue(true,null),true);
+
+  const start=html.indexOf('async function cloudJoin(id,host=false,createdHere=false){');
+  const join=html.slice(start,html.indexOf("\naddEventListener('offline'",start));
+  const guard=join.indexOf('if(!cloudJoinCanContinue(navigator.onLine,cached))');
+  assert.ok(guard>=0&&guard<join.indexOf('cloudLocalSnapshot(id)'), 'checkpointless offline exit precedes snapshot loading');
+  assert.ok(guard<join.indexOf('restoreCloudSnapshot({board:safeLocal},id)'), 'checkpointless offline exit precedes board mutation');
 });
 
 test('rejoining a room never imports additions or deletions from another local board',()=>{
