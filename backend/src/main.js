@@ -65,7 +65,7 @@ export default async ({req,res,error})=>{
   const path=req.path.split('/').filter(Boolean),id=path[1];
   if(req.method==='POST'&&req.path==='/ai'){const r=await handleAI(req,db,process.env.GROQ_API_KEY);return reply(r.body,r.status)}
   if(req.method==='GET'&&req.path==='/health')return reply({ok:true});
-  if(req.method==='GET'&&['view','room'].includes(path[0])){const d=await read(id);if(d.kind!==path[0])throw {code:404};const {owner,ops,...publicData}=d;return reply(publicData)}
+  if(req.method==='GET'&&['view','room'].includes(path[0])){const d=await read(id);if(d.kind!==path[0])throw {code:404};const {owner,ops,...publicData}=d;return reply(path[0]==='room'?{...publicData,syncProtocol:'room-ops-v1'}:publicData)}
   if(req.method==='POST'&&path[0]==='live'){
    // Presence and chat live in one small side document per room; same expiry as the room.
    const room=await read(id);if(room.kind!=='room')throw {code:404};
@@ -127,12 +127,12 @@ export default async ({req,res,error})=>{
     try{
      const d=await read(id,tx.$id);if(d.kind!=='room')throw {code:404};
      const op=applyRoomUpdate(d,b);
-     if(op.duplicate){await db.updateTransaction({transactionId:tx.$id,rollback:true});const {owner,ops,...publicData}=d;return reply({...publicData,ack:op.ack,duplicate:true,rebased:op.rebased})}
+     if(op.duplicate){await db.updateTransaction({transactionId:tx.$id,rollback:true});const {owner,ops,...publicData}=d;return reply({...publicData,syncProtocol:'room-ops-v1',ack:op.ack,duplicate:true,rebased:op.rebased})}
      if(!validBoard(d.board))throw {code:400};if(Buffer.byteLength(JSON.stringify(d))>MAX)throw {code:413};
      await db.updateDocument({databaseId:DB,collectionId:COL,documentId:id,data:{payload:JSON.stringify(d)},transactionId:tx.$id});
      await db.updateTransaction({transactionId:tx.$id,commit:true});
      if(b.changes.length)await histSnap(db,id,d.board,d.expires,false).catch(()=>{});
-     const {owner,ops,...publicData}=d;return reply({...publicData,ack:op.ack,rebased:op.rebased});
+     const {owner,ops,...publicData}=d;return reply({...publicData,syncProtocol:'room-ops-v1',ack:op.ack,rebased:op.rebased});
     }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});if(e.code!==409||attempt===5)throw e}
    }});
   }

@@ -12,14 +12,16 @@ function extract(name,next){
   return html.slice(start,end);
 }
 const source=[
+  extract('cloudSelectRejoinBoard','cloudDiff'),
   extract('cloudDiff','cloudApplyChanges'),
   extract('cloudApplyChanges','cloudRebase'),
   extract('cloudRebase','cloudMerge'),
-  'globalThis.api={cloudDiff,cloudApplyChanges,cloudRebase};'
+  extract('cloudProtocolCompatible','blockCloudProtocol'),
+  'globalThis.api={cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudApplyChanges,cloudRebase};'
 ].join('\n');
 const context={structuredClone};
 vm.runInNewContext(source,context);
-const {cloudDiff,cloudApplyChanges,cloudRebase}=context.api;
+const {cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudApplyChanges,cloudRebase}=context.api;
 
 const base={v:2,d:0,p:[
   {id:'p1',n:'Board',e:[
@@ -58,6 +60,44 @@ test('cloud rebase retains offline edits while preserving unrelated remote edits
   assert.ok(result.pending.length>0);
 });
 
+test('rejoining a room never imports additions or deletions from another local board',()=>{
+  const privateBoard=structuredClone(base);
+  privateBoard.p[0].e.splice(1,1);
+  privateBoard.p[0].e.push({id:'private-shape',type:'rect',x:77});
+  const unsafeDelta=cloudDiff(base,privateBoard);
+  assert.ok(unsafeDelta.some(c=>c.t==='del'&&c.eid==='shape-b'));
+  assert.ok(unsafeDelta.some(c=>c.t==='put'&&c.e.id==='private-shape'));
+
+  const safe=cloudSelectRejoinBoard('room-1','other-room',privateBoard,null,base,null);
+  assert.deepEqual(json(safe),json(base),'mismatched localStorage uses this room checkpoint instead');
+  assert.deepEqual(json(cloudDiff(base,safe)),[],'private additions and deletions do not enter the room delta');
+
+  const roomSnapshot=structuredClone(base);roomSnapshot.p[0].e.push({id:'offline-room-shape',type:'ellipse',x:12});
+  const resumed=cloudSelectRejoinBoard('room-1','other-room',privateBoard,roomSnapshot,base,null);
+  assert.deepEqual(json(resumed),json(roomSnapshot),'room snapshot outranks unrelated global localStorage');
+  assert.equal(cloudSelectRejoinBoard('room-1','room-1',roomSnapshot,null,base,null),roomSnapshot,'matching room marker preserves same-room local edits');
+});
+
+test('safe sync requires a room revision and exact operation acknowledgement',()=>{
+  const op={opId:'stable-op-id'};
+  const room={kind:'room',syncProtocol:'room-ops-v1',board:base,rev:4};
+  assert.equal(cloudProtocolCompatible(room),true,'revisioned GET is compatible');
+  assert.equal(cloudProtocolCompatible({...room,rev:undefined}),false,'legacy GET without revision is incompatible');
+  assert.equal(cloudProtocolCompatible({...room,syncProtocol:undefined}),false,'a stored revision alone does not prove backend support');
+  assert.equal(cloudProtocolCompatible({...room,kind:undefined}),false,'malformed compatibility responses are blocked');
+  assert.equal(cloudProtocolCompatible(room,op),false,'POST without ACK is never accepted');
+  assert.equal(cloudProtocolCompatible({...room,ack:'another-op'},op),false,'wrong ACK is rejected');
+  assert.equal(cloudProtocolCompatible({...room,ack:op.opId},op),true,'matching ACK and revision are required');
+
+  const start=html.indexOf('async function cloudSync(){');
+  const sync=html.slice(start,html.indexOf('\nfunction activateOfflineCloud(',start));
+  assert.ok(sync.indexOf('probe=await cloudRequest(\'/room/\'+id)')<sync.indexOf('const d=op?await cloudRequest(\'/room/\'+id,{changes:'), 'reconnect compatibility GET runs before any queued POST');
+  assert.match(sync,/if\(!cloudProtocolCompatible\(probe\)\|\|probe\.rev<oldRev\)/,'incompatible probe blocks the queued POST');
+  assert.ok(sync.indexOf('if(!cloudProtocolCompatible(d,op)||d.rev<oldRev)')<sync.indexOf('cloudMerge(d,sent)'), 'incompatible response exits before completing/clearing the outbox');
+  assert.match(sync,/if\(cloudProtocolBlocked\|\|!cloudRoom/,'blocked protocol prevents scheduled sends');
+  assert.match(html,/if\(!protocolBlocked\)cloudTimer=setInterval\(cloudSync,4000\)/,'incompatible server does not get an automatic retry timer');
+});
+
 test('an outbox delta can reconstruct its sent snapshot and safely replay',()=>{
   const changes=cloudDiff(base,local);
   const sent=cloudApplyChanges(base,changes);
@@ -75,8 +115,13 @@ test('offline checkpoint, operation id, acknowledgement, and revision retry path
   assert.match(html,/indexedDB\.open\('ghdraw-cloud-sync-v1',2\)/);
   assert.match(html,/saveCloudCheckpoint\(id,oldBase,oldRev,cloudRoom\.expires,op,current\)/);
   assert.match(html,/opId:op\.opId,baseRev:op\.baseRev/);
-  assert.match(html,/d\.ack!==op\.opId/);
+  assert.match(html,/d\.ack===op\.opId/);
   assert.match(html,/cloudLocalSnapshot\(id\)/);
+  assert.match(html,/d\.syncProtocol==='room-ops-v1'/);
+  const backend=readFileSync(new URL('../backend/src/main.js',import.meta.url),'utf8');
+  assert.match(backend,/syncProtocol:'room-ops-v1'/);
+  assert.match(html,/cloudRoomId:roomIdHint\|\|cloudRoom\?\.id/);
+  assert.match(html,/cloudSelectRejoinBoard\(id,savedRoomId,current,snapshotBoard,cached\?\.base,null\)/);
   assert.match(html,/addEventListener\('online'/);
   assert.match(html,/if\(cached&&cached\.base&&cached\.inflight\).*await cloudSync\(\)/);
 });

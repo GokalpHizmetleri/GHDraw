@@ -232,3 +232,9 @@ Open the menu to add a **Clock**, **Calendar**, **Timer** or **Checklist** panel
 - A compact sync badge distinguishes offline, pending, syncing and local queue-storage errors. The app retries on reconnect and when a hidden tab becomes visible. Existing localStorage autosave remains the fast local recovery path.
 - Mobile/tablet layout uses dynamic viewport sizing, safe-area insets, larger touch targets and a visible collaboration/sync control cluster. Short landscape screens get a compact toolbar and panels.
 - The new frontend and Appwrite function must be deployed together for server ACK/revision/idempotency guarantees. No live deployment was made for this change.
+
+## v17: room isolation and safe-sync protocol guard
+
+- The `localStorage` board record includes its `cloudRoomId`. Reopening a room uses that room's local board only when the identity matches; otherwise it selects that room's IndexedDB snapshot/checkpoint or the server board. A different private board is never diffed against a room checkpoint.
+- Before sending a pending write, the client verifies that the room endpoint returns the explicit sync-protocol version and a valid revision, including after reconnect and app resume. A write is acknowledged only when the server returns the exact operation ID and a valid, non-regressing revision.
+- If the backend lacks the revision/ACK contract, queued changes remain local and automatic writes stop until the backend is updated and the page is reloaded. No live deployment was made for this fix.
