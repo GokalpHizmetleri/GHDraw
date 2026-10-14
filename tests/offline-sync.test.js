@@ -21,8 +21,12 @@ const source=[
   extract('localBoardRecord','save'),
   extract('isBoardObject','validBoardCamera'),
   extract('validBoardCamera','validBoardElement'),
-  extract('validBoardElement','parseLocalBoardRecord'),
+  extract('validBoardElement','validBoardDefaults'),
+  extract('validBoardDefaults','normalizeBoardElement'),
+  extract('normalizeBoardElement','normalizeBoardDefaults'),
+  extract('normalizeBoardDefaults','parseLocalBoardRecord'),
   extract('parseLocalBoardRecord','localBoardBackupKeys'),
+  extract('dash','roughPass'),
   loadSource,
   extract('localBoardBackupKeys','writeLocalBoardBackup'),
   extract('writeLocalBoardBackup','localBoardBackupEntries'),
@@ -34,7 +38,7 @@ const source=[
   extract('cloudApplyChanges','cloudRebase'),
   extract('cloudRebase','cloudMerge'),
   extract('cloudProtocolCompatible','blockCloudProtocol'),
-  'globalThis.api={cloudJoinCanContinue,localBoardRecord,parseLocalBoardRecord,localBoardBackupKeys,writeLocalBoardBackup,localBoardBackupEntries,hasLocalBoardBackups,preserveLocalBoardBeforeCloudJoin,restoreLocalBoardRecord,load,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudApplyChanges,cloudRebase};'
+  'globalThis.api={cloudJoinCanContinue,localBoardRecord,parseLocalBoardRecord,localBoardBackupKeys,writeLocalBoardBackup,localBoardBackupEntries,hasLocalBoardBackups,preserveLocalBoardBeforeCloudJoin,restoreLocalBoardRecord,load,dash,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudApplyChanges,cloudRebase};'
 ].join('\n');
 const storage=new Map();
 const mockLocalStorage={getItem:key=>storage.has(key)?storage.get(key):null,setItem:(key,value)=>storage.set(key,String(value)),key:index=>[...storage.keys()][index]??null,get length(){return storage.size}};
@@ -42,7 +46,7 @@ const context={structuredClone,localStorage:mockLocalStorage,els:[],cam:{x:0,y:0
 context.syncPage=()=>{const page=context.pages[context.pi];if(page){page.els=context.els;page.cam=context.cam}};
 context.finishEdit=()=>{context.editing=null};context.cloudEnd=()=>{context.cloudRoom=null;context.collabOn=false};
 vm.runInNewContext(source,context);
-const {cloudJoinCanContinue,localBoardRecord,parseLocalBoardRecord,localBoardBackupKeys,writeLocalBoardBackup,localBoardBackupEntries,hasLocalBoardBackups,preserveLocalBoardBeforeCloudJoin,restoreLocalBoardRecord,load,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudApplyChanges,cloudRebase}=context.api;
+const {cloudJoinCanContinue,localBoardRecord,parseLocalBoardRecord,localBoardBackupKeys,writeLocalBoardBackup,localBoardBackupEntries,hasLocalBoardBackups,preserveLocalBoardBeforeCloudJoin,restoreLocalBoardRecord,load,dash,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudApplyChanges,cloudRebase}=context.api;
 
 const base={v:2,d:0,p:[
   {id:'p1',n:'Board',e:[
@@ -59,7 +63,7 @@ local.p[0].e.splice(1,1);
 local.p[0].e.push({id:'shape-new',type:'ellipse',x:8});
 
 function json(value){return JSON.parse(JSON.stringify(value))}
-function recordElement(id,type='rect',extra={}){const base={id,type,x:0,y:0,w:10,h:10,seed:1};if(type==='text')Object.assign(base,{text:'',font:'Caveat',size:28});return{...base,...extra}}
+function recordElement(id,type='rect',extra={}){const base={id,type,x:0,y:0,w:10,h:10,seed:1,sw:2,rough:1,opacity:100,style:'solid'};if(type==='text')Object.assign(base,{text:'',font:'Caveat',size:28});return{...base,...extra}}
 
 test('cloud rebase retains offline edits while preserving unrelated remote edits',()=>{
   const remote=structuredClone(base);
@@ -127,17 +131,43 @@ test('cloudJoin backs up the newer in-memory board when ghdraw:v2 is stale',()=>
 
 
 
-test('validator rejects finite but unsafe geometry, text sizes, points and camera zoom',()=>{
-  const parse=(element,cam={x:0,y:0,z:1})=>parseLocalBoardRecord(JSON.stringify({els:[element],cam,defaults:{},pi:0,pages:[{id:'safe-page',name:'Safe',els:[element],cam}]}));
+test('validator rejects unsafe geometry and style while allowing UI-supported resize values',()=>{
+  const parse=(element,cam={x:0,y:0,z:1},defaults={})=>parseLocalBoardRecord(JSON.stringify({els:[element],cam,defaults,pi:0,pages:[{id:'safe-page',name:'Safe',els:[element],cam}]}));
   assert.equal(parse(recordElement('negative','rect',{w:-1,h:-1})),null,'negative shape dimensions are invalid');
   assert.equal(parse(recordElement('huge-coordinate','rect',{x:Number.MAX_VALUE})),null,'unbounded finite coordinates are invalid');
   assert.equal(parse(recordElement('huge-text','text',{size:Number.MAX_VALUE})),null,'text size cannot overflow measurement');
   assert.equal(parse(recordElement('tiny-text','text',{size:Number.MIN_VALUE})),null,'text size cannot underflow measurement');
   assert.equal(parse(recordElement('huge-point','line',{pts:[[Number.MAX_VALUE,0],[1,1]]})),null,'line points are bounded');
+  assert.equal(parse(recordElement('bad-stroke','rect',{sw:Number.MAX_VALUE,style:'dotted'})),null,'stroke width cannot overflow dash calculation');
+  assert.equal(parse(recordElement('bad-roughness','rect',{rough:Number.MAX_VALUE})),null,'roughness is bounded');
+  assert.equal(parse(recordElement('bad-opacity','rect',{opacity:Number.MAX_VALUE})),null,'opacity is bounded');
+  assert.equal(parse(recordElement('bad-defaults'),{x:0,y:0,z:1},{sw:Number.MAX_VALUE,style:'dotted'}),null,'unsafe saved defaults cannot affect new drawings');
+  assert.equal(parse(recordElement('bad-default-roughness'),{x:0,y:0,z:1},{rough:Number.MAX_VALUE}),null,'saved default roughness is bounded');
+  assert.equal(parse(recordElement('bad-default-opacity'),{x:0,y:0,z:1},{opacity:Number.MAX_VALUE}),null,'saved default opacity is bounded');
+  assert.equal(parse(recordElement('too-large-text','text',{text:'No',size:401})),null,'text above the resize limit is rejected');
   const camera={x:0,y:0,z:Number.MAX_VALUE};
   assert.equal(parse(recordElement('camera-test'),camera),null,'camera zoom above the app range is invalid');
   assert.equal(parse(recordElement('tiny-camera'),{x:0,y:0,z:Number.MIN_VALUE}),null,'camera zoom below the app range is invalid');
-  assert.ok(parse(recordElement('valid-text','text',{text:'Readable',size:300})),'the UI-supported maximum text size remains valid');
+  const maxStroke=parse(recordElement('valid-dotted','rect',{sw:64,style:'dotted'}));
+  const dashResult=[];dash({setLineDash(values){assert.ok(values.every(value=>Number.isFinite(value)&&value>=0));dashResult.push(values)}},maxStroke.els[0]);
+  assert.equal(dashResult[0][1],155.6,'bounded maximum stroke produces a finite dotted dash');
+  const maxText=recordElement('valid-text','text',{text:'Readable',size:400});
+  assert.ok(parse(maxText),'text resize max from the UI remains valid');
+  assert.ok(html.includes('Math.max(6,Math.min(400,Math.round(o.size*k)))'),'test follows the real resize range');
+  storage.set('ghdraw:v2',JSON.stringify({els:[maxText],cam:{x:0,y:0,z:1},defaults:{},grid:false,dark:false,pi:0,pages:[{id:'resized-page',name:'Resized',els:[maxText],cam:{x:0,y:0,z:1}}]}));
+  context.pages=[{id:'before',name:'Before',els:[],cam:{x:0,y:0,z:1}}];context.els=[];context.pi=0;
+  load();
+  assert.equal(context.els[0].size,400,'a UI-resized 400px label loads successfully');
+  const kept=recordElement('kept-board');context.els=[kept];context.cam={x:7,y:8,z:1};context.defaults={sw:2,rough:1,opacity:100,size:28};context.pages=[{id:'kept-page',name:'Kept',els:context.els,cam:context.cam}];
+  storage.set('ghdraw:v2',JSON.stringify({els:[recordElement('bad-defaults')],cam:{x:0,y:0,z:1},defaults:{sw:Number.MAX_VALUE},grid:false,dark:false,pi:0,pages:[{id:'bad-page',name:'Bad',els:[recordElement('bad-defaults')],cam:{x:0,y:0,z:1}}]}));
+  load();
+  assert.equal(context.els[0].id,'kept-board','unsafe defaults cannot partially replace current board');
+  assert.equal(context.defaults.sw,2,'unsafe defaults do not poison the drawing tools');
+  const legacy=parseLocalBoardRecord(JSON.stringify({els:[{id:'missing-style',type:'rect',x:0,y:0,w:10,h:10,style:'dotted'}],cam:{x:0,y:0,z:1},defaults:{sw:null,rough:null,opacity:null,size:null}}));
+  assert.equal(legacy.els[0].sw,2,'older records without stroke width receive the safe default');
+  const legacyDash=[];dash({setLineDash(values){assert.ok(values.every(value=>Number.isFinite(value)&&value>=0));legacyDash.push(values)}},legacy.els[0]);
+  assert.deepEqual(json(legacyDash[0]),[0.1,6.8],'legacy dotted elements render with the normalized stroke width');
+  assert.equal(legacy.defaults.sw,2,'null style defaults from earlier overflow serialize safely');
 });
 
 test('malformed backups stay untouched and cannot partially replace the live board',()=>{
