@@ -6,6 +6,10 @@ import BoardElementContract from '../backend/shared/board-element-contract.js';
 import {applyRoomUpdate} from '../backend/src/room-sync.js';
 
 const html=readFileSync(new URL('../index.html',import.meta.url),'utf8');
+test('frontend targets the provisioned GHDraw test Function',()=>{
+  assert.match(html,/const CLOUD='https:\/\/ghdraw-test-backend\.fra\.appwrite\.run';/);
+  assert.doesNotMatch(html,/ghdraw-expiring-links\.fra\.appwrite\.run/);
+});
 const restoreGateStart=html.indexOf('function historyRestoreBlocksInput('),restoreGateEnd=html.indexOf("\ndocument.addEventListener('pointerdown',historyRestoreBlocksInput,true);",restoreGateStart);
 assert.ok(restoreGateStart>=0&&restoreGateEnd>restoreGateStart,'missing restore input/close guards');
 const restoreGateSource=html.slice(restoreGateStart,restoreGateEnd);

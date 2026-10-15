@@ -19,7 +19,7 @@ from urllib.parse import urlparse
 from playwright.async_api import async_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
-BACKEND_ORIGIN = "https://ghdraw-expiring-links.fra.appwrite.run"
+BACKEND_ORIGIN = "https://ghdraw-test-backend.fra.appwrite.run"
 OLD_ID = "a" * 32
 NEW_ID = "b" * 32
 OWNER = "test-old-owner"
