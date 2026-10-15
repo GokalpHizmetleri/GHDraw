@@ -58,6 +58,12 @@ window.__ghdrawFault={get:null,tx:null};
    window.__ghdrawExpectedBoard=structuredClone(b);window.__ghdrawExpectedRoom=id;window.__ghdrawIdbAudit=[];return true;
   },
   async seedCheckpoint(){return await saveCloudCheckpoint(cloudRoom.id,cloudBase,cloudRev,cloudRoom.expires,cloudInflight,cloudBoard(true),null,0,null)},
+  async seedJoinBackup(){return writeLocalBoardBackup(localBoardRecord())},
+  async seedChatOutbox(id){const roomId=cloudRoom?.id||window.__ghdrawExpectedRoom;return (await mutateLiveChatOutbox(roomId,items=>{if(items.some(item=>item.id===id))return true;items.push({id,m:'queued offline chat',failed:false,blocked:false,createdAt:Date.now()});return true})).ok},
+  prepareJoin(){clearInterval(cloudTimer);cloudTimer=0;liveStop();cloudRoom=null;cloudBase=null;cloudRev=0;cloudInflight=null;cloudPending=false;cloudProtocolVerified=false;collabOn=false;isHost=false;roomId=null;return true},
+  failNextLocalBoardWrite(){const prototype=Storage.prototype,original=prototype.setItem;let armed=true;prototype.setItem=function(key,value){if(armed&&key==='ghdraw:v2'){armed=false;prototype.setItem=original;throw new DOMException('Injected local board persistence failure','QuotaExceededError')}return original.call(this,key,value)};return true},
+  async joinSelection(id){const cached=await cloudCheckpoint(id),snapshot=await cloudLocalSnapshot(id),savedId=localBoardRoomId(),generation=cloudGenerationValue(cached),currentGeneration=localBoardRestoreGeneration(),current=cloudBoard(),savedRev=localBoardCheckpointRev(id),snapshotGeneration=snapshot?cloudGenerationValue(snapshot):null,snapshotRev=snapshot?.rev,snapshotBase=snapshot?.base,valid=!!snapshot&&snapshotGeneration===generation&&Number.isSafeInteger(snapshotRev)&&snapshotRev>=0&&!!normalizeCloudRoomBoard(snapshotBase,false)&&snapshotRev<=cached.rev&&(snapshotRev!==cached.rev||JSON.stringify(snapshotBase)===JSON.stringify(cached.base)),use=valid&&(savedId!==id||savedRev===null?snapshot.updatedAt>localBoardSavedAt()||savedId!==id:snapshotRev>savedRev||snapshotRev===savedRev&&snapshot.updatedAt>localBoardSavedAt()),selected=use?snapshot.board:null,safe=cloudRejoinGenerationBoard(id,savedId,currentGeneration,current,selected,selected?snapshotGeneration:null,cached.base,null,generation);return{savedId,currentGeneration,generation,savedRev,updatedAt:snapshot?.updatedAt,savedAt:localBoardSavedAt(),valid,use,current,safe,snapshotBoard:snapshot?.board}},
+  async joinStorageState(id){const backupKeys=localBoardBackupEntries().map(item=>[item.key,item.record]),transitionKeys=Array.from({length:localStorage.length},(_,i)=>localStorage.key(i)).filter(key=>key&&key.startsWith('ghdraw:cloudTransition')).sort().map(key=>[key,localStorage.getItem(key)]);return{board:localStorage.getItem('ghdraw:v2'),backups:backupKeys,transitions:transitionKeys,checkpoint:await cloudCheckpoint(id),snapshot:await cloudLocalSnapshot(id),outbox:await loadLiveChatOutbox(id),room:cloudRoom&&{id:cloudRoom.id,generation:cloudRoom.generation}}},
   armGetAbort(store,key,ordinal){window.__ghdrawFault.get={store,key:String(key),ordinal,count:0}},
   armTransactionAbort(stores,mode,ordinal=1){window.__ghdrawFault.tx={stores,mode,ordinal,count:0}},
   startHandoff(){window.__ghdrawHandoffPromise=cloudStartNewRoom();return true},
@@ -74,11 +80,12 @@ window.__ghdrawFault={get:null,tx:null};
   async syncNow(){clearTimeout(cloudTimer);await cloudSync();return true},
   async transition(id){return await cloudRoomTransition(id)},
   async configureLive(id){cloudRoom={id,expires:EXPIRES_PLACEHOLDER,generation:0};myName='Test user';myColor='#123456';cloudRequest=async(path,body)=>{const response=await fetch('/__fake_live'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}),data=await response.json();if(!response.ok)throw Object.assign(new Error(data.message||data.error||'Cloud error'),{status:response.status,code:data.error||null});return data};await liveStart();clearTimeout(liveT);liveT=0;return true},
-  async submitLiveMessage(text,failIdb=false){if(!chatOpen)toggleChat();const input=document.querySelector('#chi');input.value=text;if(failIdb)window.__GHDrawTest.armTransactionAbort(['chatOutbox'],'readwrite',1);await document.querySelector('#chf').onsubmit({preventDefault(){}});return true},
+  async submitLiveMessage(text,failIdb=false,failOrdinal=1){if(!chatOpen)toggleChat();const input=document.querySelector('#chi');input.value=text;if(failIdb)window.__GHDrawTest.armTransactionAbort(['chatOutbox'],'readwrite',failOrdinal);await document.querySelector('#chf').onsubmit({preventDefault(){}});return true},
   async enqueueLiveMessage(id,text){const original=newLiveChatMessageId;newLiveChatMessageId=()=>id;try{return await queueLiveChatMessage(text)}finally{newLiveChatMessageId=original}},
   openLiveChat(){if(!chatOpen)toggleChat();return true},
   async tickLive(){clearTimeout(liveT);liveT=0;await liveTick();clearTimeout(liveT);liveT=0;return true},
-  liveState(){return{outbox:structuredClone(chatOut),messages:structuredClone(chatMsgs),rendered:document.querySelector('#chl')?.innerText||'',stored:JSON.stringify(chatOut)}},
+  async durableChat(){return await loadLiveChatOutbox(cloudRoom&&cloudRoom.id)},
+  liveState(){return{outbox:structuredClone(chatOut),messages:structuredClone(chatMsgs),rendered:document.querySelector('#chl')?.innerText||'',stored:JSON.stringify(chatOut),ready:liveChatReady}},
   state(){return{room:cloudRoom&&{id:cloudRoom.id,generation:cloudRoom.generation},rev:cloudRev,inflight:cloudInflight,pending:cloudPending,diff:cloudBase?cloudDiff(cloudBase,cloudBoard()):null,owner:cloudOwner,oldOwner:localStorage.getItem('ghdraw:cloudOwner:'+OLD_ID_PLACEHOLDER),transition:localStorage.getItem(cloudRoomTransitionKey(OLD_ID_PLACEHOLDER)),base:cloudBase&&structuredClone(cloudBase),board:structuredClone(cloudBoard(true)),events:window.__ghdrawIdbAudit.slice()}},
   unsafe(id){return cloudCheckpointUnsafeMarker(id)},
   async clearDatabase(){
@@ -391,6 +398,59 @@ async def test_unresolved_outbox_survives_handoff(browser, origin):
     print("PASS handoff: rejected operation leaves durable source outbox and source room intact")
 
 
+async def prepare_selected_snapshot_join(page, *, seed_outbox=False):
+    await page.evaluate("cfg=>window.__GHDrawTest.configure(cfg)", {"id": OLD_ID, "board": BASE_BOARD, "owner": OWNER, "rev": 4, "expires": EXPIRES})
+    assert await page.evaluate("window.__GHDrawTest.seedCheckpoint()") is True
+    selected = copy.deepcopy(BASE_BOARD)
+    selected["p"][0]["e"][0]["x"] = 22
+    current = copy.deepcopy(BASE_BOARD)
+    current["p"][0]["e"][0]["x"] = 33
+    await page.evaluate("b=>window.__GHDrawTest.setBoard(b)", selected)
+    assert await page.evaluate("window.__GHDrawTest.snapshotCurrent(Date.now()+60000)") is True
+    await page.evaluate("b=>window.__GHDrawTest.setBoard(b)", current)
+    assert await page.evaluate("window.__GHDrawTest.saveBoard()") is True
+    await page.evaluate("window.__GHDrawTest.prepareJoin()")
+    assert await page.evaluate("window.__GHDrawTest.seedJoinBackup()") is True
+    if seed_outbox:
+        assert await page.evaluate("id=>window.__GHDrawTest.seedChatOutbox(id)", "d" * 32) is True
+
+
+async def test_selected_snapshot_join_gate(browser, origin, failure):
+    context, page = await launch_test_page(browser, origin)
+    cloud = FakeCloud(page=page)
+    await page.route(BACKEND_ORIGIN + "/**", cloud.handle)
+    await prepare_selected_snapshot_join(page, seed_outbox=failure is not None)
+    selection = await page.evaluate("id=>window.__GHDrawTest.joinSelection(id)", OLD_ID)
+    assert selection["valid"] and selection["use"] and selection["safe"]["p"][0]["e"][0]["x"] == 22, f"the fixture must select the saved offline snapshot, not the current board: {selection}"
+    before = await page.evaluate("id=>window.__GHDrawTest.joinStorageState(id)", OLD_ID)
+    if failure == "indexeddb-readback":
+        await page.evaluate("window.__GHDrawTest.armTransactionAbort(['snapshots'],'readonly',2)")
+    elif failure == "board-persistence":
+        await page.evaluate("window.__GHDrawTest.failNextLocalBoardWrite()")
+    await page.evaluate("id=>window.__GHDrawTest.startJoin(id)", OLD_ID)
+    await page.evaluate("window.__ghdrawJoinPromise")
+    after = await page.evaluate("id=>window.__GHDrawTest.joinStorageState(id)", OLD_ID)
+    if failure:
+        assert not any(event == "get-room:" + OLD_ID for event in cloud.events), f"{failure}: join must stop before the remote room read; events={cloud.events}"
+        assert after["board"] == before["board"], f"{failure}: persisted local board stays byte-for-byte unchanged"
+        assert after["backups"] == before["backups"], f"{failure}: existing recovery backups are unchanged"
+        assert after["checkpoint"] == before["checkpoint"], f"{failure}: checkpoint/outbox remains unchanged"
+        assert after["snapshot"] == before["snapshot"], f"{failure}: offline snapshot remains unchanged"
+        assert after["outbox"] == before["outbox"], f"{failure}: durable chat outbox remains unchanged"
+        assert after["transitions"] == before["transitions"] and after["room"] is None
+        state = await page.evaluate("window.__GHDrawTest.state()")
+        assert state["board"]["p"][0]["e"][0]["x"] == 33, f"{failure}: current local edits remain in memory"
+        assert "export a .ghdraw" in (await page.locator("#toast").inner_text()).lower() or "dışa aktar" in (await page.locator("#toast").inner_text()).lower()
+        await context.close()
+        print("PASS selected offline snapshot join abort:", failure, "local board, backups, checkpoint/outbox and room state preserved")
+        return
+    assert any(event == "get-room:" + OLD_ID for event in cloud.events), "verified snapshot restoration must continue to the room request"
+    state = await page.evaluate("window.__GHDrawTest.state()")
+    assert state["room"]["id"] == OLD_ID and state["board"]["p"][0]["e"][0]["x"] == 22, "a successfully restored offline snapshot joins and keeps its local edit"
+    await context.close()
+    print("PASS selected offline snapshot join: verified restore proceeds and rebases the selected local edit")
+
+
 async def test_restore_intent_recovery(browser, origin, mode):
     context, page = await launch_test_page(browser, origin)
     current = copy.deepcopy(BASE_BOARD)
@@ -498,6 +558,37 @@ async def test_chat_outbox_survives_reload_and_lost_ack(browser, origin):
     assert len(cloud.attempts) == blocked_attempts and any(item["id"] == blocked_id and item["blocked"] for item in (await page.evaluate("window.__GHDrawTest.liveState()"))["outbox"]), "blocked messages are not automatically retried or removed"
     await context.close()
     print("PASS chat: durable retry/eviction ACK, reload recovery, visible failed/blocked states, IndexedDB abort prevents POST and preserves draft, distinct duplicate-text sends")
+
+
+async def test_chat_manual_retry_after_status_write_failure(browser, origin):
+    context, page = await launch_test_page(browser, origin)
+    cloud = FakeLiveChat()
+    await page.route(origin + "/__fake_live/**", cloud.handle)
+    await page.evaluate("id=>window.__GHDrawTest.configureLive(id)", "e" * 32)
+    cloud.reject_next = True
+    await page.evaluate("text=>window.__GHDrawTest.submitLiveMessage(text,true,2)", "status write retry")
+    await page.wait_for_function("window.__GHDrawTest.liveState().outbox.some(item=>item.failed)", timeout=5000)
+    failed = await page.evaluate("window.__GHDrawTest.liveState()")
+    message_id = next(item["id"] for item in failed["outbox"] if item["failed"])
+    durable = await page.evaluate("window.__GHDrawTest.durableChat()")
+    assert failed["ready"] is False and len(durable) == 1 and durable[0]["id"] == message_id and durable[0]["failed"] is False, "a failed status write closes readiness and leaves the unchanged message durable"
+    assert cloud.attempts == [message_id] and len(cloud.messages) == 0, "the first permanent rejection is not treated as delivered"
+
+    await page.evaluate("window.__GHDrawTest.armTransactionAbort(['chatOutbox'],'readwrite',1)")
+    await page.evaluate("document.querySelector('#chl button').click()")
+    await page.wait_for_timeout(100)
+    blocked = await page.evaluate("window.__GHDrawTest.liveState()")
+    durable_blocked = await page.evaluate("window.__GHDrawTest.durableChat()")
+    assert blocked["ready"] is False and len(durable_blocked) == 1 and durable_blocked[0]["id"] == message_id, "a failed retry-state persistence keeps sending closed and the same item queued"
+    assert cloud.attempts == [message_id], "no POST occurs before the retry status is durably verified"
+
+    await page.evaluate("document.querySelector('#chl button').click()")
+    await page.wait_for_function("window.__GHDrawTest.liveState().outbox.length===0", timeout=5000)
+    final = await page.evaluate("window.__GHDrawTest.liveState()")
+    assert final["ready"] is True and cloud.attempts == [message_id, message_id], "after readback, manual retry sends exactly once using the same idempotency ID"
+    assert len(cloud.messages) == 1 and cloud.messages[0]["id"] == message_id and cloud.messages[0]["m"] == "status write retry", "the successful server receipt clears only the matching durable item"
+    await context.close()
+    print("PASS chat retry after IDB status-write failure: readiness remains closed until durable retry readback; same messageId sends once and ACK clears it")
 
 
 async def test_stale_tab_snapshot_is_rejected_and_rejoin_is_safe(browser, origin):
@@ -629,9 +720,13 @@ async def main():
             await test_handoff_success_and_two_tab_lock(browser, origin)
             await test_handoff_failures(browser, origin)
             await test_unresolved_outbox_survives_handoff(browser, origin)
+            await test_selected_snapshot_join_gate(browser, origin, "indexeddb-readback")
+            await test_selected_snapshot_join_gate(browser, origin, "board-persistence")
+            await test_selected_snapshot_join_gate(browser, origin, None)
             await test_restore_intent_recovery(browser, origin, "lost-ack")
             await test_restore_intent_recovery(browser, origin, "checkpoint-failure")
             await test_chat_outbox_survives_reload_and_lost_ack(browser, origin)
+            await test_chat_manual_retry_after_status_write_failure(browser, origin)
             await test_stale_tab_snapshot_is_rejected_and_rejoin_is_safe(browser, origin)
             await test_chat_contention_retries_but_permanent_errors_do_not(browser, origin)
             await test_chat_outbox_cross_tab_merge(browser, origin)
