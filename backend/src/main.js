@@ -21,6 +21,10 @@ const HID=id=>'h'+id.slice(0,31),HMAX_N=20,HMAX_TOTAL=8e6,HMAX_ONE=3e6,HGAP=1200
 const validPage=p=>p&&validId(p.id)&&typeof p.n==='string'&&p.n.length<=100&&Array.isArray(p.e)&&p.e.length<=10000&&p.e.every(validElement)&&new Set(p.e.map(e=>e.id)).size===p.e.length;
 const validBoard=b=>b&&Array.isArray(b.p)&&b.p.length>0&&b.p.length<=100&&b.p.every(validPage)&&new Set(b.p.map(p=>p.id)).size===b.p.length;
 const validChange=c=>c&&(['addPage'].includes(c.t)?validPage(c.p):validId(c.pid)&&(c.t==='delPage'||c.t==='rename'&&typeof c.n==='string'||c.t==='put'&&validElement(c.e)||c.t==='del'&&validId(c.eid)||c.t==='order'&&Array.isArray(c.ids)&&c.ids.length<=10000&&c.ids.every(validId)));
+const hasCommentOverflow=elements=>Array.isArray(elements)&&elements.some(e=>Array.isArray(e?.th)&&e.th.length>BoardElementContract.MAX_COMMENTS);
+const boardHasCommentOverflow=board=>Array.isArray(board?.p)&&board.p.some(page=>hasCommentOverflow(page?.e));
+const changesHaveCommentOverflow=changes=>Array.isArray(changes)&&changes.some(change=>change?.t==='put'&&hasCommentOverflow([change.e])||change?.t==='addPage'&&boardHasCommentOverflow({p:[change.p]}));
+const commentLimitMessage='This thread has reached the 10,000-comment limit. The update was not applied and existing comments were preserved.';
 
 // Appwrite Functions supply a short-lived scoped key per execution. No persistent API key is needed.
 export function createAppwriteDb({req,env=process.env,ClientClass=Client,TablesDBClass=TablesDB}={}){
@@ -222,7 +226,7 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
    }
    if(req.method==='POST'&&req.path==='/create'){
     if(Buffer.byteLength(req.bodyText||'')>MAX)return reply({error:'Board exceeds 12 MB'},413);
-    const b=req.bodyJson||{};if(!['view','room'].includes(b.kind)||!validBoard(b.board)||(b.requestId!==undefined&&!validOpId(b.requestId)))return reply({error:'Invalid board'},400);
+    const b=req.bodyJson||{};if(boardHasCommentOverflow(b.board))return reply({error:'comment_limit',message:commentLimitMessage},409);if(!['view','room'].includes(b.kind)||!validBoard(b.board)||(b.requestId!==undefined&&!validOpId(b.requestId)))return reply({error:'Invalid board'},400);
     const requestHash=b.requestId?createHash('sha256').update(JSON.stringify({kind:b.kind,board:b.board,room:b.room||null})).digest('hex'):null;
     const db=await getDb();
     return await withLock(db,CREATE_LOCK_SEED,async()=>{
@@ -253,7 +257,7 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
    if(req.method==='POST'&&path[0]==='room'){
     if(!/^[a-f0-9]{32}$/.test(id||''))throw {code:404};
     if(Buffer.byteLength(req.bodyText||'')>MAX)return reply({error:'Update exceeds 12 MB'},413);
-    const b=req.bodyJson||{};if(!Array.isArray(b.changes)||b.changes.length>5000||!b.changes.every(validChange)||(b.changes.length>0&&!validOpId(b.opId))||(b.opId!==undefined&&!validOpId(b.opId))||(b.baseRev!==undefined&&(!Number.isSafeInteger(b.baseRev)||b.baseRev<0)))return reply({error:'Invalid update; a valid opId is required for changes'},400);
+    const b=req.bodyJson||{};if(changesHaveCommentOverflow(b.changes))return reply({error:'comment_limit',message:commentLimitMessage},409);if(!Array.isArray(b.changes)||b.changes.length>5000||!b.changes.every(validChange)||(b.changes.length>0&&!validOpId(b.opId))||(b.opId!==undefined&&!validOpId(b.opId))||(b.baseRev!==undefined&&(!Number.isSafeInteger(b.baseRev)||b.baseRev<0)))return reply({error:'Invalid update; a valid opId is required for changes'},400);
     const db=await getDb();
     return await withLock(db,id,async()=>{for(let attempt=0;attempt<6;attempt++){
      const tx=await db.createTransaction({ttl:60});
@@ -270,7 +274,7 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
       }
       const op=applyRoomUpdate(d,b,{alreadyApplied});
       if(op.duplicate){await db.updateTransaction({transactionId:tx.$id,rollback:true});const {owner,ops,createReceiptId,...publicData}=d;return reply({...publicData,syncProtocol:'room-ops-v1',ack:op.ack,duplicate:true,rebased:op.rebased})}
-      if(!validBoard(d.board))throw {code:400};if(Buffer.byteLength(JSON.stringify(d))>MAX)throw {code:413};
+      if(!validBoard(d.board)){if(boardHasCommentOverflow(d.board)){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'comment_limit',message:commentLimitMessage},409)}throw {code:400}}if(Buffer.byteLength(JSON.stringify(d))>MAX)throw {code:413};
       await db.updateRow({databaseId:DB,tableId:TABLE,rowId:id,data:rowData(d),transactionId:tx.$id});
       if(opReceiptId&&!alreadyApplied){await db.updateRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id),data:rowData(quota),transactionId:tx.$id});const receipt={kind:'room-op-receipt',roomId:id,opId:b.opId,expires:d.expires};await db.createRow({databaseId:DB,tableId:TABLE,rowId:opReceiptId,data:rowData(receipt),permissions:[],transactionId:tx.$id})}
       await db.updateTransaction({transactionId:tx.$id,commit:true});

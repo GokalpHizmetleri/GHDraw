@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
+import vm from 'node:vm';
 import {Client,Query,TablesDB} from 'node-appwrite';
 import {BOARD_COORD_LIMIT,BOARD_POINT_LIMIT,CLEANUP_PAGE_BUDGET,CLEANUP_ROW_BUDGET,CLEANUP_SPECIAL_ROW_BUDGET,CLEANUP_TIME_BUDGET_MS,createAppwriteDb,createHandler,ROOM_OP_RECEIPT_LIMIT} from './main.js';
 import BoardElementContract from '../shared/board-element-contract.js';
@@ -38,6 +39,35 @@ test('browser and backend load one versioned board element contract',()=>{
  assert.equal(BoardElementContract.validElement({id:'text',type:'text',x:0,y:0,w:10,h:10,text:'x',font:'Caveat',size:401}),false);
 });
 
+test('cloudBoard text wire payload roundtrips through backend create and room edit validation',async()=>{
+ const clientHtml=readFileSync(new URL('../../index.html',import.meta.url),'utf8'),serializer=clientHtml.split('\n').find(line=>line.startsWith('const ser=')),start=clientHtml.indexOf('function cloudBoard('),end=clientHtml.indexOf('\nfunction validCloudElement(',start);
+ assert.ok(serializer&&start>=0&&end>start,'the production cloudBoard serializer is available');
+ const browser={pages:[{id:'page-1',name:'Text',els:[{id:'shared-text',type:'text',x:10,y:20,w:84,h:35,lw:[84],text:'A shared label',font:'Caveat',size:28,align:'left'}]}],dark:false,syncPage(){}};
+ vm.runInNewContext(`${serializer}\n${clientHtml.slice(start,end)}\nglobalThis.wireBoard=cloudBoard();`,browser);
+ const wireBoard=JSON.parse(JSON.stringify(browser.wireBoard)),wireText=wireBoard.p[0].e[0];
+ assert.equal(Object.hasOwn(wireText,'w'),false);assert.equal(Object.hasOwn(wireText,'h'),false);
+ assert.equal(BoardElementContract.validElement(wireText),true,'the same shared contract used by the Function accepts the browser serializer output');
+ const fx=fixture(),created=await fx.call({method:'POST',path:'/create',body:{kind:'room',board:wireBoard,requestId:'d'.repeat(32)}});
+ assert.equal(created.status,201,'room creation accepts the exact cloudBoard payload');
+ const edited={...wireText,text:'Edited offline label'},opId='e'.repeat(32),update=await fx.call({method:'POST',path:`/room/${created.body.id}`,body:{opId,baseRev:0,changes:[{t:'put',pid:'page-1',e:edited}]}});
+ assert.equal(update.status,200,'room add/edit accepts the exact serialized text contract');assert.equal(update.body.ack,opId);
+ assert.equal(update.body.board.p[0].e[0].text,'Edited offline label');
+ const before=fx.db.rows.get(created.body.id).payload,invalid=await fx.call({method:'POST',path:`/room/${created.body.id}`,body:{opId:'f'.repeat(32),baseRev:1,changes:[{t:'put',pid:'page-1',e:{...edited,w:-1}}]}});
+ assert.equal(invalid.status,400,'supplied invalid text metrics remain rejected');assert.equal(fx.db.rows.get(created.body.id).payload,before,'invalid metrics cannot mutate the shared board');
+});
+test('301-comment room update survives lost ACK and duplicate retry without replaying comments',async()=>{
+ const initialMessages=Array.from({length:300},(_,i)=>({id:'m'+i,t:'comment '+i})),allMessages=[...initialMessages,{id:'m300',t:'comment 300'}];
+ const thread=(messages)=>({id:'comment-pin',type:'ellipse',x:0,y:0,w:20,h:20,cm:1,th:messages});
+ const fx=fixture(),created=await fx.call({method:'POST',path:'/create',body:{kind:'room',board:{v:2,d:0,p:[{id:'page-1',n:'Board',e:[thread(initialMessages)]}]},requestId:'a'.repeat(32)}});
+ assert.equal(created.status,201);const opId='b'.repeat(32),body={opId,baseRev:0,changes:[{t:'put',pid:'page-1',e:thread(allMessages)}]};
+ const committed=await fx.call({method:'POST',path:`/room/${created.body.id}`,body});assert.equal(committed.status,200);assert.equal(committed.body.rev,1);
+ // Treat the first successful response as lost, as happens when the ACK is dropped on the network.
+ const retry=await fx.call({method:'POST',path:`/room/${created.body.id}`,body});assert.equal(retry.status,200);assert.equal(retry.body.duplicate,true);assert.equal(retry.body.ack,opId);assert.equal(retry.body.rev,1);
+ assert.equal(retry.body.board.p[0].e[0].th.length,301,'comments remain exactly-once after retry');
+ const before=fx.db.rows.get(created.body.id).payload,tooMany=Array.from({length:BoardElementContract.MAX_COMMENTS+1},(_,i)=>({id:'over-'+i,t:'x'}));
+ const rejected=await fx.call({method:'POST',path:`/room/${created.body.id}`,body:{opId:'c'.repeat(32),baseRev:1,changes:[{t:'put',pid:'page-1',e:thread(tooMany)}]}});
+ assert.equal(rejected.status,409,'the shared comment cap returns an explicit conflict');assert.equal(rejected.body.error,'comment_limit');assert.equal(fx.db.rows.get(created.body.id).payload,before,'over-limit input does not truncate or mutate existing comments');
+});
 class MemoryTablesDB{
  constructor(seed=[]){this.rows=new Map(seed);this.transactions=new Map();this.nextTx=0;this.calls=[];this.tablePermissions=[];this.failDeleteOnceId=null;this.failDeleteRowsAt=0;this.beforeTxCommit=null}
  #map(transactionId){if(!transactionId)return this.rows;const tx=this.transactions.get(transactionId);if(!tx)throw err(404);return tx.rows}
@@ -92,6 +122,19 @@ function createBodyForStoredBytes(target){
 }
 
 // Function runtime credentials are ephemeral; no long-lived secret is accepted from the source.
+test('concurrent comments over the shared limit return explicit 409 and preserve capped-room duplicate ACKs',async()=>{
+ const initialMessages=Array.from({length:BoardElementContract.MAX_COMMENTS-1},(_,i)=>({id:'base-'+i,t:'x'}));
+ const thread=(messages)=>({id:'limit-pin',type:'ellipse',x:0,y:0,w:20,h:20,cm:1,th:messages});
+ const fx=fixture(),created=await fx.call({method:'POST',path:'/create',body:{kind:'room',board:{v:2,d:0,p:[{id:'page-1',n:'Board',e:[thread(initialMessages)]}]},requestId:'1'.repeat(32)}});
+ assert.equal(created.status,201);
+ const committedMessages=[...initialMessages,{id:'peer-add',t:'peer'}],firstBody={opId:'2'.repeat(32),baseRev:0,changes:[{t:'put',pid:'page-1',e:thread(committedMessages)}]};
+ const committed=await fx.call({method:'POST',path:`/room/${created.body.id}`,body:firstBody});assert.equal(committed.status,200);assert.equal(committed.body.board.p[0].e[0].th.length,BoardElementContract.MAX_COMMENTS);
+ const beforeConflict=fx.db.rows.get(created.body.id).payload,rowCount=fx.db.rows.size;
+ const concurrentMessages=[...initialMessages,{id:'local-add',t:'local'}],conflict=await fx.call({method:'POST',path:`/room/${created.body.id}`,body:{opId:'3'.repeat(32),baseRev:0,changes:[{t:'put',pid:'page-1',e:thread(concurrentMessages)}]}});
+ assert.equal(conflict.status,409);assert.equal(conflict.body.error,'comment_limit','a stale concurrent add that would exceed the cap has a stable code');
+ assert.equal(fx.db.rows.get(created.body.id).payload,beforeConflict,'the conflict does not truncate comments or mutate the room');assert.equal(fx.db.rows.size,rowCount,'the rejected operation writes no receipt or quota row');
+ const retry=await fx.call({method:'POST',path:`/room/${created.body.id}`,body:firstBody});assert.equal(retry.status,200);assert.equal(retry.body.duplicate,true);assert.equal(retry.body.ack,firstBody.opId);assert.equal(retry.body.board.p[0].e[0].th.length,BoardElementContract.MAX_COMMENTS,'the already-committed ACK is still recoverable at the cap');
+});
 test('Appwrite client uses runtime endpoint/project and the per-execution x-appwrite-key',()=>{
  const seen={};
  class FakeClient{setEndpoint(v){seen.endpoint=v;return this}setProject(v){seen.project=v;return this}setKey(v){seen.key=v;return this}}

@@ -3,7 +3,7 @@
   if(typeof module==='object'&&module.exports)module.exports=contract;
   else if(root)root.GHDrawBoardElementContract=contract;
 })(typeof globalThis==='object'?globalThis:this,function(){
-  const VERSION=1,COORD_LIMIT=1e9,POINT_LIMIT=1e6;
+  const VERSION=1,COORD_LIMIT=1e9,POINT_LIMIT=1e6,MAX_COMMENTS=10000;
   const FONTS=Object.freeze([
     'Caveat','Kalam','Patrick Hand','Shantell Sans','Playpen Sans','Pangolin','Caveat Brush','Amatic SC',
     'Marck Script','Kaushan Script','Dancing Script','Pacifico','Merienda','Courgette','Lobster','Bangers',
@@ -24,15 +24,16 @@
     if(!optional('seed',value=>Number.isSafeInteger(value)&&value>=0&&value<=1e9)||!optional('frame',value=>typeof value==='boolean')||!optional('cm',value=>value===1)||!optional('note',value=>value===1)||!optional('done',value=>typeof value==='boolean')||!optional('pr',value=>typeof value==='boolean')||!optional('__new',value=>typeof value==='boolean')||!optional('__bak',value=>Number.isFinite(value)&&value>=0&&value<=100))return false;
     if(!optional('name',value=>typeof value==='string'&&value.length<=512)||!optional('au',value=>typeof value==='string'&&value.length<=256)||!optional('txt',value=>typeof value==='string'&&value.length<=600)||!optional('text',value=>typeof value==='string'&&value.length<=1e6)||!optional('src',value=>typeof value==='string'&&value.length>0&&value.length<=1e7)||!optional('giphyId',value=>typeof value==='string'&&value.length>0&&value.length<=128)||!optional('g',value=>typeof value==='string'&&value.length<=64)||!optional('b0',value=>typeof value==='string'&&value.length>0&&value.length<=256)||!optional('b1',value=>typeof value==='string'&&value.length>0&&value.length<=256)||!optional('ts',value=>Number.isSafeInteger(value)&&value>=0))return false;
     if(!optional('lw',value=>Array.isArray(value)&&value.length<=POINT_LIMIT&&value.every(number=>Number.isFinite(number)&&number>=0&&number<=1e9))||!optional('__c',value=>Array.isArray(value)&&value.length===2&&value.every(finite)))return false;
-    if(!optional('th',messages=>Array.isArray(messages)&&messages.length<=10000&&messages.every(message=>isObject(message)&&Object.keys(message).every(key=>['id','n','c','t','ts'].includes(key))&&(!own(message,'id')||typeof message.id==='string'&&message.id.length<=256)&&(!own(message,'n')||typeof message.n==='string'&&message.n.length<=256)&&(!own(message,'c')||typeof message.c==='string'&&(message.c==='inherit'||validColor(message.c)))&&typeof message.t==='string'&&message.t.length<=500&&(!own(message,'ts')||Number.isSafeInteger(message.ts)&&message.ts>=0))))return false;
+    if(!optional('th',messages=>Array.isArray(messages)&&messages.length<=MAX_COMMENTS&&messages.every(message=>isObject(message)&&Object.keys(message).every(key=>['id','n','c','t','ts'].includes(key))&&(!own(message,'id')||typeof message.id==='string'&&message.id.length<=256)&&(!own(message,'n')||typeof message.n==='string'&&message.n.length<=256)&&(!own(message,'c')||typeof message.c==='string'&&(message.c==='inherit'||validColor(message.c)))&&typeof message.t==='string'&&message.t.length<=500&&(!own(message,'ts')||Number.isSafeInteger(message.ts)&&message.ts>=0))))return false;
     const linear=['line','arrow','pen','poly'].includes(element.type),shapes=['rect','diamond','ellipse','text','image','video'];
     if(!optional('pts',validPoints))return false;
     if(linear){if(!validPoints(element.pts))return false}
+    else if(element.type==='text'){if(!finite(element.x)||!finite(element.y)||(own(element,'w')&&Math.abs(element.x+element.w)>COORD_LIMIT)||(own(element,'h')&&Math.abs(element.y+element.h)>COORD_LIMIT))return false}
     else if(!shapes.includes(element.type)||![element.x,element.y,element.w,element.h].every(finite)||element.w<0||element.h<0||Math.abs(element.x+element.w)>COORD_LIMIT||Math.abs(element.y+element.h)>COORD_LIMIT)return false;
     if(element.type==='text'&&(!Number.isFinite(element.size)||element.size<6||element.size>400))return false;
     if(element.type==='image'&&!((typeof element.src==='string'&&element.src.length>0)||(typeof element.giphyId==='string'&&element.giphyId.length>0)))return false;
     if(element.type==='video'&&!(typeof element.src==='string'&&element.src.length>0))return false;
     return true;
   }
-  return Object.freeze({VERSION,COORD_LIMIT,POINT_LIMIT,FONTS,validElement});
+  return Object.freeze({VERSION,COORD_LIMIT,POINT_LIMIT,MAX_COMMENTS,FONTS,validElement});
 });
