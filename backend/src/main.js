@@ -9,6 +9,7 @@ export const ROOM_OP_RECEIPT_LIMIT=9_400;
 export const BOARD_COORD_LIMIT=BoardElementContract.COORD_LIMIT,BOARD_POINT_LIMIT=BoardElementContract.POINT_LIMIT;
 export const CLEANUP_ROW_BUDGET=1_000,CLEANUP_SPECIAL_ROW_BUDGET=25,CLEANUP_PAGE_BUDGET=10,CLEANUP_TIME_BUDGET_MS=20_000;
 const validId=x=>typeof x==='string'&&x.length>0&&x.length<=128;
+const validElementId=x=>typeof x==='string'&&x.length>0&&x.length<=BoardElementContract.MAX_ELEMENT_ID_LENGTH;
 const validElement=BoardElementContract.validElement;
 // Appwrite projects expiry metadata as a narrow DateTime column so scans never download board payloads.
 const rowData=d=>({payload:JSON.stringify(d),expiresAt:new Date(d.expires).toISOString()});
@@ -20,7 +21,7 @@ const roomOpQuotaRowId=id=>'q'+id.slice(0,31);
 const HID=id=>'h'+id.slice(0,31),HMAX_N=20,HMAX_TOTAL=8e6,HMAX_ONE=3e6,HGAP=120000;
 const validPage=p=>p&&validId(p.id)&&typeof p.n==='string'&&p.n.length<=100&&Array.isArray(p.e)&&p.e.length<=10000&&p.e.every(validElement)&&new Set(p.e.map(e=>e.id)).size===p.e.length;
 const validBoard=b=>b&&Array.isArray(b.p)&&b.p.length>0&&b.p.length<=100&&b.p.every(validPage)&&new Set(b.p.map(p=>p.id)).size===b.p.length;
-const validChange=c=>c&&(['addPage'].includes(c.t)?validPage(c.p):validId(c.pid)&&(c.t==='delPage'||c.t==='rename'&&typeof c.n==='string'||c.t==='put'&&validElement(c.e)||c.t==='del'&&validId(c.eid)||c.t==='order'&&Array.isArray(c.ids)&&c.ids.length<=10000&&c.ids.every(validId)));
+const validChange=c=>c&&(['addPage'].includes(c.t)?validPage(c.p):validId(c.pid)&&(c.t==='delPage'||c.t==='rename'&&typeof c.n==='string'||c.t==='put'&&validElement(c.e)||c.t==='del'&&validElementId(c.eid)||c.t==='order'&&Array.isArray(c.ids)&&c.ids.length<=10000&&c.ids.every(validElementId)));
 const hasCommentOverflow=elements=>Array.isArray(elements)&&elements.some(e=>Array.isArray(e?.th)&&e.th.length>BoardElementContract.MAX_COMMENTS);
 const boardHasCommentOverflow=board=>Array.isArray(board?.p)&&board.p.some(page=>hasCommentOverflow(page?.e));
 const changesHaveCommentOverflow=changes=>Array.isArray(changes)&&changes.some(change=>change?.t==='put'&&hasCommentOverflow([change.e])||change?.t==='addPage'&&boardHasCommentOverflow({p:[change.p]}));

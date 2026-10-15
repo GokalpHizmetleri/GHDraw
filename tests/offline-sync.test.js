@@ -121,12 +121,20 @@ test('element IDs roundtrip exactly at 128, 129 and 256 characters and reject 25
     assert.equal(BoardElementContract.validElement(wireElement),valid,`shared contract at length ${length}`);
     assert.equal(c.api.validCloudElement(wireElement),valid,`client cloud validator at length ${length}`);
     assert.equal(c.api.validCloudChange({t:'put',pid:'p1',e:wireElement}),valid,`client wire change validation at length ${length}`);
+    assert.equal(c.api.validCloudChange({t:'del',pid:'p1',eid:id}),valid,`client delete accepts only contract-valid element IDs at length ${length}`);
+    assert.equal(c.api.validCloudChange({t:'order',pid:'p1',ids:[id]}),valid,`client order accepts only contract-valid element IDs at length ${length}`);
     assert.equal(c.api.normalizeCloudRoomBoard(wire,false)!==null,valid,`client room load validation at length ${length}`);
     if(valid){
+      const pair=json(wire);pair.p[0].e.push(recordElement('secondary'));const reordered=json(pair);reordered.p[0].e.reverse();
+      const orderChanges=c.api.cloudDiff(pair,reordered),orderChange=orderChanges.find(change=>change.t==='order');assert.deepEqual(json(orderChange.ids),['secondary',id]);assert.ok(orderChanges.every(c.api.validCloudChange),'production order delta with a long element ID passes client validation');
+      const deleted=json(pair);deleted.p[0].e=deleted.p[0].e.filter(item=>item.id!=='x'.repeat(length));const deleteChanges=c.api.cloudDiff(pair,deleted);assert.ok(deleteChanges.some(change=>change.t==='del'&&change.eid===id));assert.ok(deleteChanges.every(c.api.validCloudChange),'production delete delta with a long element ID passes client validation');
       assert.equal(c.api.restoreCloudSnapshot({board:wire}),true,`client restore accepts length ${length}`);
       assert.equal(c.api.cloudBoard().p[0].e[0].id,id,`client restore keeps exact ID length ${length}`);
     }else assert.equal(c.api.restoreCloudSnapshot({board:wire}),false,'oversize ID is explicitly rejected, not truncated');
   }
+  const h=makeBoardHarness(),c=h.context;
+  assert.equal(c.api.validCloudChange({t:'del',pid:'p1'.repeat(65),eid:'valid'}),false,'page IDs remain capped at 128 characters');
+  assert.equal(c.api.validCloudChange({t:'order',pid:'p1',ids:['x'.repeat(257)]}),false,'order cannot reference an oversize element ID');
 });
 test('one shared 10,000-comment contract supports adds through the limit and blocks the next add',()=>{
   const comments=Array.from({length:BoardElementContract.MAX_COMMENTS},(_,i)=>({id:'m'+i,t:'x'}));
