@@ -22,7 +22,7 @@ const historyRestoreReceiptRowId=(roomId,restoreId)=>'o'+createHash('sha256').up
 const liveChatReceiptRowId=(roomId,mid)=>'j'+createHash('sha256').update('ghdraw-live-chat:'+roomId+':'+mid).digest('hex').slice(0,31);
 const roomOpQuotaRowId=id=>'q'+id.slice(0,31);
 const roomChatCount=q=>q?.chatCount===undefined?0:q.chatCount;
-const validRoomReceiptQuota=(q,id)=>{const chatCount=roomChatCount(q),ids=q?.receiptIds;return q?.kind==='room-op-quota'&&q.roomId===id&&Number.isSafeInteger(q.count)&&q.count>=0&&q.count<=ROOM_OP_RECEIPT_LIMIT&&Number.isSafeInteger(chatCount)&&chatCount>=0&&Array.isArray(ids)&&ids.length+chatCount===q.count&&ids.every(x=>typeof x==='string'&&/^o[a-f0-9]{31}$/.test(x))&&new Set(ids).size===ids.length};
+const validRoomReceiptQuota=(q,id)=>{const chatCount=roomChatCount(q),ids=q?.receiptIds,chatIds=q?.chatReceiptIds;return q?.kind==='room-op-quota'&&q.roomId===id&&Number.isSafeInteger(q.count)&&q.count>=0&&q.count<=ROOM_OP_RECEIPT_LIMIT&&Number.isSafeInteger(chatCount)&&chatCount>=0&&Array.isArray(ids)&&Array.isArray(chatIds)&&ids.length+chatCount===q.count&&chatIds.length<=chatCount&&ids.every(x=>typeof x==='string'&&/^o[a-f0-9]{31}$/.test(x))&&chatIds.every(x=>typeof x==='string'&&/^j[a-f0-9]{31}$/.test(x))&&new Set([...ids,...chatIds]).size===ids.length+chatIds.length};
 // Board history: one side row per room ('h'+id), same expiry as the room. Newest 20 versions, gzip+base64, 8 MB total.
 const HID=id=>'h'+id.slice(0,31),HMAX_N=20,HMAX_TOTAL=8e6,HMAX_ONE=3e6,HGAP=120000;
 const validPage=p=>p&&validId(p.id)&&typeof p.n==='string'&&p.n.length<=100&&Array.isArray(p.e)&&p.e.length<=10000&&p.e.every(validElement)&&new Set(p.e.map(e=>e.id)).size===p.e.length;
@@ -205,7 +205,7 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
         let quota;try{quota=JSON.parse((await db.getRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id),transactionId:tx.$id})).payload)}catch(e){if(e.code!==404)throw e;await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_limit',message:'This room has no safe shared receipt counter. The message was not sent.'},409)}
         if(!validRoomReceiptQuota(quota,id)){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_limit',message:'This room has no complete safe receipt ledger. The message was not sent.'},409)}
         if(quota.count>=LIVE_CHAT_RECEIPT_LIMIT){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'live_chat_receipt_limit',message:'This room reached its shared 9,400 room receipt limit. The message remains queued and was not sent.'},409)}
-        const nextQuota={...quota,count:quota.count+1,chatCount:roomChatCount(quota)+1};
+        const nextQuota={...quota,count:quota.count+1,chatCount:roomChatCount(quota)+1,chatReceiptIds:b.mid?[...quota.chatReceiptIds,receiptId]:quota.chatReceiptIds};
         if(b.mid){if(!prior)data.chat.push({id:b.mid,cid:b.cid,n:me.n,c:me.c,m:msg,ts:now});const record={kind:'live-chat-receipt',roomId:id,mid:b.mid,messageHash,expires:room.expires};await db.createRow({databaseId:DB,tableId:TABLE,rowId:receiptId,data:rowData(record),permissions:[],transactionId:tx.$id});chatAck=b.mid}
         else data.chat.push({id:randomBytes(6).toString('hex'),cid:b.cid,n:me.n,c:me.c,m:msg,ts:now});
         await db.updateRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id),data:rowData(nextQuota),transactionId:tx.$id});
@@ -291,7 +291,7 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
      const tx=await db.createTransaction({ttl:60});
      try{
       await db.createRow({databaseId:DB,tableId:TABLE,rowId:id,data:stored,permissions:[],transactionId:tx.$id});
-      if(b.kind==='room'){const quota={kind:'room-op-quota',roomId:id,count:0,chatCount:0,receiptIds:[],expires};await db.createRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id),data:rowData(quota),permissions:[],transactionId:tx.$id})}
+      if(b.kind==='room'){const quota={kind:'room-op-quota',roomId:id,count:0,chatCount:0,receiptIds:[],chatReceiptIds:[],expires};await db.createRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id),data:rowData(quota),permissions:[],transactionId:tx.$id})}
       if(receiptId){const receipt={kind:'create-receipt',id,owner,expires,requestHash};await db.createRow({databaseId:DB,tableId:TABLE,rowId:receiptId,data:rowData(receipt),permissions:[],transactionId:tx.$id})}
       await db.updateTransaction({transactionId:tx.$id,commit:true});
      }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});throw e}
@@ -336,7 +336,7 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
       const expectedRev=req.bodyJson?.expectedRev;if(expectedRev!==undefined&&!Number.isSafeInteger(expectedRev)){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'invalid_room_revision'},400)}if(expectedRev!==undefined&&(d.kind!=='room'||d.rev!==expectedRev)){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_revision_changed',message:'The room changed after the requested snapshot; it was not deleted.'},409)}
       let receiptIds=[];if(d.kind==='room'){
        let quota;try{quota=JSON.parse((await db.getRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id),transactionId:tx.$id})).payload)}catch(e){if(e.code!==404)throw e;await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_ledger_incomplete',message:'The room receipt ledger is unavailable; the room was not deleted.'},409)}
-       receiptIds=quota.receiptIds;if(!validRoomReceiptQuota(quota,id)){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_ledger_incomplete',message:'The room receipt ledger is incomplete; the room was not deleted.'},409)}
+       if(!validRoomReceiptQuota(quota,id)){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_ledger_incomplete',message:'The room receipt ledger is incomplete; the room was not deleted.'},409)}receiptIds=[...quota.receiptIds,...quota.chatReceiptIds];
       }
       for(let i=0;i<receiptIds.length;i+=100)await db.deleteRows({databaseId:DB,tableId:TABLE,queries:[QueryApi.equal('$id',receiptIds.slice(i,i+100))],transactionId:tx.$id});
       for(const rowId of [id,'p'+id.slice(0,31),HID(id),roomOpQuotaRowId(id),d.createReceiptId].filter(Boolean))await db.deleteRow({databaseId:DB,tableId:TABLE,rowId,transactionId:tx.$id}).catch(e=>{if(e.code!==404)throw e});

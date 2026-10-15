@@ -57,7 +57,7 @@ window.__ghdrawFault={get:null,tx:null};
    localStorage.setItem('ghdraw:cloudOwner:'+id,owner);localStorage.setItem('ghdraw:v2',localBoardRecord(id,0));window.confirm=()=>true;
    window.__ghdrawExpectedBoard=structuredClone(b);window.__ghdrawExpectedRoom=id;window.__ghdrawIdbAudit=[];return true;
   },
-  async seedCheckpoint(){return await saveCloudCheckpoint(cloudRoom.id,cloudBase,cloudRev,cloudRoom.expires,cloudInflight,cloudBoard(true),null,0)},
+  async seedCheckpoint(){return await saveCloudCheckpoint(cloudRoom.id,cloudBase,cloudRev,cloudRoom.expires,cloudInflight,cloudBoard(true),null,0,null)},
   armGetAbort(store,key,ordinal){window.__ghdrawFault.get={store,key:String(key),ordinal,count:0}},
   armTransactionAbort(stores,mode,ordinal=1){window.__ghdrawFault.tx={stores,mode,ordinal,count:0}},
   startHandoff(){window.__ghdrawHandoffPromise=cloudStartNewRoom();return true},
@@ -66,6 +66,12 @@ window.__ghdrawFault={get:null,tx:null};
   tryLock(id){window.__lockEntered=false;window.__lockPromise=runCloudRoomLocked(id,async()=>{window.__lockEntered=true;return true});return true},
   async checkpoint(id){return await cloudCheckpoint(id)},
   async snapshot(id){return await cloudLocalSnapshot(id)},
+  async snapshotCurrent(updatedAt=Date.now()+5000){try{return await saveCloudLocalSnapshot(cloudRoom.id,cloudBoard(true),updatedAt,cloudRoom.generation,null,structuredClone(cloudBase),cloudRev)}catch(_){return false}},
+  async forceLegacyStaleSnapshotForRegression(updatedAt=Date.now()+10000){const id=cloudRoom.id,record={id,board:cloudBoard(true),base:structuredClone(cloudBase),rev:cloudRev,updatedAt,generation:cloudRoom.generation||0},db=await cloudDB();return await new Promise((resolve,reject)=>{const tx=db.transaction('snapshots','readwrite');tx.objectStore('snapshots').put(record);tx.oncomplete=()=>resolve(true);tx.onerror=()=>reject(tx.error||new Error('test snapshot write failed'));tx.onabort=()=>reject(tx.error||new Error('test snapshot write aborted'))})},
+  setBoard(board){const b=structuredClone(board);pages=b.p.map(p=>({id:p.id,name:p.n||'',els:structuredClone(p.e),cam:{x:0,y:0,z:1}}));pi=0;els=pages[0].els;cam={x:0,y:0,z:1};return true},
+  addShape(shape){pages[pi].els.push(structuredClone(shape));els=pages[pi].els;save();return true},
+  saveBoard(){return save()},
+  async syncNow(){clearTimeout(cloudTimer);await cloudSync();return true},
   async transition(id){return await cloudRoomTransition(id)},
   async configureLive(id){cloudRoom={id,expires:EXPIRES_PLACEHOLDER,generation:0};myName='Test user';myColor='#123456';cloudRequest=async(path,body)=>{const response=await fetch('/__fake_live'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}),data=await response.json();if(!response.ok)throw Object.assign(new Error(data.message||data.error||'Cloud error'),{status:response.status,code:data.error||null});return data};await liveStart();clearTimeout(liveT);liveT=0;return true},
   async submitLiveMessage(text,failIdb=false){if(!chatOpen)toggleChat();const input=document.querySelector('#chi');input.value=text;if(failIdb)window.__GHDrawTest.armTransactionAbort(['chatOutbox'],'readwrite',1);await document.querySelector('#chf').onsubmit({preventDefault(){}});return true},
@@ -111,6 +117,7 @@ class FakeCloud:
         self.restore_mutations = 0
         self.events = []
         self.deleted = []
+        self.room_changes = []
 
     @staticmethod
     def room_response(room):
@@ -133,14 +140,20 @@ class FakeCloud:
                 self.events.append("post-room:" + rid)
                 if rid == OLD_ID and self.outbox_conflict:
                     await route.fulfill(status=409, json={"error": "comment_limit", "message": "comment limit"}); return
-                for change in body.get("changes", []):
-                    if change.get("t") == "put":
-                        page = next((p for p in room["board"]["p"] if p["id"] == change["pid"]), None)
-                        if page:
-                            el = change["e"]
-                            idx = next((i for i, item in enumerate(page["e"]) if item["id"] == el["id"]), None)
-                            if idx is None: page["e"].append(copy.deepcopy(el))
-                            else: page["e"][idx] = copy.deepcopy(el)
+                changes = copy.deepcopy(body.get("changes", []))
+                self.room_changes.append(changes)
+                for change in changes:
+                    page = next((p for p in room["board"]["p"] if p["id"] == change.get("pid")), None)
+                    if change.get("t") == "put" and page:
+                        el = change["e"]
+                        idx = next((i for i, item in enumerate(page["e"]) if item["id"] == el["id"]), None)
+                        if idx is None: page["e"].append(copy.deepcopy(el))
+                        else: page["e"][idx] = copy.deepcopy(el)
+                    elif change.get("t") == "del" and page:
+                        page["e"] = [item for item in page["e"] if item["id"] != change["eid"]]
+                    elif change.get("t") == "order" and page:
+                        by_id = {item["id"]: item for item in page["e"]}
+                        page["e"] = [by_id[item_id] for item_id in change["ids"] if item_id in by_id] + [item for item in page["e"] if item["id"] not in change["ids"]]
                 room["rev"] += 1
                 await route.fulfill(json=self.room_response(room) | {"ack": body.get("opId")}); return
         if path == "/create" and method == "POST":
@@ -207,6 +220,8 @@ class FakeLiveChat:
         self.drop_first_ack = drop_first_ack
         self.reject_next = False
         self.reject_limit_next = False
+        self.contention_next = False
+        self.contention_arrived = asyncio.Event()
         self.silence_ack_ids = set()
         self.messages = []
         self.receipts = {}
@@ -217,6 +232,10 @@ class FakeLiveChat:
         if body.get("msg"):
             message_id = body.get("mid")
             self.attempts.append(message_id)
+            if self.contention_next:
+                self.contention_next = False
+                self.contention_arrived.set()
+                await route.fulfill(status=409, json={"error": "live_contention", "message": "retry shortly"}); return
             if self.reject_limit_next:
                 self.reject_limit_next = False
                 await route.fulfill(status=409, json={"error": "live_chat_receipt_limit", "message": "shared receipt cap reached"}); return
@@ -481,6 +500,76 @@ async def test_chat_outbox_survives_reload_and_lost_ack(browser, origin):
     print("PASS chat: durable retry/eviction ACK, reload recovery, visible failed/blocked states, IndexedDB abort prevents POST and preserves draft, distinct duplicate-text sends")
 
 
+async def test_stale_tab_snapshot_is_rejected_and_rejoin_is_safe(browser, origin):
+    context, first = await launch_test_page(browser, origin)
+    cloud = FakeCloud(page=first)
+    cloud.rooms[OLD_ID] = {"id": OLD_ID, "owner": OWNER, "kind": "room", "board": copy.deepcopy(BASE_BOARD), "rev": 0, "expires": EXPIRES}
+    await context.route(BACKEND_ORIGIN + "/**", cloud.handle)
+    await seed(first, board=BASE_BOARD, rev=0)
+    second = await context.new_page()
+    await second.goto(origin + "/", wait_until="load")
+    await second.wait_for_function("!!window.__GHDrawTest")
+    await second.evaluate("cfg=>window.__GHDrawTest.configure(cfg)", {"id": OLD_ID, "board": BASE_BOARD, "owner": OWNER, "rev": 0, "expires": EXPIRES})
+    board_b = copy.deepcopy(BASE_BOARD)
+    board_b["p"][0]["e"].append({"id": "shape-b", "type": "rect", "x": 30, "y": 4, "w": 8, "h": 9, "seed": 2, "stroke": "#1e1e1e", "bg": "transparent", "fill": "hachure", "sw": 2, "style": "solid", "rough": 1, "round": True, "opacity": 100, "align": "left"})
+    await second.evaluate("b=>window.__GHDrawTest.setBoard(b)", {"v": 2, "d": 0, "p": [{"id": "page-1", "n": "Board", "e": board_b["p"][0]["e"]}]})
+    await second.evaluate("window.__GHDrawTest.syncNow()")
+    assert cloud.rooms[OLD_ID]["rev"] == 1 and any(e["id"] == "shape-b" for e in cloud.rooms[OLD_ID]["board"]["p"][0]["e"]), "the second tab's accepted shape is at remote revision 1"
+    latest = await first.evaluate("id=>window.__GHDrawTest.snapshot(id)", OLD_ID)
+    assert latest["rev"] == 1 and latest["base"] == cloud.rooms[OLD_ID]["board"] and any(e["id"] == "shape-b" for e in latest["board"]["p"][0]["e"]), "the durable snapshot carries its own accepted base and revision"
+    stale_board = copy.deepcopy(BASE_BOARD)
+    stale_board["p"][0]["e"].append({"id": "shape-stale-local", "type": "rect", "x": 40, "y": 5, "w": 6, "h": 7, "seed": 3, "stroke": "#1e1e1e", "bg": "transparent", "fill": "hachure", "sw": 2, "style": "solid", "rough": 1, "round": True, "opacity": 100, "align": "left"})
+    await first.evaluate("b=>window.__GHDrawTest.setBoard(b)", {"v": 2, "d": 0, "p": [{"id": "page-1", "n": "Board", "e": stale_board["p"][0]["e"]}]})
+    await first.evaluate("window.__GHDrawTest.saveBoard()")
+    assert await first.evaluate("window.__GHDrawTest.snapshotCurrent()") is False, "a revision-0 tab cannot overwrite the revision-1 snapshot"
+    await first.wait_for_timeout(350)  # let the normal debounced stale snapshot path attempt and reject too.
+    still_latest = await first.evaluate("id=>window.__GHDrawTest.snapshot(id)", OLD_ID)
+    assert still_latest["rev"] == 1 and any(e["id"] == "shape-b" for e in still_latest["board"]["p"][0]["e"]), "stale timer writes cannot replace the accepted snapshot"
+    # Model a stale record left by an older client build: its own rev-0 base and local edits remain paired.
+    await first.evaluate("window.__GHDrawTest.forceLegacyStaleSnapshotForRegression()")
+    legacy_stale = await first.evaluate("id=>window.__GHDrawTest.snapshot(id)", OLD_ID)
+    assert legacy_stale["rev"] == 0 and legacy_stale["base"] == BASE_BOARD and any(e["id"] == "shape-stale-local" for e in legacy_stale["board"]["p"][0]["e"]), "legacy stale board keeps its actual revision-0 base"
+    await first.reload(wait_until="load")
+    await first.wait_for_function("!!window.__GHDrawTest")
+    await first.evaluate("id=>window.__GHDrawTest.startJoin(id)", OLD_ID)
+    await first.evaluate("window.__ghdrawJoinPromise")
+    joined = await first.evaluate("window.__GHDrawTest.state()")
+    joined_ids = [e["id"] for e in joined["board"]["p"][0]["e"]]
+    assert joined["room"]["id"] == OLD_ID and "shape-b" in joined_ids and "shape-stale-local" in joined_ids, "rejoin rebases the stale local edit from its paired revision-0 base onto the accepted remote revision-1 shape"
+    assert not any(change.get("t") == "del" for batch in cloud.room_changes for change in batch), f"no destructive stale delete may reach the backend: {cloud.room_changes}"
+    await first.evaluate("shape=>window.__GHDrawTest.addShape(shape)", {"id": "shape-fresh-after-rejoin", "type": "rect", "x": 55, "y": 6, "w": 7, "h": 8, "seed": 4, "stroke": "#1e1e1e", "bg": "transparent", "fill": "hachure", "sw": 2, "style": "solid", "rough": 1, "round": True, "opacity": 100, "align": "left"})
+    await first.evaluate("window.__GHDrawTest.syncNow()")
+    remote_ids = [e["id"] for e in cloud.rooms[OLD_ID]["board"]["p"][0]["e"]]
+    assert cloud.rooms[OLD_ID]["rev"] == 2 and "shape-b" in remote_ids and "shape-stale-local" in remote_ids and "shape-fresh-after-rejoin" in remote_ids, "rebased local work and a new post-rejoin edit synchronize normally"
+    await context.close()
+    print("PASS stale-tab snapshot: revision CAS, paired-base rejoin, no stale delete, fresh edits sync")
+
+
+async def test_chat_contention_retries_but_permanent_errors_do_not(browser, origin):
+    context, page = await launch_test_page(browser, origin)
+    cloud = FakeLiveChat()
+    await page.route(origin + "/__fake_live/**", cloud.handle)
+    await page.evaluate("id=>window.__GHDrawTest.configureLive(id)", "c" * 32)
+    cloud.contention_next = True
+    await page.evaluate("text=>window.__GHDrawTest.submitLiveMessage(text)", "retry after contention")
+    await asyncio.wait_for(cloud.contention_arrived.wait(), timeout=5)
+    pending = await page.evaluate("window.__GHDrawTest.liveState()")
+    assert len(pending["outbox"]) == 1 and not pending["outbox"][0].get("failed") and not pending["outbox"][0].get("blocked"), "live_contention keeps the durable message queued for automatic retry"
+    message_id = pending["outbox"][0]["id"]
+    await page.wait_for_function("window.__GHDrawTest.liveState().outbox.length===0", timeout=5000)
+    assert cloud.attempts == [message_id, message_id] and len(cloud.messages) == 1 and cloud.messages[0]["id"] == message_id, "retry reuses the same receipt ID and commits once"
+    cloud.reject_next = True
+    await page.evaluate("text=>window.__GHDrawTest.submitLiveMessage(text)", "permanent failure")
+    await page.wait_for_function("window.__GHDrawTest.liveState().outbox.some(item=>item.failed)", timeout=5000)
+    permanent = await page.evaluate("window.__GHDrawTest.liveState()")
+    failed_id = next(item["id"] for item in permanent["outbox"] if item["failed"])
+    attempts_before = list(cloud.attempts)
+    await page.wait_for_timeout(700)
+    assert cloud.attempts == attempts_before and failed_id in [item["id"] for item in (await page.evaluate("window.__GHDrawTest.liveState()"))["outbox"]], "permanent 4xx errors remain failed and are not automatically retried"
+    await context.close()
+    print("PASS live chat retry: contention backs off; permanent 4xx stays blocked")
+
+
 async def test_chat_outbox_cross_tab_merge(browser, origin):
     context, first = await launch_test_page(browser, origin)
     cloud = FakeLiveChat()
@@ -543,6 +632,8 @@ async def main():
             await test_restore_intent_recovery(browser, origin, "lost-ack")
             await test_restore_intent_recovery(browser, origin, "checkpoint-failure")
             await test_chat_outbox_survives_reload_and_lost_ack(browser, origin)
+            await test_stale_tab_snapshot_is_rejected_and_rejoin_is_safe(browser, origin)
+            await test_chat_contention_retries_but_permanent_errors_do_not(browser, origin)
             await test_chat_outbox_cross_tab_merge(browser, origin)
             await test_mobile_tablet_layout(browser, origin)
         finally:
