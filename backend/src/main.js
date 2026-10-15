@@ -4,6 +4,7 @@ import {gzipSync,gunzipSync} from 'node:zlib';
 import {handleAI} from './ai.js';
 import {applyRoomUpdate,validOpId} from './room-sync.js';
 const DB='ghdraw',TABLE='boards',MAX=12*1024*1024,PAGE_SIZE=100,CREATE_LOCK_SEED='00000000000000000000000000000000',LOCK_LEASE_MS=60000;
+export const ROOM_OP_RECEIPT_LIMIT=10_000;
 const validId=x=>typeof x==='string'&&x.length>0&&x.length<=128;
 const validThread=th=>th===undefined||Array.isArray(th)&&th.length<=300&&th.every(m=>m&&typeof m.t==='string'&&m.t.length<=500);
 const validElement=e=>e&&validId(e.id)&&['rect','diamond','ellipse','arrow','line','pen','text','image','video','frame','poly'].includes(e.type)&&validThread(e.th);
@@ -11,6 +12,7 @@ const validElement=e=>e&&validId(e.id)&&['rect','diamond','ellipse','arrow','lin
 const rowData=d=>({payload:JSON.stringify(d),expiresAt:new Date(d.expires).toISOString()});
 const createReceiptRowId=requestId=>'g'+createHash('sha256').update('ghdraw-create:'+requestId).digest('hex').slice(0,31);
 const roomOpReceiptRowId=(roomId,opId)=>'o'+createHash('sha256').update('ghdraw-room-op:'+roomId+':'+opId).digest('hex').slice(0,31);
+const roomOpQuotaRowId=id=>'q'+id.slice(0,31);
 // Board history: one side row per room ('h'+id), same expiry as the room. Newest 20 versions, gzip+base64, 8 MB total.
 const HID=id=>'h'+id.slice(0,31),HMAX_N=20,HMAX_TOTAL=8e6,HMAX_ONE=3e6,HGAP=120000;
 const validPage=p=>p&&validId(p.id)&&typeof p.n==='string'&&p.n.length<=100&&Array.isArray(p.e)&&p.e.length<=10000&&p.e.every(validElement)&&new Set(p.e.map(e=>e.id)).size===p.e.length;
@@ -198,11 +200,12 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
      const d={kind:b.kind,expires,board:b.board,room:b.room||null,owner,...(receiptId?{createReceiptId:receiptId}:{}),...(b.kind==='room'?{rev:0,ops:[]}: {})};
      const stored=rowData(d);if(Buffer.byteLength(stored.payload)>MAX)return reply({error:'Board exceeds 12 MB'},413);
      let shareCount=0;
-     await forEachRows({select:['$id']},rows=>{for(const row of rows)if(typeof row.$id==='string'&&!/^[phkgo]/.test(row.$id)&&!row.$id.startsWith('ai-'))shareCount++;return shareCount<150});
+     await forEachRows({select:['$id']},rows=>{for(const row of rows)if(typeof row.$id==='string'&&!/^[phkgoq]/.test(row.$id)&&!row.$id.startsWith('ai-'))shareCount++;return shareCount<150});
      if(shareCount>=150)return reply({error:'Free storage is full; ask the project owner to remove old links.'},429);
      const tx=await db.createTransaction({ttl:60});
      try{
       await db.createRow({databaseId:DB,tableId:TABLE,rowId:id,data:stored,permissions:[],transactionId:tx.$id});
+      if(b.kind==='room'){const quota={kind:'room-op-quota',roomId:id,count:0,expires};await db.createRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id),data:rowData(quota),permissions:[],transactionId:tx.$id})}
       if(receiptId){const receipt={kind:'create-receipt',id,owner,expires,requestHash};await db.createRow({databaseId:DB,tableId:TABLE,rowId:receiptId,data:rowData(receipt),permissions:[],transactionId:tx.$id})}
       await db.updateTransaction({transactionId:tx.$id,commit:true});
      }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});throw e}
@@ -218,13 +221,18 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
      const tx=await db.createTransaction({ttl:60});
      try{
       const d=await read(id,tx.$id);if(d.kind!=='room')throw {code:404};
-      const opReceiptId=b.opId&&b.changes.length?roomOpReceiptRowId(id,b.opId):null;let alreadyApplied=false;
+      const opReceiptId=b.opId&&b.changes.length?roomOpReceiptRowId(id,b.opId):null;let alreadyApplied=false,quota=null;
       if(opReceiptId){try{const receipt=JSON.parse((await db.getRow({databaseId:DB,tableId:TABLE,rowId:opReceiptId,transactionId:tx.$id})).payload);if(receipt.kind!=='room-op-receipt'||receipt.roomId!==id||receipt.opId!==b.opId)throw {code:409};alreadyApplied=true}catch(e){if(e.code!==404)throw e}}
+      if(opReceiptId&&!alreadyApplied){
+       try{quota=JSON.parse((await db.getRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id),transactionId:tx.$id})).payload)}catch(e){if(e.code!==404)throw e;await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_limit',message:'This room has no safe receipt counter. Create a new room to continue.'},409)}
+       if(quota.kind!=='room-op-quota'||quota.roomId!==id||!Number.isSafeInteger(quota.count)||quota.count<0){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_limit',message:'This room has no safe receipt counter. Create a new room to continue.'},409)}
+       if(quota.count>=ROOM_OP_RECEIPT_LIMIT){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_limit',message:'This room reached its 10,000-operation receipt limit. Create a new room to continue; existing receipts are retained for safe retries.'},409)}
+      }
       const op=applyRoomUpdate(d,b,{alreadyApplied});
       if(op.duplicate){await db.updateTransaction({transactionId:tx.$id,rollback:true});const {owner,ops,createReceiptId,...publicData}=d;return reply({...publicData,syncProtocol:'room-ops-v1',ack:op.ack,duplicate:true,rebased:op.rebased})}
       if(!validBoard(d.board))throw {code:400};if(Buffer.byteLength(JSON.stringify(d))>MAX)throw {code:413};
       await db.updateRow({databaseId:DB,tableId:TABLE,rowId:id,data:rowData(d),transactionId:tx.$id});
-      if(opReceiptId){const receipt={kind:'room-op-receipt',roomId:id,opId:b.opId,expires:d.expires};await db.createRow({databaseId:DB,tableId:TABLE,rowId:opReceiptId,data:rowData(receipt),permissions:[],transactionId:tx.$id})}
+      if(opReceiptId){quota.count++;await db.updateRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id),data:rowData(quota),transactionId:tx.$id});const receipt={kind:'room-op-receipt',roomId:id,opId:b.opId,expires:d.expires};await db.createRow({databaseId:DB,tableId:TABLE,rowId:opReceiptId,data:rowData(receipt),permissions:[],transactionId:tx.$id})}
       await db.updateTransaction({transactionId:tx.$id,commit:true});
       if(b.changes.length)await histSnap(db,id,d.board,d.expires,false).catch(()=>{});
       const {owner,ops,createReceiptId,...publicData}=d;return reply({...publicData,syncProtocol:'room-ops-v1',ack:op.ack,rebased:op.rebased});
@@ -235,7 +243,7 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
     const db=await getDb(),tx=await db.createTransaction({ttl:60});
     try{
      const d=await read(id,tx.$id);if(req.bodyJson?.owner!==d.owner){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'Not authorized'},403)}
-     for(const rowId of [id,'p'+id.slice(0,31),HID(id),d.createReceiptId].filter(Boolean))await db.deleteRow({databaseId:DB,tableId:TABLE,rowId,transactionId:tx.$id}).catch(e=>{if(e.code!==404)throw e});
+     for(const rowId of [id,'p'+id.slice(0,31),HID(id),roomOpQuotaRowId(id),d.createReceiptId].filter(Boolean))await db.deleteRow({databaseId:DB,tableId:TABLE,rowId,transactionId:tx.$id}).catch(e=>{if(e.code!==404)throw e});
      await db.updateTransaction({transactionId:tx.$id,commit:true});return reply({ok:true});
     }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});throw e}
    }

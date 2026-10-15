@@ -50,7 +50,7 @@ const source=[
   extract('cloudRebase','cloudMerge'),
   extract('cloudProtocolCompatible','blockCloudProtocol'),
   serLine,
-  'globalThis.api={validCloudChange,cloudCheckpointCanResume,cloudJoinCanContinue,localBoardRecord,parseLocalBoardRecord,localBoardBackupLimits,localBoardBackupUsage,localBoardBackupKeys,writeLocalBoardBackup,localBoardBackupEntries,hasLocalBoardBackups,deleteLocalBoardBackup,preserveLocalBoardBeforeCloudJoin,restoreLocalBoardRecord,restoreCloudSnapshot,load,dash,clampBoardCamera,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudApplyChanges,cloudRebase,ser};'
+  'globalThis.api={validCloudChange,cloudCheckpointCanResume,cloudJoinCanContinue,localBoardRecord,parseLocalBoardRecord,localBoardBackupLimits,localBoardBackupUsage,localBoardBackupKeys,writeLocalBoardBackup,localBoardBackupEntries,hasLocalBoardBackups,deleteLocalBoardBackup,preserveLocalBoardBeforeCloudJoin,restoreLocalBoardRecord,restoreCloudSnapshot,load,dash,clampBoardCamera,recoverBoardCamera,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudBoardHasUncheckpointedChanges,cloudApplyChanges,cloudRebase,ser};'
 ].join('\n');
 const storage=new Map();
 const mockLocalStorage={getItem:key=>storage.has(key)?storage.get(key):null,setItem:(key,value)=>storage.set(key,String(value)),removeItem:key=>storage.delete(key),key:index=>[...storage.keys()][index]??null,get length(){return storage.size}};
@@ -59,7 +59,7 @@ context.snap=()=>JSON.stringify(context.els);context.syncUI=()=>{};context.rende
 context.syncPage=()=>{const page=context.pages[context.pi];if(page){page.els=context.els;page.cam=context.cam}};
 context.finishEdit=()=>{context.editing=null};context.cloudEnd=()=>{context.cloudRoom=null;context.collabOn=false};
 vm.runInNewContext(source,context);
-const {validCloudChange,cloudCheckpointCanResume,cloudJoinCanContinue,localBoardRecord,parseLocalBoardRecord,localBoardBackupLimits,localBoardBackupUsage,localBoardBackupKeys,writeLocalBoardBackup,localBoardBackupEntries,hasLocalBoardBackups,deleteLocalBoardBackup,preserveLocalBoardBeforeCloudJoin,restoreLocalBoardRecord,restoreCloudSnapshot,load,dash,clampBoardCamera,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudApplyChanges,cloudRebase}=context.api;
+const {validCloudChange,cloudCheckpointCanResume,cloudJoinCanContinue,localBoardRecord,parseLocalBoardRecord,localBoardBackupLimits,localBoardBackupUsage,localBoardBackupKeys,writeLocalBoardBackup,localBoardBackupEntries,hasLocalBoardBackups,deleteLocalBoardBackup,preserveLocalBoardBeforeCloudJoin,restoreLocalBoardRecord,restoreCloudSnapshot,load,dash,clampBoardCamera,recoverBoardCamera,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudBoardHasUncheckpointedChanges,cloudApplyChanges,cloudRebase}=context.api;
 
 const base={v:2,d:0,p:[
   {id:'p1',n:'Board',e:[
@@ -148,12 +148,15 @@ test('validator rejects unsafe geometry and style while allowing UI-supported re
   const parse=(element,cam={x:0,y:0,z:1},defaults={})=>parseLocalBoardRecord(JSON.stringify({els:[element],cam,defaults,pi:0,pages:[{id:'safe-page',name:'Safe',els:[element],cam}]}));
   assert.equal(parse(recordElement('negative','rect',{w:-1,h:-1})),null,'negative shape dimensions are invalid');
   assert.equal(parse(recordElement('huge-coordinate','rect',{x:Number.MAX_VALUE})),null,'unbounded finite coordinates are invalid');
-  const largeElement=recordElement('legacy-large-world','rect',{x:2e6,y:-2e6}),largeCam={x:2e6,y:-2e6,z:1};
+  const largeElement=recordElement('legacy-large-world','rect',{x:2e6,y:-2e6}),largeCam={x:-2e6,y:2e6,z:1};
   const largeRecord=JSON.stringify({els:[largeElement],cam:largeCam,defaults:{},grid:false,dark:false,pi:0,pages:[{id:'large-page',name:'Large world',els:[largeElement],cam:largeCam}]});
   assert.ok(parseLocalBoardRecord(largeRecord),'valid coordinates beyond the old 1e6 limit remain reloadable');
   storage.set('ghdraw:v2',largeRecord);context.pages=[{id:'before',name:'Before',els:[],cam:{x:0,y:0,z:1}}];context.els=[];context.pi=0;load();
-  assert.equal(context.els[0].x,2e6);assert.equal(context.cam.x,2e6);
+  assert.equal(context.els[0].x,2e6);assert.equal(context.cam.x,-2e6);assert.equal(context.cam.y,2e6);
   assert.deepEqual(json(clampBoardCamera({x:1e12,y:-1e12,z:100})),{x:9e9,y:-9e9,z:8},'camera is clamped before rendering/saving so future boards remain within the accepted range');
+  const farCamera={x:9e9,y:-9e9,z:1},visible=recordElement('camera-recovery','rect'),farRecord=JSON.stringify({els:[visible],cam:farCamera,pi:0,pages:[{id:'far-camera-page',name:'',els:[visible],cam:farCamera}]}),recovered=parseLocalBoardRecord(farRecord);
+  assert.ok(recovered);assert.notEqual(recovered.cam.x,9e9);assert.notEqual(recovered.cam.y,-9e9);assert.deepEqual(json(recovered.cam),json(recovered.pages[0].cam),'saved camera outside every page item is recentered so the board is reachable after reload');
+  const empty=parseLocalBoardRecord(JSON.stringify({els:[],cam:farCamera,pi:0,pages:[{id:'empty-camera-page',name:'',els:[],cam:farCamera}]}));assert.deepEqual(json(empty.cam),{x:0,y:0,z:1},'empty pages do not reopen at an unreachable pan offset');
   assert.equal(parse(recordElement('huge-text','text',{size:Number.MAX_VALUE})),null,'text size cannot overflow measurement');
   assert.equal(parse(recordElement('tiny-text','text',{size:Number.MIN_VALUE})),null,'text size cannot underflow measurement');
   assert.equal(parse(recordElement('huge-point','line',{pts:[[Number.MAX_VALUE,0],[1,1]]})),null,'line points are bounded');
@@ -323,6 +326,19 @@ test('rejoining a room never imports additions or deletions from another local b
   assert.equal(cloudSelectRejoinBoard('room-1','room-1',roomSnapshot,null,base,null),roomSnapshot,'matching room marker preserves same-room local edits');
 });
 
+test('checkpointless room snapshots with local changes are preserved instead of silently overwritten',()=>{
+  assert.equal(cloudBoardHasUncheckpointedChanges(base,base),false,'identical room and server boards can safely join without a checkpoint');
+  const metricsOnly={v:2,d:0,p:[{id:'text-page',n:'Text',e:[recordElement('room-text','text',{text:'Label',w:52,h:35,lw:[52]})]}]},wire=structuredClone(metricsOnly);delete wire.p[0].e[0].w;delete wire.p[0].e[0].h;delete wire.p[0].e[0].lw;
+  assert.equal(cloudBoardHasUncheckpointedChanges(wire,metricsOnly),false,'local text geometry alone does not look like an unsynced content edit');
+  const snapshot=structuredClone(base);snapshot.p[0].e.push(recordElement('uncheckpointed-shape','ellipse'));
+  assert.equal(cloudBoardHasUncheckpointedChanges(base,snapshot),true,'a different room snapshot needs a known base before a rebase');
+  assert.equal(cloudBoardHasUncheckpointedChanges(base,null),true,'malformed local state fails closed');
+  const start=html.indexOf('async function cloudJoin(id,host=false,createdHere=false){'),join=html.slice(start,html.indexOf("\naddEventListener('offline'",start));
+  const guard=join.indexOf('cloudBoardHasUncheckpointedChanges(d.board,safeLocal)'),merge=join.indexOf('cloudMerge(d,rebaseFrom)');
+  assert.ok(guard>=0&&guard<merge,'cloudJoin returns before merge when no valid checkpoint can preserve the local delta');
+  assert.match(join,/safeLocal&&cloudBoardHasUncheckpointedChanges\(d\.board,safeLocal\).*return}/,'the selected local room board remains active while the join is refused');
+});
+
 test('safe sync requires a room revision and exact operation acknowledgement',()=>{
   const op={opId:'stable-op-id'};
   const room={kind:'room',syncProtocol:'room-ops-v1',board:base,rev:4};
@@ -339,7 +355,7 @@ test('safe sync requires a room revision and exact operation acknowledgement',()
   assert.ok(sync.indexOf('probe=await cloudRequest(\'/room/\'+id)')<sync.indexOf('const d=op?await cloudRequest(\'/room/\'+id,{changes:'), 'reconnect compatibility GET runs before any queued POST');
   assert.match(sync,/if\(!cloudProtocolCompatible\(probe\)\|\|probe\.rev<oldRev\)/,'incompatible probe blocks the queued POST');
   assert.ok(sync.indexOf('if(!cloudProtocolCompatible(d,op)||d.rev<oldRev)')<sync.indexOf('cloudMerge(d,sent)'), 'incompatible response exits before completing/clearing the outbox');
-  assert.match(sync,/if\(cloudProtocolBlocked\|\|!cloudRoom/,'blocked protocol prevents scheduled sends');
+  assert.match(sync,/if\(cloudProtocolBlocked\|\|cloudReceiptQuotaBlocked\|\|!cloudRoom/,'protocol incompatibility and a reached room quota prevent scheduled sends');
   assert.match(html,/if\(!protocolBlocked\)cloudTimer=setInterval\(cloudSync,4000\)/,'incompatible server does not get an automatic retry timer');
 });
 
@@ -392,10 +408,10 @@ test('share creation retries reuse the same cryptographic request ID',async()=>{
 
 function cloudSyncHarness(overrides={}){
  const calls=[],events=[],current=structuredClone(local),changes=[{t:'put',pid:'p1',e:{id:'shape-a',type:'rect',x:11}}],room={kind:'room',syncProtocol:'room-ops-v1',board:structuredClone(base),rev:0,expires:Date.now()+60000};
- const context={structuredClone,cloudProtocolBlocked:false,cloudProtocolVerified:false,cloudRoom:{id:'sync-room',expires:0},cloudBase:structuredClone(base),cloudRev:0,cloudInflight:null,cloudBusy:false,cloudPending:false,document:{hidden:false},navigator:{onLine:true},drag:false,editing:null,
+ const context={structuredClone,cloudProtocolBlocked:false,cloudReceiptQuotaBlocked:false,cloudProtocolVerified:false,cloudRoom:{id:'sync-room',expires:0},cloudBase:structuredClone(base),cloudRev:0,cloudInflight:null,cloudBusy:false,cloudPending:false,document:{hidden:false},navigator:{onLine:true},drag:false,editing:null,
   cloudBoard:()=>structuredClone(current),cloudDiff:()=>structuredClone(changes),cloudApplyChanges:board=>structuredClone(board),newCloudOpId:()=>'durable-operation-1',cloudCheckpoint:async()=>null,cloudLocalSnapshot:async()=>null,saveCloudCheckpoint:async()=>true,
   cloudRequest:async(path,body)=>{events.push(body?'post':'probe');calls.push({path,body});return body?{...room,rev:1,ack:body.opId}:{...room}},cloudProtocolCompatible:(d,op=null)=>!!d&&d.kind==='room'&&d.syncProtocol==='room-ops-v1'&&Number.isSafeInteger(d.rev)&&(!op||d.ack===op.opId),
-  blockCloudProtocol:()=>{throw new Error('unexpected protocol block')},cloudMerge:()=>{},setSyncBadge:state=>events.push('badge:'+state),L2:(_tr,en)=>en,$:()=>({title:''}),clearInterval:()=>{},liveStop:()=>{},cloudTimer:0};
+  blockCloudProtocol:()=>{throw new Error('unexpected protocol block')},cloudMerge:()=>{},setSyncBadge:state=>events.push('badge:'+state),L2:(_tr,en)=>en,toast:message=>events.push('toast:'+message),$:()=>({title:''}),clearInterval:()=>{},liveStop:()=>{},cloudTimer:0};
  Object.assign(context,overrides);const start=html.indexOf('async function cloudSync(){'),end=html.indexOf('\nfunction activateOfflineCloud(',start);assert.ok(start>=0&&end>start,'missing cloudSync');
  vm.runInNewContext(html.slice(start,end)+';globalThis.runCloudSync=cloudSync;',context);return{context,calls,events,run:context.runCloudSync};
 }
@@ -422,4 +438,24 @@ test('cloudSync reads the exact durable outbox before sending its operation',asy
   cloudRequest:async(path,body)=>{if(body){events.push('post');assert.equal(context.cloudInflight.opId,body.opId,'in-memory in-flight is set only after durable readback');return{kind:'room',syncProtocol:'room-ops-v1',board:structuredClone(base),rev:1,expires:Date.now()+60000,ack:body.opId}}events.push('probe');return{kind:'room',syncProtocol:'room-ops-v1',board:structuredClone(base),rev:0,expires:Date.now()+60000}}
  });context=h.context;await h.run();
  assert.ok(events.indexOf('write')<events.indexOf('readback-op'));assert.ok(events.indexOf('readback-op')<events.indexOf('post'),'the operation is read back before the POST');
+});
+
+
+test('room receipt limit response exposes a stable code and actionable message',async()=>{
+  const payload={error:'room_receipt_limit',message:'Create a new room to continue.'},context={CLOUD:'https://example.test',fetch:async()=>({ok:false,status:409,json:async()=>payload})};
+  const start=html.indexOf('async function cloudRequest('),end=html.indexOf('\nasync function cloudCreate(',start);assert.ok(start>=0&&end>start);
+  vm.runInNewContext(html.slice(start,end)+';globalThis.runRequest=cloudRequest;',context);
+  await assert.rejects(context.runRequest('/room/id',{changes:[]}),e=>e.status===409&&e.code==='room_receipt_limit'&&e.message===payload.message);
+});
+
+test('receipt quota rejection keeps the durable outbox and pauses automatic retries',async()=>{
+  let stored=null,reads=0,posts=0;const response={kind:'room',syncProtocol:'room-ops-v1',board:structuredClone(base),rev:0,expires:Date.now()+60000},events=[];
+  const h=cloudSyncHarness({
+    cloudCheckpoint:async()=>reads++===0?null:stored,
+    saveCloudCheckpoint:async(id,baseBoard,rev,expires,inflight)=>{stored={id,base:baseBoard,rev,expires,inflight}},
+    cloudRequest:async(_path,body)=>{if(body){posts++;throw Object.assign(new Error('Create a new room to continue.'),{status:409,code:'room_receipt_limit'})}return response},
+    clearInterval:()=>events.push('timer-cleared'),liveStop:()=>events.push('live-stopped')
+  });
+  await h.run();assert.equal(posts,1);assert.equal(h.context.cloudReceiptQuotaBlocked,true);assert.equal(h.context.cloudPending,true);assert.equal(h.context.cloudInflight.opId,'durable-operation-1','the rejected operation stays available for safe recovery');assert.ok(events.includes('timer-cleared'));assert.ok(events.includes('live-stopped'));assert.ok(h.events.includes('badge:quota'));
+  await h.run();assert.equal(posts,1,'a quota-blocked room does not automatically retry and burn reads');
 });
