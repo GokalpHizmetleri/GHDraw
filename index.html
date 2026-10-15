@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>GHDraw - Hand-drawn whiteboard</title>
+<script src="./backend/shared/board-element-contract.js"></script>
 <link rel="icon" type="image/svg+xml" href="logo.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -236,7 +237,7 @@ body.viewer #tools,body.viewer #props,body.viewer #lib,body.viewer #menuBtn,body
 <script>
 (()=>{
 const $=s=>document.querySelector(s);
-const FONTS=["Caveat", "Kalam", "Patrick Hand", "Shantell Sans", "Playpen Sans", "Pangolin", "Caveat Brush", "Amatic SC", "Marck Script", "Kaushan Script", "Dancing Script", "Pacifico", "Merienda", "Courgette", "Lobster", "Bangers", "Fredoka", "Baloo 2", "Righteous", "Comfortaa", "Nunito", "Poppins", "Inter", "Rubik", "Oswald", "Playfair Display", "Lora", "Merriweather", "Abril Fatface", "Cinzel", "Courier Prime", "Roboto Mono", "Space Mono"];
+const FONTS=GHDrawBoardElementContract.FONTS;
 const FONT_NOTE={"Caveat":"el yazısı","Kalam":"el yazısı","Patrick Hand":"el yazısı","Shantell Sans":"çizgi film","Playpen Sans":"çocuk","Pangolin":"el yazısı","Caveat Brush":"fırça","Amatic SC":"ince","Marck Script":"kaligrafi","Kaushan Script":"fırça","Dancing Script":"yazı","Pacifico":"retro","Merienda":"yazı","Courgette":"yazı","Lobster":"başlık","Bangers":"çizgi roman","Fredoka":"yuvarlak","Baloo 2":"yuvarlak","Righteous":"başlık","Comfortaa":"yuvarlak","Nunito":"sans","Poppins":"sans","Inter":"sans","Rubik":"sans","Oswald":"dar","Playfair Display":"serif","Lora":"serif","Merriweather":"serif","Abril Fatface":"kalın serif","Cinzel":"serif","Courier Prime":"mono","Roboto Mono":"mono","Space Mono":"mono"};
 const I18={
 tr:{select:"Seçim",hand:"Kaydır (El)",rect:"Dikdörtgen",diamond:"Elmas",ellipse:"Elips",arrow:"Ok",line:"Çizgi",pen:"Kalem",text:"Metin",eraser:"Silgi",export:"Dışa aktar",stroke:"Çizgi rengi",bg:"Arka plan",fill:"Dolgu",width:"Çizgi kalınlığı",style:"Çizgi stili",rough:"El yapımı titreme",edges:"Kenarlar",opacity:"Saydamlık",font:"Yazı tipi",size:"Yazı boyutu",align:"Hizalama",layers:"Katmanlar",actions:"İşlemler",hachure:"Çizgili",cross:"Çapraz",solid:"Dolu",none:"Yok",thin:"İnce",bold:"Kalın",xbold:"Çok kalın",dashed:"Kesikli",dotted:"Noktalı",sharp:"Keskin",round:"Yuvarlak",left:"Sola",center:"Ortala",right:"Sağa",back:"En arkaya",backward:"Bir geri",forward:"Bir ileri",front:"En öne",dup:"Çoğalt",del:"Sil",open:"Aç...",save:"Dosyaya kaydet",png:"PNG olarak dışa aktar",clear:"Tuvali temizle",grid:"Izgarayı göster",dark:"Karanlık mod",lang:"Language: English",github:"GitHub",undo:"Geri al",redo:"İleri al",welcome:"Çizim yapmak için bir araç seç\nve tuvale tıkla.\nTüm verilerin tarayıcında kayıtlı kalır.",hintText:"Metin yazmak için tıkla, bitirince Esc'ye bas",hintDraw:"Çizmek için sürükle. Esc: seçim aracı",helpT:"Klavye kısayolları",confirmClear:"Tuvaldeki her şey silinsin mi?",saved:"Kaydedildi",sample:"Ağşİıöüç Aa",close:"Kapat",
@@ -1070,25 +1071,7 @@ function boardElementsBounds(elements){let x=Infinity,y=Infinity,r=-Infinity,b=-
 function fitBoardCamera(elements){const items=elements.filter(e=>e&&!e.frame&&!('__bak'in e));if(!items.length)return{x:0,y:0,z:1};const box=boardElementsBounds(items),vw=Math.max(320,typeof innerWidth==='number'?innerWidth:1024),vh=Math.max(240,typeof innerHeight==='number'?innerHeight:768),z=Math.max(.1,Math.min(4,Math.min(vw*.88/Math.max(box.w,1),vh*.88/Math.max(box.h,1))));return clampBoardCamera({x:vw/2-(box.x+box.w/2)*z,y:vh/2-(box.y+box.h/2)*z,z})}
 function recoverBoardCamera(value,elements){const camera=clampBoardCamera(value),items=elements.filter(e=>e&&!e.frame&&!('__bak'in e));if(!items.length)return{x:0,y:0,z:1};const box=boardElementsBounds(items),vw=Math.max(320,typeof innerWidth==='number'?innerWidth:1024),vh=Math.max(240,typeof innerHeight==='number'?innerHeight:768),left=-camera.x/camera.z,top=-camera.y/camera.z,right=(vw-camera.x)/camera.z,bottom=(vh-camera.y)/camera.z;if(box.x+box.w<left||box.x>right||box.y+box.h<top||box.y>bottom)return fitBoardCamera(items);return camera}
 function validBoardColor(value,allowTransparent=false){return typeof value==='string'&&(/^#[0-9a-f]{6}$/i.test(value)||(allowTransparent&&value==='transparent'))}
-function validBoardElement(e){
-  const finite=n=>Number.isFinite(n)&&Math.abs(n)<=BOARD_COORD_LIMIT,own=(o,k)=>Object.prototype.hasOwnProperty.call(o,k),types=['rect','diamond','ellipse','line','arrow','pen','poly','text','image','video'],fields=['id','type','x','y','w','h','pts','seed','stroke','bg','fill','sw','style','rough','round','opacity','font','size','align','text','lw','src','giphyId','name','frame','cm','th','ts','au','note','txt','done','pr','b0','b1','g','__bak','__new','__c'];
-  if(!isBoardObject(e)||Object.keys(e).some(k=>!fields.includes(k))||typeof e.id!=='string'||!e.id||e.id.length>256||!types.includes(e.type))return false;
-  const optional=(key,check)=>!own(e,key)||check(e[key]);
-  if(!optional('x',finite)||!optional('y',finite)||!optional('w',v=>finite(v)&&v>=0)||!optional('h',v=>finite(v)&&v>=0)||!optional('stroke',v=>validBoardColor(v))||!optional('bg',v=>validBoardColor(v,true))||!optional('fill',v=>['hachure','cross','solid'].includes(v))||!optional('sw',v=>v===null||Number.isFinite(v)&&v>=1&&v<=64)||!optional('style',v=>['solid','dashed','dotted'].includes(v))||!optional('rough',v=>v===null||Number.isFinite(v)&&v>=0&&v<=2)||!optional('round',v=>typeof v==='boolean')||!optional('opacity',v=>v===null||Number.isFinite(v)&&v>=0&&v<=100)||!optional('font',v=>typeof v==='string'&&(FONTS.includes(v)||v==='sans-serif'))||!optional('size',v=>Number.isFinite(v)&&v>=6&&v<=400)||!optional('align',v=>['left','center','right'].includes(v)))return false;
-  if(!optional('seed',v=>Number.isSafeInteger(v)&&v>=0&&v<=1e9)||!optional('frame',v=>typeof v==='boolean')||!optional('cm',v=>v===1)||!optional('note',v=>v===1)||!optional('done',v=>typeof v==='boolean')||!optional('pr',v=>typeof v==='boolean')||!optional('__new',v=>typeof v==='boolean')||!optional('__bak',v=>Number.isFinite(v)&&v>=0&&v<=100))return false;
-  if(!optional('name',v=>typeof v==='string'&&v.length<=512)||!optional('au',v=>typeof v==='string'&&v.length<=256)||!optional('txt',v=>typeof v==='string'&&v.length<=600)||!optional('text',v=>typeof v==='string'&&v.length<=1e6)||!optional('src',v=>typeof v==='string'&&v.length>0&&v.length<=1e7)||!optional('giphyId',v=>typeof v==='string'&&v.length>0&&v.length<=128)||!optional('g',v=>typeof v==='string'&&v.length<=64)||!optional('b0',v=>typeof v==='string'&&v.length>0&&v.length<=256)||!optional('b1',v=>typeof v==='string'&&v.length>0&&v.length<=256)||!optional('ts',v=>Number.isSafeInteger(v)&&v>=0))return false;
-  if(!optional('lw',v=>Array.isArray(v)&&v.length<=1e6&&v.every(n=>Number.isFinite(n)&&n>=0&&n<=1e9))||!optional('__c',v=>Array.isArray(v)&&v.length===2&&v.every(finite)))return false;
-  if(!optional('th',messages=>Array.isArray(messages)&&messages.length<=10000&&messages.every(m=>isBoardObject(m)&&Object.keys(m).every(k=>['id','n','c','t','ts'].includes(k))&&(!own(m,'id')||typeof m.id==='string'&&m.id.length<=256)&&(!own(m,'n')||typeof m.n==='string'&&m.n.length<=256)&&(!own(m,'c')||typeof m.c==='string'&&(m.c==='inherit'||validBoardColor(m.c)))&&typeof m.t==='string'&&m.t.length<=500&&(!own(m,'ts')||Number.isSafeInteger(m.ts)&&m.ts>=0))))return false;
-  const linear=['line','arrow','pen','poly'].includes(e.type),shapes=['rect','diamond','ellipse','text','image','video'];
-  const validPoints=points=>Array.isArray(points)&&points.length>0&&points.length<=1e6&&points.every(q=>Array.isArray(q)&&(q.length===2||q.length===3)&&finite(q[0])&&finite(q[1])&&(q.length<3||q[2]===null||Number.isFinite(q[2])&&q[2]>=0&&q[2]<=1));
-  if(!optional('pts',validPoints))return false;
-  if(linear){if(!validPoints(e.pts))return false}
-  else if(!shapes.includes(e.type)||![e.x,e.y,e.w,e.h].every(finite)||e.w<0||e.h<0||Math.abs(e.x+e.w)>BOARD_COORD_LIMIT||Math.abs(e.y+e.h)>BOARD_COORD_LIMIT)return false;
-  if(e.type==='text'&&(!Number.isFinite(e.size)||e.size<6||e.size>400))return false;
-  if(e.type==='image'&&!((typeof e.src==='string'&&e.src.length>0)||(typeof e.giphyId==='string'&&e.giphyId.length>0)))return false;
-  if(e.type==='video'&&!(typeof e.src==='string'&&e.src.length>0))return false;
-  return true
-}
+function validBoardElement(e){return GHDrawBoardElementContract.validElement(e)}
 function validBoardDefaults(d){
   if(!isBoardObject(d))return false;
   const rules={stroke:v=>validBoardColor(v),bg:v=>validBoardColor(v,true),fill:v=>['hachure','cross','solid'].includes(v),sw:v=>v===null||[1,2,4].includes(v),style:v=>['solid','dashed','dotted'].includes(v),rough:v=>v===null||[0,1,2].includes(v),round:v=>typeof v==='boolean',opacity:v=>v===null||Number.isFinite(v)&&v>=0&&v<=100&&v%10===0,font:v=>typeof v==='string'&&FONTS.includes(v),size:v=>v===null||Number.isFinite(v)&&v>=8&&v<=300,align:v=>['left','center','right'].includes(v)};
@@ -1589,7 +1572,7 @@ $('#exportBtn').onclick=openExport;
 $('#undo').onclick=undo;$('#redo').onclick=redo;
 $('#zin').onclick=()=>zoomAt(W/2,H/2,cam.z*1.2);$('#zout').onclick=()=>zoomAt(W/2,H/2,cam.z/1.2);
 $('#zl').onclick=()=>zoomAt(W/2,H/2,1);
-$('#help').onclick=openHelp;$('#modal').onclick=e=>{if(e.target.id==='modal')$('#modal').classList.remove('open')};
+$('#help').onclick=openHelp;$('#modal').onclick=e=>{if(e.target.id==='modal')closeModal()};
 let clipPaste=0;
 document.addEventListener('keydown',e=>{
   if(e.isComposing||e.target.closest('input,textarea,select,[contenteditable=true]'))return;
@@ -2067,8 +2050,14 @@ function syncScene(){
  }
  for(const[id,rec]of sceneNodes)if(!active.has(id)){rec.node.remove();sceneNodes.delete(id)}
 }
-function closeModal(){$('#modal').classList.remove('open');collabModal=false}
-$('#modalX').onclick=closeModal;
+var historyRestoreInProgress=false;
+function setHistoryRestoreBusy(busy){historyRestoreInProgress=!!busy;const status=$('#historyRestoreStatus');if(status){status.hidden=!historyRestoreInProgress;status.textContent=L2('Sürüm geri yükleniyor; düzenleme ve pencereyi kapatma geçici olarak kilitlendi.','History restore in progress; editing and closing this window are temporarily locked.')}const box=$('#modalBox');if(box)for(const button of box.querySelectorAll('button'))button.disabled=historyRestoreInProgress}
+function historyRestoreBlocksInput(event){if(!historyRestoreInProgress)return false;event?.preventDefault?.();event?.stopImmediatePropagation?.();return true}
+function historyRestoreCloseBlocked(force=false){return historyRestoreInProgress&&!force}
+document.addEventListener('pointerdown',historyRestoreBlocksInput,true);
+document.addEventListener('keydown',historyRestoreBlocksInput,true);
+function closeModal(force=false){if(historyRestoreCloseBlocked(force))return false;$('#modal').classList.remove('open');collabModal=false;return true}
+$('#modalX').onclick=()=>closeModal();
 function openMedia(){
  collabModal=false;$('#modal').classList.add('open');const b=$('#modalBox');b.innerHTML='';
  const title=mk('h3');title.textContent=L2('Medya yükle','Upload media');b.appendChild(title);
@@ -2121,6 +2110,7 @@ async function openHistory(){
   const h=mk('h3');h.textContent=L2('Tahta geçmişi','Board history');b.appendChild(h);
   const srv=!!cloudRoom;
   const p=mk('p','cp');p.textContent=srv?L2('Ortak çizimin sürümleri sunucuda saklanır (son 20). Çizim değişince otomatik alınır (en az 2 dakika arayla). Oturumla birlikte, 48 saat sonra silinir.','Shared-board versions are kept on the server (last 20). Taken automatically when the board changes (at least 2 minutes apart). Deleted with the session after 48 hours.'):L2('Son 20 sürüm bu tarayıcıda saklanır. Sunucuda geçmiş, ortak çizimlerde tutulur. Çizerken otomatik alınır (en az 2 dakika arayla).','The last 20 versions are kept in this browser. Server-side history is kept for shared boards. Taken automatically while you draw (at least 2 minutes apart).');b.appendChild(p);
+  const restoreStatus=mk('p','cn');restoreStatus.id='historyRestoreStatus';restoreStatus.setAttribute('role','status');restoreStatus.setAttribute('aria-live','polite');restoreStatus.hidden=true;b.appendChild(restoreStatus);
   const act=mk('div','cact');const sv=mk('button','pbtn');sv.textContent=L2('Şimdi sürüm kaydet','Save a version now');
   sv.onclick=async()=>{let ok;if(srv){try{const r=await cloudRequest('/hist/'+cloudRoom.id,{op:'save'});ok=r.result==='saved'||r.result==='skipped'}catch(_){ok=false}}else ok=await histSnap(true);toast(ok?L2('Sürüm kaydedildi.','Version saved.'):L2('Kaydedilemedi.','Could not save.'));openHistory()};act.appendChild(sv);b.appendChild(act);
   const list=mk('div','hl');b.appendChild(list);$('#modal').classList.add('open');
@@ -2135,11 +2125,12 @@ async function openHistory(){
   }
 }
 async function histRestoreCloud(ts){
- if(!cloudRoom)return;
+ if(!cloudRoom||historyRestoreInProgress)return;
  const id=cloudRoom.id;
  if(!navigator.locks||typeof navigator.locks.request!=='function'){toast(L2('Bu tarayıcı sekmeler arası güvenli kilidi desteklemiyor; sürüm geri yüklenmedi. Daha güncel tarayıcı kullan veya diğer sekmeleri kapatıp yeniden dene.','This browser does not support safe cross-tab locking; the version was not restored. Use a newer browser or close other tabs and try again.'));return}
  if(!confirm(L2('Önce bekleyen değişiklikler eşitlenir. Ortak tahta bu sürüme döner; mevcut sunucu durumu ayrıca geçmişte saklanır. Daha yeni onaylı düzenlemeler güncel tahtada görünmez ama geçmişte kalır. Kuyruk boşaltılamazsa geri yükleme durur. Devam edilsin mi?','Pending edits will be synced first. The shared board will return to this version; the current server state is retained in history. Later acknowledged edits will no longer be current, but remain in history. Restore stops if the queue cannot be cleared. Continue?')))return;
- try{return await runCloudRoomLocked(id,()=>histRestoreCloudLocked(ts,id))}catch(_){toast(L2('Sekmeler arası güvenli kilit alınamadı; hiçbir sürüm geri yüklenmedi.','Could not acquire the cross-tab safety lock; no version was restored.'))}
+ setHistoryRestoreBusy(true);
+ try{return await runCloudRoomLocked(id,()=>histRestoreCloudLocked(ts,id))}catch(_){toast(L2('Sekmeler arası güvenli kilit alınamadı; hiçbir sürüm geri yüklenmedi.','Could not acquire the cross-tab safety lock; no version was restored.'))}finally{setHistoryRestoreBusy(false)}
 }
 async function histRestoreCloudLocked(ts,id){
  if(!cloudRoom||cloudRoom.id!==id)return;
@@ -2174,12 +2165,12 @@ async function histRestoreCloudLocked(ts,id){
   const saved=await saveCloudRestoreCheckpoint(id,d.board,d.rev,cloudRoom.expires,cloudBoard(true),restoreId,intentCheckpoint);if(saved!==true)throw new Error('Restore checkpoint changed in another tab');
   const durable=await cloudCheckpoint(id);if(!durable||durable.restoreId!==restoreId||cloudGenerationValue(durable)!==generation||durable.restoreIntent||durable.inflight||!cloudCheckpointCanResume(durable))throw new Error('Restore checkpoint readback did not match');
   cloudInflight=null;cloudPending=false;
-  if(!clearCloudCheckpointUnsafe(id,restoreId)){clearInterval(cloudTimer);cloudTimer=0;liveStop();setSyncBadge('storage');hist=[snap()];hidx=0;syncUI();closeModal();toast(L2('Sürüm ve checkpoint kaydedildi, ancak güvenlik işareti silinemedi. Eşitleme durduruldu; yeniden açarak aynı restoreId’yi doğrula. Yerel yedeğin korunuyor.','The version and checkpoint were saved, but the safety marker could not be cleared. Sync is paused; reopen to validate the same restoreId. Your local backup is preserved.'));return}
-  hist=[snap()];hidx=0;syncUI();closeModal();toast(L2('Sürüm geri yüklendi. Önceki sunucu durumu geçmişte, önceki yerel pano ise yedeklerde korunuyor.','Version restored. The prior server state remains in history and the prior local board remains in backups.'));
+  if(!clearCloudCheckpointUnsafe(id,restoreId)){clearInterval(cloudTimer);cloudTimer=0;liveStop();setSyncBadge('storage');hist=[snap()];hidx=0;syncUI();closeModal(true);toast(L2('Sürüm ve checkpoint kaydedildi, ancak güvenlik işareti silinemedi. Eşitleme durduruldu; yeniden açarak aynı restoreId’yi doğrula. Yerel yedeğin korunuyor.','The version and checkpoint were saved, but the safety marker could not be cleared. Sync is paused; reopen to validate the same restoreId. Your local backup is preserved.'));return}
+  hist=[snap()];hidx=0;syncUI();closeModal(true);toast(L2('Sürüm geri yüklendi. Önceki sunucu durumu geçmişte, önceki yerel pano ise yedeklerde korunuyor.','Version restored. The prior server state remains in history and the prior local board remains in backups.'));
  }catch(e){
   const definitiveNoCommit=Number.isInteger(e?.status)&&e.status>=400&&e.status<500&&e.status!==408;
   if(definitiveNoCommit&&intentCheckpoint){const markerCleared=clearCloudCheckpointUnsafe(id,restoreId);if(markerCleared){try{const intentCleared=await clearCloudRestoreIntent(id,intentCheckpoint);if(intentCleared){toast(L2('Geri yükleme sunucu tarafından reddedildi: ','The server rejected the restore: ')+e.message);return}}catch(_){}}}
-  clearInterval(cloudTimer);cloudTimer=0;liveStop();setSyncBadge('storage');hist=[snap()];hidx=0;syncUI();closeModal();toast(acknowledged||responseReceived?L2('Geri yükleme yanıtı/checkpoint’i doğrulanamadı. Kalıcı intent aynı restoreId ile yeniden uzlaştırılacak; yeni restore başlatma. Yerel yedekleri yönet veya .ghdraw dışa aktar.','The restore response/checkpoint could not be verified. Its durable intent will reconcile using the same restoreId; do not start another restore. Manage local backups or export a .ghdraw file.'):L2('Geri yüklemenin sonucu belirsiz. Kalıcı intent aynı restoreId ile yeniden denenecek; outbox silinmedi. Yerel yedekleri yönet veya .ghdraw dışa aktar.','The restore outcome is uncertain. Its durable intent will retry with the same restoreId; the outbox was not cleared. Manage local backups or export a .ghdraw file.'));
+  clearInterval(cloudTimer);cloudTimer=0;liveStop();setSyncBadge('storage');hist=[snap()];hidx=0;syncUI();closeModal(true);toast(acknowledged||responseReceived?L2('Geri yükleme yanıtı/checkpoint’i doğrulanamadı. Kalıcı intent aynı restoreId ile yeniden uzlaştırılacak; yeni restore başlatma. Yerel yedekleri yönet veya .ghdraw dışa aktar.','The restore response/checkpoint could not be verified. Its durable intent will reconcile using the same restoreId; do not start another restore. Manage local backups or export a .ghdraw file.'):L2('Geri yüklemenin sonucu belirsiz. Kalıcı intent aynı restoreId ile yeniden denenecek; outbox silinmedi. Yerel yedekleri yönet veya .ghdraw dışa aktar.','The restore outcome is uncertain. Its durable intent will retry with the same restoreId; the outbox was not cleared. Manage local backups or export a .ghdraw file.'));
  }finally{cloudBusy=false}
 }
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')histSnap(false,true)});

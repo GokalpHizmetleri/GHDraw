@@ -33,7 +33,7 @@ Watch short demos on the [GHDraw YouTube channel](https://www.youtube.com/@GHDra
 - Sticky notes, comment pins, live cursors and chat, board history, installable app (see New in v10)
 - Export to PNG (2x) or animated PNG, animated GIF, MP4 / video, PDF (all pages), SVG (vector), each with a progress bar; save and open `.ghdraw` files
 - Autosave to `localStorage`; shared rooms also keep a durable local snapshot and retryable sync outbox in IndexedDB
-- Zero build: a single `index.html` with vanilla JS. Works from `file://`, any static host, or Vercel
+- Zero build: vanilla JS with `index.html` and a small versioned shared element contract. Works from `file://`, any static host, or Vercel
 
 > The fonts load from Google Fonts, so the font picker needs an internet connection. Without it, text falls back to a system font.
 
@@ -93,12 +93,14 @@ Every push to `main` after that redeploys automatically.
 - Rendering draws that list onto a `<canvas>` through a pan/zoom transform. Undo and redo move through snapshots of the list, and export draws the same list onto an offscreen canvas.
 - The hand-drawn look comes from drawing each shape twice with small seeded offsets, so lines wobble without flickering between frames.
 - Autosave serializes the element list, view and style defaults to `localStorage` on every change. During cloud collaboration, the app also stores the room snapshot and an in-flight update in IndexedDB before sending it. The same operation ID is retried after a lost response; the backend acknowledges duplicate requests and returns a monotonically increasing room revision. Joining backs up the previous local board and rebases edits made since that device's last checkpoint onto the latest room state. A history restore first waits for every durable outbox operation to receive its authoritative ACK, then stores a restore intent and stable `restoreId` before contacting the server. The backend retains a matching restore receipt, so a lost response is retried idempotently instead of repeating or losing the restore. On success, the new checkpoint, receipt ID and local snapshot are persisted in one IndexedDB transaction with a monotonically increasing room generation before clearing the local safety marker; stale-generation tabs cannot post, checkpoint or snapshot old state. The generation is recorded with the local board, and a reload quarantines an older board in recovery backups instead of treating it as private data. Sync, join and restore use a per-room Web Lock across tabs; browsers without this lock fail closed rather than risk racing durable checkpoints or outbox writes. If a required quarantine backup fails, joining stays blocked until the exact raw record is archived or a recovery `.ghdraw` is downloaded; that file imports the latest in-memory board and embeds the quarantined original. The export authorizes only those board contents: later edits require a fresh durable backup or export, and the app rechecks protection immediately before replacing any board snapshot.
+- Before enabling the scheduled expiry cleanup, complete the [`expiresAt` index preflight](backend/DEPLOYMENT.md). The required ascending DateTime index must be ready on the target `ghdraw.boards` table; a failed expiry query returns 503 rather than reporting cleanup success.
 
 ## Files
 
 | File | Purpose |
 | --- | --- |
 | `index.html` | The whole app: markup, styles and drawing engine |
+| `backend/shared/board-element-contract.js` | Versioned element validation shared by browser and backend; cached in the offline app shell and included with the Function source |
 | `sw.js`, `manifest.webmanifest` | Installable app (PWA) and offline app shell; the icons are embedded in the manifest as data URLs |
 | `logo.svg` | Wordmark ("GHDraw" in the Caveat handwriting font) |
 | `LICENSE` | MIT |
@@ -190,7 +192,7 @@ Once provisioned, the Appwrite project will be managed under a separate Agent-ow
 
 1. Create a private TablesDB database `ghdraw` and table `boards` with a required `longtext` column `payload` (at least 16,777,216 characters) and a `DateTime` column `expiresAt` (it may be nullable; the Function populates it for every row). Create a key index on `expiresAt` (ascending) so bounded cleanup queries do not require full-table scans. Keep table and row permissions private.
 2. Create a Node.js 22 Function, entrypoint `src/main.js`, with public execute permission `any`, runtime scopes `rows.read` and `rows.write`, cron `17 * * * *`, and set its Timeout setting to **30 seconds** (strictly below the fixed-row lock lease of 60 seconds). Verify this configured value before release; do not deploy with a longer timeout. Appwrite documents a system maximum of 900 seconds, so this shorter setting is a required safety constraint, not an assumed platform default. The Function uses Appwrite's `APPWRITE_FUNCTION_API_ENDPOINT`, `APPWRITE_FUNCTION_PROJECT_ID` and per-execution `x-appwrite-key`; do not add a long-lived Appwrite key to code or frontend. Keep `GROQ_API_KEY` as a secret environment variable if AI tools are enabled.
-3. Deploy the files under `backend/` including `package.json`, `package-lock.json`, `src/main.js`, `src/ai.js` and `src/room-sync.js`.
+3. Deploy the files under `backend/` including `package.json`, `package-lock.json`, `shared/package.json`, `shared/board-element-contract.js`, `src/main.js`, `src/ai.js` and `src/room-sync.js`.
 4. After the Function domain is known, set the frontend `CLOUD` URL to that domain and preserve the `https://ghdraw.vercel.app` CORS origin. Do not publish until anonymous share/view/room, private-row denial, history export/restore and scheduled expiry cleanup have passed against the live project.
 
 ### Collaboration limits

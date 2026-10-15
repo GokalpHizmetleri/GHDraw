@@ -1,6 +1,6 @@
 /* GHDraw service worker: the app shell works offline. Cloud links need a connection. */
-const VERSION = 'ghdraw-v17-sync-safety';
-const SHELL = ['./', 'index.html', 'manifest.webmanifest', 'logo.svg'];
+const VERSION = 'ghdraw-v18-shared-contract-restore-lock';
+const SHELL = ['./', 'index.html', 'backend/shared/board-element-contract.js', 'manifest.webmanifest', 'logo.svg'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => Promise.all(SHELL.map(u => c.add(u).catch(() => {})))).then(() => self.skipWaiting()));
 });

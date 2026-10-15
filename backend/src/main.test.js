@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {Client,Query,TablesDB} from 'node-appwrite';
 import {BOARD_COORD_LIMIT,BOARD_POINT_LIMIT,CLEANUP_PAGE_BUDGET,CLEANUP_ROW_BUDGET,CLEANUP_SPECIAL_ROW_BUDGET,CLEANUP_TIME_BUDGET_MS,createAppwriteDb,createHandler,ROOM_OP_RECEIPT_LIMIT} from './main.js';
+import BoardElementContract from '../shared/board-element-contract.js';
 
 const Q={limit:n=>`limit:${n}`,orderAsc:key=>`orderAsc:${key}`,cursorAfter:id=>`cursorAfter:${id}`,select:fields=>`select:${fields.join(',')}`,equal:(key,values)=>`equal:${key}:${JSON.stringify(Array.isArray(values)?values:[values])}`,lessThanEqual:(key,value)=>`lessThanEqual:${key}:${value}`};
 const DB='ghdraw',TABLE='boards';
@@ -11,7 +12,7 @@ const rowData=data=>({payload:JSON.stringify(data),expiresAt:new Date(data.expir
 const lockRow=(id,leaseId,expires)=>[id,{$id:id,...rowData({kind:'lock',leaseId,ts:expires-60000,expires}),$permissions:[]}];
 const err=code=>Object.assign(new Error('mock database error'),{code});
 
- test('installed Node SDK sends row and cursor query calls to TablesDB endpoints',async()=>{
+test('installed Node SDK sends row and cursor query calls to TablesDB endpoints',async()=>{
  const client=new Client().setEndpoint('https://fra.cloud.appwrite.io/v1').setProject('project-test').setKey('ephemeral-test-key'),calls=[];
  client.call=async(method,uri,headers,payload)=>{calls.push({method,path:uri.pathname,headers,payload});return {rows:[]}};
  const tables=new TablesDB(client);
@@ -29,6 +30,13 @@ const err=code=>Object.assign(new Error('mock database error'),{code});
  assert.ok(calls.some(call=>call.path.endsWith('/rows/row-test')));assert.ok(calls.some(call=>call.path==='/v1/tablesdb/transactions'));
  assert.ok(calls.some(call=>call.path==='/v1/tablesdb/transactions/tx-test'));
  });
+
+test('browser and backend load one versioned board element contract',()=>{
+ const client=readFileSync(new URL('../../index.html',import.meta.url),'utf8'),worker=readFileSync(new URL('../../sw.js',import.meta.url),'utf8');
+ assert.equal(BoardElementContract.VERSION,1);assert.match(client,/<script src="\.\/backend\/shared\/board-element-contract\.js"><\/script>/);assert.match(client,/GHDrawBoardElementContract\.validElement\(e\)/);assert.match(worker,/backend\/shared\/board-element-contract\.js/);
+ assert.equal(BoardElementContract.validElement({id:'shape',type:'rect',x:0,y:0,w:10,h:10,unknown:1}),false);
+ assert.equal(BoardElementContract.validElement({id:'text',type:'text',x:0,y:0,w:10,h:10,text:'x',font:'Caveat',size:401}),false);
+});
 
 class MemoryTablesDB{
  constructor(seed=[]){this.rows=new Map(seed);this.transactions=new Map();this.nextTx=0;this.calls=[];this.tablePermissions=[];this.failDeleteOnceId=null;this.failDeleteRowsAt=0;this.beforeTxCommit=null}
@@ -76,9 +84,9 @@ const update=(fx,id,{opId='11111111111111111111111111111111',baseRev=0,shapeId='
 const seededShares=n=>Array.from({length:n},(_,i)=>{const id=(0x10000+i).toString(16).padStart(32,'0'),data={kind:'view',expires:Date.now()+86400000,board:board()};return [id,{$id:id,...rowData(data),$permissions:[]}]});
 const MAX_PAYLOAD=12*1024*1024;
 function createBodyForStoredBytes(target){
- const requestId='c'.repeat(32),b=board(),expires=Date.now()+7*24*3600000;b.p[0].e[0].text='';
+ const requestId='c'.repeat(32),b=board(),expires=Date.now()+7*24*3600000,element=b.p[0].e[0];element.text='x'.repeat(1e6);element.src='x'.repeat(1e7-10);
  const stored=()=>({kind:'view',expires,board:b,room:null,owner:'o'.repeat(48),createReceiptId:'g'+'0'.repeat(31)});
- const padding=target-Buffer.byteLength(JSON.stringify(stored()));assert.ok(padding>=0);b.p[0].e[0].text='x'.repeat(padding);
+ const room=target-Buffer.byteLength(JSON.stringify(stored()));assert.ok(room>7);element.lw=Array(Math.floor((room-7)/11)).fill(1e9);const padding=target-Buffer.byteLength(JSON.stringify(stored()));assert.ok(padding>=0&&padding<=10);element.src+='x'.repeat(padding);
  assert.equal(Buffer.byteLength(JSON.stringify(stored())),target);
  const body={kind:'view',board:b,requestId};assert.ok(Buffer.byteLength(JSON.stringify(body))<=MAX_PAYLOAD,'raw request stays below the old request-only limit');return body;
 }
@@ -117,24 +125,28 @@ test('anonymous share creation and view reads work through the Function while ro
 });
 
 test('create and room writes enforce the frontend coordinate and geometry contract before mutating rows',async()=>{
- const client=readFileSync(new URL('../../index.html',import.meta.url),'utf8');assert.equal(BOARD_COORD_LIMIT,1e9);assert.equal(BOARD_POINT_LIMIT,1e6);assert.match(client,/const BOARD_COORD_LIMIT=1e9/);assert.match(client,/points\.length<=1e6/);
+ const client=readFileSync(new URL('../../index.html',import.meta.url),'utf8');assert.equal(BOARD_COORD_LIMIT,1e9);assert.equal(BOARD_POINT_LIMIT,1e6);assert.equal(BoardElementContract.COORD_LIMIT,1e9);assert.equal(BoardElementContract.POINT_LIMIT,1e6);assert.match(client,/const BOARD_COORD_LIMIT=1e9/);
  const invalid=[
   {id:'too-far',type:'rect',x:BOARD_COORD_LIMIT+1,y:0,w:1,h:1},
   {id:'past-right-edge',type:'rect',x:BOARD_COORD_LIMIT-1,y:0,w:2,h:1},
   {id:'negative-size',type:'rect',x:0,y:0,w:-1,h:1},
   {id:'non-finite-point',type:'line',pts:[[Number.POSITIVE_INFINITY,0],[1,1]]},
   {id:'bad-pressure',type:'pen',pts:[[0,0,1.01],[1,1]]},
-  {id:'empty-line',type:'line',pts:[]}
+  {id:'empty-line',type:'line',pts:[]},
+  {id:'unknown-field',type:'rect',x:0,y:0,w:10,h:10,unexpected:1},
+  {id:'text-size-out-of-range',type:'text',x:0,y:0,w:10,h:10,text:'x',font:'Caveat',size:401},
+  {id:'invalid-style',type:'rect',x:0,y:0,w:10,h:10,style:'wavy'},
+  {id:'invalid-color',type:'rect',x:0,y:0,w:10,h:10,stroke:'red'}
  ];
  for(const element of invalid){
-  const fx=fixture(),result=await fx.call({method:'POST',path:'/create',body:{kind:'view',board:{p:[{id:'page-1',n:'Page 1',e:[element]}]}},bodyText:'{}'});
-  assert.equal(result.status,400,element.id);assert.equal(fx.db.rows.size,0,`${element.id} is rejected before create/receipt writes`);
+  const fx=fixture(),result=await fx.call({method:'POST',path:'/create',body:{kind:'view',requestId:'c'.repeat(32),board:{p:[{id:'page-1',n:'Page 1',e:[element]}]}}});
+  assert.equal(result.status,400,element.id);assert.equal(fx.db.rows.size,0,`${element.id} is rejected before create/receipt writes`);assert.equal(fx.db.calls.some(call=>call.op==='createRow'),false,`${element.id} creates no share or idempotency receipt`);
  }
- const fx=fixture(),room=await createShare(fx,'room'),root=fx.db.rows.get(room.id),quotaId=roomQuotaRowId(room.id),beforeRoot=root.payload,beforeQuota=fx.db.rows.get(quotaId).payload;
+ const fx=fixture(),room=await createShare(fx,'room'),quotaId=roomQuotaRowId(room.id),beforeRoot=fx.db.rows.get(room.id).payload,beforeQuota=fx.db.rows.get(quotaId).payload,initial=JSON.parse(beforeRoot);
  for(const element of invalid){
   const result=await fx.call({method:'POST',path:`/room/${room.id}`,body:{opId:'a'.repeat(32),baseRev:0,changes:[{t:'put',pid:'page-1',e:element}]},bodyText:'{}'});
-  assert.equal(result.status,400,element.id);assert.equal(root.payload,beforeRoot,'invalid geometry leaves the room board/revision untouched');assert.equal(fx.db.rows.get(quotaId).payload,beforeQuota,'invalid geometry does not increment the receipt ledger');
-  assert.equal([...fx.db.rows.keys()].some(id=>id.startsWith('o')||id.startsWith('h')),false,'invalid geometry creates no operation receipt or history row');
+  assert.equal(result.status,400,element.id);assert.equal(fx.db.rows.get(room.id).payload,beforeRoot,'invalid element leaves the stored room board/revision untouched');assert.deepEqual(JSON.parse(fx.db.rows.get(room.id).payload).board,initial.board);assert.equal(JSON.parse(fx.db.rows.get(room.id).payload).rev,initial.rev);
+  assert.equal(fx.db.rows.get(quotaId).payload,beforeQuota,'invalid element does not increment the durable receipt ledger');assert.equal([...fx.db.rows.keys()].some(id=>id.startsWith('o')||id.startsWith('h')),false,'invalid element creates no operation receipt or history row');
  }
 });
 
@@ -300,6 +312,13 @@ test('scheduled cleanup uses bounded expiry-only batches and resumes after a bul
  const lists=fx.db.calls.filter(c=>c.op==='listRows');assert.ok(lists.length>=3);for(const call of lists){assert.ok(call.queries.includes('orderAsc:expiresAt'));assert.ok(call.queries.includes('limit:100'));assert.ok(call.queries.includes('select:$id,expiresAt'));assert.ok(call.queries.some(q=>q.startsWith('lessThanEqual:expiresAt:')));assert.ok(!call.queries.some(q=>q.includes('payload')))}
  assert.ok(!lists.some(c=>c.queries.some(q=>q.startsWith('cursorAfter:')||q.startsWith('offset:'))));
  const batches=fx.db.calls.filter(c=>c.op==='deleteRows');assert.ok(batches.length>=2);for(const call of batches){const ids=JSON.parse(call.queries.find(q=>q.startsWith('equal:$id:')).slice('equal:$id:'.length));assert.ok(ids.length<=100);assert.ok(call.queries.some(q=>q.startsWith('lessThanEqual:expiresAt:')))}
+});
+
+test('scheduled cleanup fails closed when the expiresAt index query is unavailable',async()=>{
+ const expiredId='o'+'a'.repeat(31),expired={$id:expiredId,...rowData({kind:'room-op-receipt',expires:Date.now()-1000}),$permissions:[]},fx=fixture({seed:[[expiredId,expired]]}),before=JSON.stringify([...fx.db.rows]);
+ fx.db.listRows=async({queries=[]})=>{fx.db.calls.push({op:'listRows',queries:[...queries]});throw Object.assign(new Error('missing expiresAt ascending index'),{code:400,type:'general_query_invalid'})};
+ const result=await fx.call({method:'POST',path:'/ignored',headers:{'x-appwrite-trigger':'schedule'}});
+ assert.equal(result.status,503);assert.match(result.body.error,/ready ascending expiresAt index/);assert.equal(JSON.stringify([...fx.db.rows]),before,'failed preflight query leaves every row unchanged');assert.equal(fx.db.calls.some(call=>call.op==='deleteRow'||call.op==='deleteRows'),false,'cleanup does not delete or report success when the expiry query fails');
 });
 
 test('9400 expired receipts converge across bounded runs without skipping concurrent inserts or deleting active rows',async()=>{

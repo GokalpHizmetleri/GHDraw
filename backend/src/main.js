@@ -3,21 +3,13 @@ import {randomBytes,createHash} from 'node:crypto';
 import {gzipSync,gunzipSync} from 'node:zlib';
 import {handleAI} from './ai.js';
 import {applyRoomUpdate,validOpId} from './room-sync.js';
+import BoardElementContract from '../shared/board-element-contract.js';
 const DB='ghdraw',TABLE='boards',MAX=12*1024*1024,PAGE_SIZE=100,CREATE_LOCK_SEED='00000000000000000000000000000000',LOCK_LEASE_MS=60000;
 export const ROOM_OP_RECEIPT_LIMIT=9_400;
-export const BOARD_COORD_LIMIT=1e9,BOARD_POINT_LIMIT=1e6;
+export const BOARD_COORD_LIMIT=BoardElementContract.COORD_LIMIT,BOARD_POINT_LIMIT=BoardElementContract.POINT_LIMIT;
 export const CLEANUP_ROW_BUDGET=1_000,CLEANUP_SPECIAL_ROW_BUDGET=25,CLEANUP_PAGE_BUDGET=10,CLEANUP_TIME_BUDGET_MS=20_000;
 const validId=x=>typeof x==='string'&&x.length>0&&x.length<=128;
-const validThread=th=>th===undefined||Array.isArray(th)&&th.length<=300&&th.every(m=>m&&typeof m.t==='string'&&m.t.length<=500);
-const finiteCoordinate=n=>Number.isFinite(n)&&Math.abs(n)<=BOARD_COORD_LIMIT;
-const validPoints=points=>Array.isArray(points)&&points.length>0&&points.length<=BOARD_POINT_LIMIT&&points.every(p=>Array.isArray(p)&&(p.length===2||p.length===3)&&finiteCoordinate(p[0])&&finiteCoordinate(p[1])&&(p.length<3||p[2]===null||Number.isFinite(p[2])&&p[2]>=0&&p[2]<=1));
-const validElement=e=>{
- if(!e||typeof e!=='object'||Array.isArray(e)||!validId(e.id)||!['rect','diamond','ellipse','arrow','line','pen','text','image','video','poly'].includes(e.type)||!validThread(e.th))return false;
- const own=(key)=>Object.prototype.hasOwnProperty.call(e,key),optional=(key,check)=>!own(key)||check(e[key]);
- if(!optional('x',finiteCoordinate)||!optional('y',finiteCoordinate)||!optional('w',n=>finiteCoordinate(n)&&n>=0)||!optional('h',n=>finiteCoordinate(n)&&n>=0)||!optional('pts',validPoints))return false;
- if(['line','arrow','pen','poly'].includes(e.type))return validPoints(e.pts);
- return ['rect','diamond','ellipse','text','image','video'].includes(e.type)&&[e.x,e.y,e.w,e.h].every(finiteCoordinate)&&e.w>=0&&e.h>=0&&Math.abs(e.x+e.w)<=BOARD_COORD_LIMIT&&Math.abs(e.y+e.h)<=BOARD_COORD_LIMIT;
-};
+const validElement=BoardElementContract.validElement;
 // Appwrite projects expiry metadata as a narrow DateTime column so scans never download board payloads.
 const rowData=d=>({payload:JSON.stringify(d),expiresAt:new Date(d.expires).toISOString()});
 const createReceiptRowId=requestId=>'g'+createHash('sha256').update('ghdraw-create:'+requestId).digest('hex').slice(0,31);
@@ -138,7 +130,7 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
     const db=await getDb(),started=clock(),cutoff=started,cutoffIso=new Date(cutoff).toISOString();let deleted=0,scanned=0,pages=0,specialRows=0;
     while(scanned<CLEANUP_ROW_BUDGET&&pages<CLEANUP_PAGE_BUDGET&&clock()-started<CLEANUP_TIME_BUDGET_MS){
      const limit=Math.min(PAGE_SIZE,CLEANUP_ROW_BUDGET-scanned),queries=[QueryApi.lessThanEqual('expiresAt',cutoffIso),QueryApi.orderAsc('expiresAt'),QueryApi.limit(limit),QueryApi.select(['$id','expiresAt'])];
-     const page=await db.listRows({databaseId:DB,tableId:TABLE,queries});
+     let page;try{page=await db.listRows({databaseId:DB,tableId:TABLE,queries})}catch(_){return reply({error:'Cleanup could not run. Verify that boards has a ready ascending expiresAt index; no successful cleanup was reported.'},503)}
      if(!page||!Array.isArray(page.rows))throw new Error('Unexpected TablesDB row-list response');
      if(!page.rows.length)break;
      pages++;scanned+=page.rows.length;const directIds=[];let budgetReached=false;
