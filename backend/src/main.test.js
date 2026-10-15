@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import vm from 'node:vm';
 import {Client,Query,TablesDB} from 'node-appwrite';
-import {BOARD_COORD_LIMIT,BOARD_POINT_LIMIT,CLEANUP_PAGE_BUDGET,CLEANUP_ROW_BUDGET,CLEANUP_SPECIAL_ROW_BUDGET,CLEANUP_TIME_BUDGET_MS,createAppwriteDb,createHandler,LIVE_CHAT_MESSAGE_LIMIT,LIVE_REQUEST_MAX_BYTES,LIVE_RESPONSE_MAX_BYTES,LIVE_ROOM_PEER_LIMIT,LIVE_ROOM_REQUESTS_PER_SECOND,LIVE_ROW_MAX_BYTES,ROOM_OP_RECEIPT_LIMIT} from './main.js';
+import {BOARD_COORD_LIMIT,BOARD_POINT_LIMIT,CLEANUP_PAGE_BUDGET,CLEANUP_ROW_BUDGET,CLEANUP_SPECIAL_ROW_BUDGET,CLEANUP_TIME_BUDGET_MS,createAppwriteDb,createHandler,LIVE_CHAT_MESSAGE_LIMIT,LIVE_CHAT_RECEIPT_LIMIT,LIVE_REQUEST_MAX_BYTES,LIVE_RESPONSE_MAX_BYTES,LIVE_ROOM_PEER_LIMIT,LIVE_ROOM_REQUESTS_PER_SECOND,LIVE_ROW_MAX_BYTES,ROOM_OP_RECEIPT_LIMIT} from './main.js';
 import BoardElementContract from '../shared/board-element-contract.js';
 
 const Q={limit:n=>`limit:${n}`,orderAsc:key=>`orderAsc:${key}`,cursorAfter:id=>`cursorAfter:${id}`,select:fields=>`select:${fields.join(',')}`,equal:(key,values)=>`equal:${key}:${JSON.stringify(Array.isArray(values)?values:[values])}`,lessThanEqual:(key,value)=>`lessThanEqual:${key}:${value}`};
@@ -139,6 +139,7 @@ const createShare=async(fx,kind='view')=>{
 };
 const roomQuotaRowId=id=>'q'+id.slice(0,31);
 const roomOpReceiptRowId=(roomId,opId)=>'o'+createHash('sha256').update(`ghdraw-room-op:${roomId}:${opId}`).digest('hex').slice(0,31);
+const liveChatReceiptRowIdForTest=(roomId,mid)=>'j'+createHash('sha256').update(`ghdraw-live-chat:${roomId}:${mid}`).digest('hex').slice(0,31);
 const paddedReceiptIds=(existing,count,excluded=[])=>{
  const ids=[...existing],used=new Set([...existing,...excluded]);
  for(let serial=0;ids.length<count;serial++){
@@ -189,7 +190,7 @@ test('deployment timeout is explicitly shorter than the lock lease',()=>{
 
 test('room receipt cap fits a Free-plan owner-delete transaction with 100-row bulk requests',()=>{
  const freeRowsPerBulk=100,freeTransactionOperations=100,fixedDeleteRows=5,bulkDeleteOperations=Math.ceil(ROOM_OP_RECEIPT_LIMIT/freeRowsPerBulk);
- assert.equal(ROOM_OP_RECEIPT_LIMIT,9400);assert.ok(bulkDeleteOperations+fixedDeleteRows<=freeTransactionOperations,`${bulkDeleteOperations} bulk deletes plus ${fixedDeleteRows} fixed deletes must fit in ${freeTransactionOperations} staged operations`);
+ assert.equal(ROOM_OP_RECEIPT_LIMIT,9400);assert.equal(LIVE_CHAT_RECEIPT_LIMIT,ROOM_OP_RECEIPT_LIMIT,'chat and board receipts share one per-room budget rather than separate caps');assert.ok(bulkDeleteOperations+fixedDeleteRows<=freeTransactionOperations,`${bulkDeleteOperations} bulk deletes plus ${fixedDeleteRows} fixed deletes must fit in ${freeTransactionOperations} staged operations`);
 });
 test('room receipt limit accepts operation 9,400, rejects the next without mutation, and preserves its duplicate ACK',async()=>{
  const fx=fixture(),room=await createShare(fx,'room'),firstOpId='1'.repeat(32),finalOpId='2'.repeat(32),rejectedOpId='3'.repeat(32);
@@ -202,7 +203,7 @@ test('room receipt limit accepts operation 9,400, rejects the next without mutat
  const atLimit=JSON.parse(fx.db.rows.get(quotaId).payload);assert.equal(atLimit.count,ROOM_OP_RECEIPT_LIMIT);assert.equal(atLimit.receiptIds.length,ROOM_OP_RECEIPT_LIMIT);
  const roomBefore=fx.db.rows.get(room.id).payload,quotaBefore=fx.db.rows.get(quotaId).payload,rowCount=fx.db.rows.size;
  const rejected=await update(fx,room.id,{opId:rejectedOpId,baseRev:accepted.body.rev,shapeId:'cap-rejected'});
- assert.equal(rejected.status,409);assert.equal(rejected.body.error,'room_receipt_limit');assert.match(rejected.body.message,/9,400-operation receipt limit/);
+ assert.equal(rejected.status,409);assert.equal(rejected.body.error,'room_receipt_limit');assert.match(rejected.body.message,/shared 9,400 room receipt limit/);
  assert.equal(fx.db.rows.get(room.id).payload,roomBefore,'the 9,401st operation cannot mutate the room');assert.equal(fx.db.rows.get(quotaId).payload,quotaBefore,'the rejected operation cannot increment the receipt ledger');assert.equal(fx.db.rows.size,rowCount,'the rejected operation creates no receipt or side row');assert.equal(fx.db.rows.has(rejectedReceiptId),false);
  const retry=await update(fx,room.id,{opId:finalOpId,baseRev:first.body.rev,shapeId:'cap-final'});
  assert.equal(retry.status,200);assert.equal(retry.body.duplicate,true);assert.equal(retry.body.ack,finalOpId,'the accepted 9,400th operation remains retryable at the cap');
@@ -274,7 +275,7 @@ test('share-create retries with one request ID return the same private receipt a
 test('anonymous room creation and reads expose the sync protocol but never owner or operation secrets',async()=>{
  const fx=fixture(),createdResponse=await fx.call({method:'POST',path:'/create',body:{kind:'room',board:board(),requestId:'b'.repeat(32)}}),created=createdResponse.body;
  assert.equal(createdResponse.status,201);const room=await fx.call({method:'GET',path:`/room/${created.id}`});assert.equal(room.status,200);assert.equal(room.body.syncProtocol,'room-ops-v1');assert.equal(room.body.rev,0);assert.equal('owner' in room.body,false);assert.equal('ops' in room.body,false);assert.equal('createReceiptId' in room.body,false);assert.equal('opReceiptCount' in room.body,false);assert.deepEqual(fx.db.rows.get(created.id).$permissions,[]);
- const quota=JSON.parse(fx.db.rows.get(roomQuotaRowId(created.id)).payload);assert.deepEqual({kind:quota.kind,roomId:quota.roomId,count:quota.count,receiptIds:quota.receiptIds},{kind:'room-op-quota',roomId:created.id,count:0,receiptIds:[]});assert.deepEqual(fx.db.rows.get(roomQuotaRowId(created.id)).$permissions,[]);
+ const quota=JSON.parse(fx.db.rows.get(roomQuotaRowId(created.id)).payload);assert.deepEqual({kind:quota.kind,roomId:quota.roomId,count:quota.count,chatCount:quota.chatCount,receiptIds:quota.receiptIds},{kind:'room-op-quota',roomId:created.id,count:0,chatCount:0,receiptIds:[]});assert.deepEqual(fx.db.rows.get(roomQuotaRowId(created.id)).$permissions,[]);
 });
 
 test('room operation ACKs, duplicate retries and stale-base rebase survive TablesDB transactions',async()=>{
@@ -283,7 +284,7 @@ test('room operation ACKs, duplicate retries and stale-base rebase survive Table
  const receiptEntry=[...fx.db.rows].find(([rowId,row])=>rowId.startsWith('o')&&JSON.parse(row.payload).opId==='11111111111111111111111111111111');assert.ok(receiptEntry,'an operation receipt is stored separately from the room board');assert.deepEqual(receiptEntry[1].$permissions,[]);assert.equal(JSON.parse(receiptEntry[1].payload).roomId,created.id);
  const retry=await update(fx,created.id);assert.equal(retry.status,200);assert.equal(retry.body.duplicate,true);assert.equal(retry.body.rev,1);
  const second=await update(fx,created.id,{opId:'22222222222222222222222222222222',baseRev:0,shapeId:'shape-3'});assert.equal(second.status,200);assert.equal(second.body.rebased,true);assert.equal(second.body.rev,2);
- assert.deepEqual(JSON.parse(fx.db.rows.get(created.id).payload).ops,[],'new operation IDs never grow the room row');const quota=JSON.parse(fx.db.rows.get(roomQuotaRowId(created.id)).payload);assert.equal(quota.count,2,'each unique operation increments its separate private quota row exactly once');assert.equal(quota.receiptIds.length,2,'the private quota row indexes every receipt for safe owner deletion');
+ assert.deepEqual(JSON.parse(fx.db.rows.get(created.id).payload).ops,[],'new operation IDs never grow the room row');const quota=JSON.parse(fx.db.rows.get(roomQuotaRowId(created.id)).payload);assert.equal(quota.count,2,'each unique operation increments the shared private quota row exactly once');assert.equal(quota.chatCount,0);assert.equal(quota.receiptIds.length,2,'the private quota row indexes every board/history receipt for safe owner deletion');
  const room=await fx.call({method:'GET',path:`/room/${created.id}`});assert.deepEqual(room.body.board.p[0].e.map(e=>e.id),['shape-1','shape-2','shape-3']);
 });
 
@@ -333,17 +334,59 @@ test('concurrent new operations serialize on the final room receipt slot',async(
  const receipts=[...fx.db.rows].filter(([rowId,row])=>rowId.startsWith('o')&&JSON.parse(row.payload).roomId===created.id);assert.equal(receipts.length,1,'only the winning operation creates a receipt in the last slot');
 });
 
-test('expired room receipts and their quota counters are reclaimed by scheduled cleanup',async()=>{
- const roomId='2'.repeat(32),expires=Date.now()-1000,receiptId='o'+'1'.repeat(31),counterId=roomQuotaRowId(roomId),receipt={kind:'room-op-receipt',roomId,opId:'3'.repeat(32),expires},quota={kind:'room-op-quota',roomId,count:1,expires};
- const fx=fixture({seed:[[receiptId,{$id:receiptId,...rowData(receipt),$permissions:[]}],[counterId,{$id:counterId,...rowData(quota),$permissions:[]}]]});const result=await fx.call({method:'POST',path:'/ignored',headers:{'x-appwrite-trigger':'schedule'}});
- assert.equal(result.status,200);assert.equal(result.body.deleted,2);assert.equal(fx.db.rows.has(receiptId),false);assert.equal(fx.db.rows.has(counterId),false);
+test('expired room operation/chat receipts and their shared quota counter are reclaimed by scheduled cleanup',async()=>{
+ const roomId='2'.repeat(32),expires=Date.now()-1000,receiptId='o'+'1'.repeat(31),counterId=roomQuotaRowId(roomId),chatReceiptId='j'+'2'.repeat(31),receipt={kind:'room-op-receipt',roomId,opId:'3'.repeat(32),expires},chatReceipt={kind:'live-chat-receipt',roomId,mid:'4'.repeat(32),messageHash:'5'.repeat(64),expires},quota={kind:'room-op-quota',roomId,count:2,chatCount:1,receiptIds:[receiptId],expires};
+ const fx=fixture({seed:[[receiptId,{$id:receiptId,...rowData(receipt),$permissions:[]}],[chatReceiptId,{$id:chatReceiptId,...rowData(chatReceipt),$permissions:[]}],[counterId,{$id:counterId,...rowData(quota),$permissions:[]}]]});const result=await fx.call({method:'POST',path:'/ignored',headers:{'x-appwrite-trigger':'schedule'}});
+ assert.equal(result.status,200);assert.equal(result.body.deleted,3);assert.equal(fx.db.rows.has(receiptId),false);assert.equal(fx.db.rows.has(chatReceiptId),false);assert.equal(fx.db.rows.has(counterId),false);
+});
+
+test('live chat returns the full 100-message boundary when every legacy message shares one timestamp',async()=>{
+ const fx=fixture(),created=await createShare(fx,'room'),rowId='p'+created.id.slice(0,31),ts=1_800_000_000_000,messages=Array.from({length:100},(_,i)=>({id:'legacy'+String(i).padStart(6,'0'),cid:'client02',n:'Old peer',c:'#123456',m:'same-time '+i,ts}));
+ fx.db.rows.set(rowId,{$id:rowId,...rowData({kind:'live',expires:created.expires,presence:{},chat:messages}),$permissions:[]});
+ const poll=await fx.call({method:'POST',path:`/live/${created.id}`,body:{cid:'client01',after:ts}});
+ assert.equal(poll.status,200);assert.equal(poll.body.chat.length,100,'the complete retained window is returned at its 100-message boundary');assert.deepEqual(poll.body.chat.map(m=>m.id),messages.map(m=>m.id),'equal timestamps do not collapse or skip message IDs');assert.ok(poll.body.chat.every(m=>m.ts===ts),'legacy timestamp fields remain readable');
+});
+
+test('live chat returns a late-arriving legacy message even when its timestamp is older than the client cursor',async()=>{
+ const fx=fixture(),created=await createShare(fx,'room'),rowId='p'+created.id.slice(0,31),messages=[{id:'older',cid:'client02',n:'Old peer',c:'#123456',m:'older',ts:900},{id:'recent',cid:'client02',n:'Old peer',c:'#123456',m:'recent',ts:1_100}];
+ fx.db.rows.set(rowId,{$id:rowId,...rowData({kind:'live',expires:created.expires,presence:{},chat:messages}),$permissions:[]});
+ const poll=await fx.call({method:'POST',path:`/live/${created.id}`,body:{cid:'client01',after:1_100}});
+ assert.equal(poll.status,200);assert.deepEqual(poll.body.chat.map(m=>m.id),['older','recent'],'the timestamp cursor is ignored so a late commit below it is still delivered');assert.deepEqual(poll.body.chat[0],messages[0],'old stored message shape is preserved without migration');
+});
+
+test('live chat retries with one stable mid after a lost ACK and preserves distinct identical-text sends',async()=>{
+ let now=5_000;const fx=fixture({clock:()=>now}),created=await createShare(fx,'room'),path=`/live/${created.id}`,mid='a'.repeat(32),request={method:'POST',path,body:{cid:'client01',msg:'same text',mid,after:0}};
+ const committedButAckDropped=await fx.call(request);assert.equal(committedButAckDropped.status,200);assert.equal(committedButAckDropped.body.ack,mid);const retry=await fx.call({...request,body:{...request.body,cid:'client02'}});assert.equal(retry.status,200);assert.equal(retry.body.ack,mid);assert.equal(retry.body.chat.filter(m=>m.id===mid).length,1,'retry returns the single committed row with the original stable ID after the client session ID changes');assert.equal(JSON.parse(fx.db.rows.get('p'+created.id.slice(0,31)).payload).chat.length,1,'the lost-ACK retry does not append a duplicate');
+ now+=1;const distinct=await fx.call({method:'POST',path,body:{cid:'client01',msg:'same text',mid:'b'.repeat(32),after:0}});assert.equal(distinct.status,200);assert.deepEqual(distinct.body.chat.map(m=>m.id),[mid,'b'.repeat(32)],'separate sends with identical text remain distinct by ID');assert.ok(distinct.body.chat.every(m=>m.m==='same text'));
+ const conflict=await fx.call({method:'POST',path,body:{cid:'client01',msg:'different content',mid,after:0}});assert.equal(conflict.status,409);assert.equal(conflict.body.error,'live_message_id_conflict');assert.equal(JSON.parse(fx.db.rows.get('p'+created.id.slice(0,31)).payload).chat.length,2,'reusing an id for different content cannot mutate the row');
+});
+
+test('live chat keeps idempotency receipts after messages leave the 100-message window',async()=>{
+ let now=5_000;const fx=fixture({clock:()=>now}),created=await createShare(fx,'room'),path=`/live/${created.id}`,mid='a'.repeat(32),original={method:'POST',path,body:{cid:'client01',msg:'delayed retry',mid,after:0}};
+ const first=await fx.call(original);assert.equal(first.status,200);assert.equal(first.body.ack,mid);
+ for(let i=0;i<100;i++){now+=1_001;const later=await fx.call({method:'POST',path,body:{cid:'client01',msg:'later '+i,mid:i.toString(16).padStart(32,'0'),after:0}});assert.equal(later.status,200,`later message ${i} is accepted`)}
+ const liveRowId='p'+created.id.slice(0,31),beforeRetry=JSON.parse(fx.db.rows.get(liveRowId).payload);assert.equal(beforeRetry.chat.length,100);assert.ok(!beforeRetry.chat.some(m=>m.id===mid),'the original message has left the display window');
+ const retry=await fx.call({...original,body:{...original.body,cid:'client02'}});assert.equal(retry.status,200);assert.equal(retry.body.ack,mid,'the durable private receipt acknowledges a retry beyond the display window');assert.equal(retry.body.chat.length,100);assert.ok(!retry.body.chat.some(m=>m.id===mid),'retry does not reinsert the evicted message or displace a newer one');assert.equal(JSON.parse(fx.db.rows.get(liveRowId).payload).chat.length,100);
+ const receipt=[...fx.db.rows.values()].find(row=>row.$id.startsWith('j')&&JSON.parse(row.payload).mid===mid);assert.ok(receipt,'a separate durable idempotency receipt survives message-window eviction');assert.deepEqual(receipt.$permissions,[],'the message receipt row remains private');
+});
+
+test('live chat consumes the shared 9,400 room receipt budget atomically and still ACKs its prior receipt at cap',async()=>{
+ const fx=fixture(),created=await createShare(fx,'room'),path=`/live/${created.id}`,quotaId=roomQuotaRowId(created.id),quotaRow=fx.db.rows.get(quotaId),quota=JSON.parse(quotaRow.payload),acceptedId='a'.repeat(32),rejectedId='b'.repeat(32),acceptedReceipt=liveChatReceiptRowIdForTest(created.id,acceptedId),rejectedReceipt=liveChatReceiptRowIdForTest(created.id,rejectedId);
+ quota.receiptIds=Array.from({length:LIVE_CHAT_RECEIPT_LIMIT-1},(_,i)=>'o'+(i+1).toString(16).padStart(31,'0'));quota.count=LIVE_CHAT_RECEIPT_LIMIT-1;quota.chatCount=0;fx.db.rows.set(quotaId,{$id:quotaId,...rowData(quota),$permissions:quotaRow.$permissions});
+ const accepted=await fx.call({method:'POST',path,body:{cid:'client01',mid:acceptedId,msg:'last slot'}});assert.equal(accepted.status,200);assert.equal(accepted.body.ack,acceptedId,'the 9,400th combined receipt slot accepts chat');
+ const atLimit=JSON.parse(fx.db.rows.get(quotaId).payload);assert.equal(atLimit.count,LIVE_CHAT_RECEIPT_LIMIT);assert.equal(atLimit.receiptIds.length,LIVE_CHAT_RECEIPT_LIMIT-1);assert.equal(atLimit.chatCount,1);assert.ok(fx.db.rows.has(acceptedReceipt));
+ const roomBefore=fx.db.rows.get(created.id).payload,liveId='p'+created.id.slice(0,31),liveBefore=fx.db.rows.get(liveId).payload,quotaBefore=fx.db.rows.get(quotaId).payload,rowCount=fx.db.rows.size;
+ const rejected=await fx.call({method:'POST',path,body:{cid:'client02',mid:rejectedId,msg:'must stay queued'}});assert.equal(rejected.status,409);assert.equal(rejected.body.error,'live_chat_receipt_limit');assert.match(rejected.body.message,/shared 9,400 room receipt limit/);
+ assert.equal(fx.db.rows.get(created.id).payload,roomBefore);assert.equal(fx.db.rows.get(liveId).payload,liveBefore,'the live row/presence is rolled back when full');assert.equal(fx.db.rows.get(quotaId).payload,quotaBefore);assert.equal(fx.db.rows.size,rowCount);assert.equal(fx.db.rows.has(rejectedReceipt),false,'no receipt row is created for the rejected draft');
+ const retry=await fx.call({method:'POST',path,body:{cid:'client03',mid:acceptedId,msg:'last slot'}});assert.equal(retry.status,200);assert.equal(retry.body.ack,acceptedId,'an already receipted message bypasses the full shared cap');assert.equal(fx.db.rows.get(quotaId).payload,quotaBefore);assert.equal(JSON.parse(fx.db.rows.get(liveId).payload).chat.length,1);assert.equal(fx.db.rows.has(rejectedReceipt),false);
+ const boardOp=await update(fx,created.id,{opId:'c'.repeat(32),baseRev:0});assert.equal(boardOp.status,409);assert.equal(boardOp.body.error,'room_receipt_limit','chat and board operations compete for exactly the same budget');assert.equal(fx.db.rows.get(quotaId).payload,quotaBefore);assert.equal(fx.db.rows.get(created.id).payload,roomBefore);
 });
 
 test('live presence and anonymous chat are stored in private side rows',async()=>{
  const fx=fixture(),created=await createShare(fx,'room');
  const first=await fx.call({method:'POST',path:`/live/${created.id}`,body:{cid:'client01',n:'A',c:'#123456',x:10,y:20}});assert.equal(first.status,200);assert.deepEqual(first.body.peers,[]);
- const second=await fx.call({method:'POST',path:`/live/${created.id}`,body:{cid:'client02',n:'B',msg:'hello',after:0}});assert.equal(second.status,200);assert.equal(second.body.peers.length,1);assert.equal(second.body.chat[0].m,'hello');
- const liveRow=fx.db.rows.get('p'+created.id.slice(0,31));assert.ok(liveRow);assert.deepEqual(liveRow.$permissions,[]);assert.ok(Buffer.byteLength(liveRow.payload)<=LIVE_ROW_MAX_BYTES);assert.ok(Buffer.byteLength(JSON.stringify(second.body))<=LIVE_RESPONSE_MAX_BYTES);
+ const mid='b'.repeat(32),second=await fx.call({method:'POST',path:`/live/${created.id}`,body:{cid:'client02',n:'B',msg:'hello',mid,after:0}});assert.equal(second.status,200);assert.equal(second.body.ack,mid);assert.equal(second.body.peers.length,1);assert.equal(second.body.chat[0].m,'hello');
+ const liveRow=fx.db.rows.get('p'+created.id.slice(0,31)),receipt=[...fx.db.rows.values()].find(row=>row.$id.startsWith('j')&&JSON.parse(row.payload).mid===mid);assert.ok(liveRow);assert.ok(receipt);assert.deepEqual(liveRow.$permissions,[]);assert.deepEqual(receipt.$permissions,[]);assert.ok(Buffer.byteLength(liveRow.payload)<=LIVE_ROW_MAX_BYTES);assert.ok(Buffer.byteLength(JSON.stringify(second.body))<=LIVE_RESPONSE_MAX_BYTES);
 });
 
 test('live presence caps active peers, allows same-peer refresh, and reclaims expired slots',async()=>{
@@ -483,13 +526,13 @@ test('cleanup transaction preserves an AI quota row renewed after the expiry pag
 });
 
 test('creation cap counts private internal rows separately and remains at 150 under concurrent requests',async()=>{
- const seed=seededShares(149);for(const prefix of ['p','h','k','g','o','q']){const id=prefix+'a'.repeat(31),data={kind:'internal',expires:Date.now()+10000};seed.push([id,{$id:id,...rowData(data),$permissions:[]}])}
+ const seed=seededShares(149);for(const prefix of ['p','h','j','k','g','o','q']){const id=prefix+'a'.repeat(31),data={kind:'internal',expires:Date.now()+10000};seed.push([id,{$id:id,...rowData(data),$permissions:[]}])}
  for(const id of ['ai-global','ai-'+'b'.repeat(24)]){const data={kind:'ai-quota',expires:Date.now()+10000};seed.push([id,{$id:id,...rowData(data),$permissions:[]}])}
  const fx=fixture({seed});let active=0,maxActive=0;const list=fx.db.listRows.bind(fx.db);
  fx.db.listRows=async args=>{active++;maxActive=Math.max(maxActive,active);await new Promise(r=>setTimeout(r,5));try{return await list(args)}finally{active--}};
  const requests=['a'.repeat(32),'b'.repeat(32)].map(requestId=>fx.call({method:'POST',path:'/create',body:{kind:'view',board:board(),requestId}}));
  const responses=await Promise.all(requests);assert.deepEqual(responses.map(r=>r.status).sort(),[201,429]);assert.equal(maxActive,1);
- const links=[...fx.db.rows.keys()].filter(id=>/^[a-f0-9]{32}$/.test(id));assert.equal(links.length,150);assert.equal(fx.db.rows.size,159);
+ const links=[...fx.db.rows.keys()].filter(id=>/^[a-f0-9]{32}$/.test(id));assert.equal(links.length,150);assert.equal(fx.db.rows.size,160);
 });
 
 test('full share cap denies a create without adding an idempotency receipt',async()=>{

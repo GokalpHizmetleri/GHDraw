@@ -736,7 +736,11 @@ test('a concurrent collaborator revision keeps the old room open after a success
 });
 
 test('offline checkpoint, operation id, acknowledgement, and revision retry paths are present',()=>{
-  assert.match(html,/indexedDB\.open\('ghdraw-cloud-sync-v1',2\)/);
+  assert.match(html,/indexedDB\.open\('ghdraw-cloud-sync-v1',3\)/);
+  assert.match(html,/createObjectStore\('chatOutbox',\{keyPath:'id'\}\)/);
+  assert.match(html,/createIndex\('roomId','roomId',\{unique:false\}\)/);
+  assert.match(html,/db\.transaction\('chatOutbox','readwrite'\)/);
+  assert.match(html,/e\.code==='live_chat_receipt_limit'/);
   assert.match(html,/cloudRoomTransitionKey\(id\)\{return'room-transition:'\+id\}/);
   assert.match(html,/db\.transaction\('snapshots','readwrite'\).*cloudRoomTransitionKey\(record\.oldRoomId\)/);
   assert.match(html,/saveCloudCheckpoint\(id,oldBase,oldRev,cloudRoom\.expires,candidate,durableCurrent\)/);

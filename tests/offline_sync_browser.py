@@ -67,6 +67,12 @@ window.__ghdrawFault={get:null,tx:null};
   async checkpoint(id){return await cloudCheckpoint(id)},
   async snapshot(id){return await cloudLocalSnapshot(id)},
   async transition(id){return await cloudRoomTransition(id)},
+  async configureLive(id){cloudRoom={id,expires:EXPIRES_PLACEHOLDER,generation:0};myName='Test user';myColor='#123456';cloudRequest=async(path,body)=>{const response=await fetch('/__fake_live'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}),data=await response.json();if(!response.ok)throw Object.assign(new Error(data.message||data.error||'Cloud error'),{status:response.status,code:data.error||null});return data};await liveStart();clearTimeout(liveT);liveT=0;return true},
+  async submitLiveMessage(text,failIdb=false){if(!chatOpen)toggleChat();const input=document.querySelector('#chi');input.value=text;if(failIdb)window.__GHDrawTest.armTransactionAbort(['chatOutbox'],'readwrite',1);await document.querySelector('#chf').onsubmit({preventDefault(){}});return true},
+  async enqueueLiveMessage(id,text){const original=newLiveChatMessageId;newLiveChatMessageId=()=>id;try{return await queueLiveChatMessage(text)}finally{newLiveChatMessageId=original}},
+  openLiveChat(){if(!chatOpen)toggleChat();return true},
+  async tickLive(){clearTimeout(liveT);liveT=0;await liveTick();clearTimeout(liveT);liveT=0;return true},
+  liveState(){return{outbox:structuredClone(chatOut),messages:structuredClone(chatMsgs),rendered:document.querySelector('#chl')?.innerText||'',stored:JSON.stringify(chatOut)}},
   state(){return{room:cloudRoom&&{id:cloudRoom.id,generation:cloudRoom.generation},rev:cloudRev,inflight:cloudInflight,pending:cloudPending,diff:cloudBase?cloudDiff(cloudBase,cloudBoard()):null,owner:cloudOwner,oldOwner:localStorage.getItem('ghdraw:cloudOwner:'+OLD_ID_PLACEHOLDER),transition:localStorage.getItem(cloudRoomTransitionKey(OLD_ID_PLACEHOLDER)),base:cloudBase&&structuredClone(cloudBase),board:structuredClone(cloudBoard(true)),events:window.__ghdrawIdbAudit.slice()}},
   unsafe(id){return cloudCheckpointUnsafeMarker(id)},
   async clearDatabase(){
@@ -76,7 +82,7 @@ window.__ghdrawFault={get:null,tx:null};
   }
  };
 })();
-""".replace("OWNER_PLACEHOLDER", json.dumps(OWNER)).replace("OLD_ID_PLACEHOLDER", json.dumps(OLD_ID))
+""".replace("OWNER_PLACEHOLDER", json.dumps(OWNER)).replace("OLD_ID_PLACEHOLDER", json.dumps(OLD_ID)).replace("EXPIRES_PLACEHOLDER", str(EXPIRES))
 
 BASE_BOARD = {
     "v": 2,
@@ -194,6 +200,43 @@ class FakeCloud:
                 await route.fulfill(json=response); return
             await route.fulfill(json={"result": "saved"}); return
         await route.fulfill(status=404, json={"error": "unexpected route", "path": path, "method": method})
+
+
+class FakeLiveChat:
+    def __init__(self, *, drop_first_ack=False):
+        self.drop_first_ack = drop_first_ack
+        self.reject_next = False
+        self.reject_limit_next = False
+        self.silence_ack_ids = set()
+        self.messages = []
+        self.receipts = {}
+        self.attempts = []
+
+    async def handle(self, route):
+        body = route.request.post_data_json or {}
+        if body.get("msg"):
+            message_id = body.get("mid")
+            self.attempts.append(message_id)
+            if self.reject_limit_next:
+                self.reject_limit_next = False
+                await route.fulfill(status=409, json={"error": "live_chat_receipt_limit", "message": "shared receipt cap reached"}); return
+            if self.reject_next:
+                self.reject_next = False
+                await route.fulfill(status=400, json={"error": "test_rejection", "message": "test message rejected"}); return
+            existing = self.receipts.get(message_id)
+            if existing is None:
+                self.receipts[message_id] = body["msg"]
+                self.messages.append({"id": message_id, "cid": body["cid"], "n": body.get("n", "?"), "c": body.get("c", "#6965db"), "m": body["msg"], "ts": 5_000})
+                self.messages = self.messages[-100:]
+            elif existing != body["msg"]:
+                await route.fulfill(status=409, json={"error": "live_message_id_conflict"}); return
+            if self.drop_first_ack:
+                self.drop_first_ack = False
+                await route.abort("failed"); return
+        response = {"peers": [], "chat": copy.deepcopy([message for message in self.messages[-100:] if message["id"] not in self.silence_ack_ids]), "now": 5_000}
+        if body.get("mid") and body["mid"] not in self.silence_ack_ids:
+            response["ack"] = body["mid"]
+        await route.fulfill(json=response)
 
 
 async def launch_test_page(browser, origin, *, viewport=None, mobile=False):
@@ -363,6 +406,113 @@ async def test_restore_intent_recovery(browser, origin, mode):
     print("PASS restore intent:", mode, "same restoreId, one server mutation, durable checkpoint and snapshot")
 
 
+async def test_chat_outbox_survives_reload_and_lost_ack(browser, origin):
+    context, page = await launch_test_page(browser, origin)
+    cloud = FakeLiveChat(drop_first_ack=True)
+    await page.route(origin + "/__fake_live/**", cloud.handle)
+    room_id = "c" * 32
+    await page.evaluate("id=>window.__GHDrawTest.configureLive(id)", room_id)
+    await page.evaluate("text=>window.__GHDrawTest.submitLiveMessage(text)", "repeatable text")
+    before = await page.evaluate("window.__GHDrawTest.liveState()")
+    queued = json.loads(before["stored"])
+    assert len(queued) == 1 and queued[0]["m"] == "repeatable text"
+    message_id = queued[0]["id"]
+    await page.wait_for_timeout(100)  # submit's real liveNudge sends once; the fake server drops that ACK.
+    assert cloud.attempts == [message_id], f"expected one first send with the durable ID; got {cloud.attempts}"
+    uncertain = await page.evaluate("window.__GHDrawTest.liveState()")
+    assert len(cloud.messages) == 1 and cloud.messages[0]["id"] == message_id and cloud.messages[0]["m"] == "repeatable text", "the fake server commits exactly once before dropping the ACK"
+    assert uncertain["outbox"][0]["id"] == message_id and "repeatable text" in uncertain["rendered"] and ("Gönderiliyor" in uncertain["rendered"] or "Sending" in uncertain["rendered"]), "an uncertain send remains visibly queued with pending status"
+    await page.reload(wait_until="load")
+    await page.wait_for_function("!!window.__GHDrawTest")
+    await page.evaluate("id=>window.__GHDrawTest.configureLive(id)", room_id)
+    restored = await page.evaluate("window.__GHDrawTest.liveState()")
+    assert restored["outbox"][0]["id"] == message_id, "reload restores the exact durable message ID"
+    await page.evaluate("window.__GHDrawTest.tickLive()")
+    await page.evaluate("window.__GHDrawTest.openLiveChat()")
+    sent = await page.evaluate("window.__GHDrawTest.liveState()")
+    assert cloud.attempts == [message_id, message_id], "the retry after reload reuses the same idempotency ID"
+    assert len(cloud.messages) == 1 and len(sent["outbox"]) == 0, f"the ACK clears the durable queue without duplicating the server message; attempts={cloud.attempts}, server={cloud.messages}, client={sent}"
+    assert len([message for message in sent["messages"] if message["id"] == message_id]) == 1 and "Gönderiliyor" not in sent["rendered"] and "Sending" not in sent["rendered"] and ("Sen" in sent["rendered"] or "You" in sent["rendered"]), "the retried own message is rendered as the current user's sent message"
+    await page.evaluate("text=>window.__GHDrawTest.submitLiveMessage(text)", "repeatable text")
+    await page.wait_for_function("window.__GHDrawTest.liveState().outbox.length===0", timeout=5000)
+    final = await page.evaluate("window.__GHDrawTest.liveState()")
+    assert len(cloud.messages) == 2 and cloud.messages[0]["id"] != cloud.messages[1]["id"], "two intentional sends with the same text keep different IDs"
+    assert len(final["messages"]) == 2 and all(message["m"] == "repeatable text" for message in final["messages"])
+    cloud.reject_next = True
+    await page.evaluate("text=>window.__GHDrawTest.submitLiveMessage(text)", "retry stays visible")
+    await page.wait_for_function("window.__GHDrawTest.liveState().outbox.some(item=>item.failed)", timeout=5000)
+    failed = await page.evaluate("window.__GHDrawTest.liveState()")
+    failed_id = next(item["id"] for item in failed["outbox"] if item["failed"])
+    assert "retry stays visible" in failed["rendered"] and ("Not sent · Retry" in failed["rendered"] or "Gönderilemedi" in failed["rendered"]), "a definitive failed send is not silently removed and offers explicit retry"
+    await page.evaluate("document.querySelector('#chl button').click()")
+    await page.wait_for_function("id=>!window.__GHDrawTest.liveState().outbox.some(item=>item.id===id)", arg=failed_id, timeout=5000)
+    retried = await page.evaluate("window.__GHDrawTest.liveState()")
+    assert cloud.attempts[-2:] == [failed_id, failed_id] and any(message["id"] == failed_id and message["m"] == "retry stays visible" for message in cloud.messages), "manual retry reuses the same ID and succeeds"
+    assert len(retried["outbox"]) == 0 and len(cloud.messages) == 3
+    cloud.drop_first_ack = True
+    await page.evaluate("text=>window.__GHDrawTest.submitLiveMessage(text)", "evicted but acknowledged")
+    await page.wait_for_timeout(100)
+    evicted_id = json.loads((await page.evaluate("window.__GHDrawTest.liveState()"))["stored"])[0]["id"]
+    assert cloud.attempts[-1] == evicted_id and any(message["id"] == evicted_id for message in cloud.messages)
+    cloud.messages = (cloud.messages + [{"id": "filler" + str(i), "cid": "old-peer", "n": "Old peer", "c": "#123456", "m": "filler", "ts": 5_001 + i} for i in range(100)])[-100:]
+    assert not any(message["id"] == evicted_id for message in cloud.messages), "the committed message has left the full 100-message response window"
+    await page.reload(wait_until="load")
+    await page.wait_for_function("!!window.__GHDrawTest")
+    await page.evaluate("id=>window.__GHDrawTest.configureLive(id)", room_id)
+    await page.evaluate("window.__GHDrawTest.tickLive()")
+    await page.evaluate("window.__GHDrawTest.openLiveChat()")
+    aged = await page.evaluate("window.__GHDrawTest.liveState()")
+    assert cloud.attempts[-2:] == [evicted_id, evicted_id] and len(aged["outbox"]) == 0, "a durable receipt ACK clears a retry even when its message is no longer in the response window"
+    assert not any(message["id"] == evicted_id for message in aged["messages"]) and "Sending" not in aged["rendered"] and "Gönderiliyor" not in aged["rendered"]
+    sends_before_abort = len(cloud.attempts)
+    await page.evaluate("text=>window.__GHDrawTest.submitLiveMessage(text,true)", "storage failure remains visible")
+    storage_failure = await page.evaluate("({input:document.querySelector('#chi').value,state:window.__GHDrawTest.liveState()})")
+    assert storage_failure["input"] == "storage failure remains visible" and len(storage_failure["state"]["outbox"]) == 0 and len(cloud.attempts) == sends_before_abort, "an aborted IndexedDB transaction leaves the draft visible and prevents any chat POST"
+    cloud.reject_limit_next = True
+    await page.evaluate("text=>window.__GHDrawTest.submitLiveMessage(text)", "blocked at shared cap")
+    await page.wait_for_function("window.__GHDrawTest.liveState().outbox.some(item=>item.blocked)", timeout=5000)
+    blocked = await page.evaluate("window.__GHDrawTest.liveState()")
+    blocked_id = next(item["id"] for item in blocked["outbox"] if item["blocked"])
+    blocked_attempts = len(cloud.attempts)
+    assert "blocked at shared cap" in blocked["rendered"] and ("9.400" in blocked["rendered"] or "9,400" in blocked["rendered"]) and blocked["outbox"][-1]["id"] == blocked_id, "a cap response keeps the durable message visibly blocked in IndexedDB"
+    await page.wait_for_timeout(100)
+    assert len(cloud.attempts) == blocked_attempts and any(item["id"] == blocked_id and item["blocked"] for item in (await page.evaluate("window.__GHDrawTest.liveState()"))["outbox"]), "blocked messages are not automatically retried or removed"
+    await context.close()
+    print("PASS chat: durable retry/eviction ACK, reload recovery, visible failed/blocked states, IndexedDB abort prevents POST and preserves draft, distinct duplicate-text sends")
+
+
+async def test_chat_outbox_cross_tab_merge(browser, origin):
+    context, first = await launch_test_page(browser, origin)
+    cloud = FakeLiveChat()
+    await first.route(origin + "/__fake_live/**", cloud.handle)
+    second = await context.new_page()
+    await second.route(origin + "/__fake_live/**", cloud.handle)
+    await second.goto(origin + "/", wait_until="load")
+    await second.wait_for_function("!!window.__GHDrawTest")
+    room_id = "d" * 32
+    await first.evaluate("id=>window.__GHDrawTest.configureLive(id)", room_id)
+    await second.evaluate("id=>window.__GHDrawTest.configureLive(id)", room_id)
+    first_id, second_id = "a" * 32, "b" * 32
+    cloud.silence_ack_ids.add(second_id)
+    await asyncio.gather(
+        first.evaluate("(x)=>window.__GHDrawTest.enqueueLiveMessage(x[0],x[1])", [first_id, "from first tab"]),
+        second.evaluate("(x)=>window.__GHDrawTest.enqueueLiveMessage(x[0],x[1])", [second_id, "from second tab"]),
+    )
+    await first.wait_for_function("id=>{const o=window.__GHDrawTest.liveState().outbox;return o.length===1&&o[0].id===id}", arg=second_id, timeout=5000)
+    await second.wait_for_function("id=>{const o=window.__GHDrawTest.liveState().outbox;return o.length===1&&o[0].id===id}", arg=second_id, timeout=5000)
+    for _ in range(50):
+        if {message["id"] for message in cloud.messages} == {first_id, second_id}:
+            break
+        await asyncio.sleep(0.1)
+    messages = cloud.messages
+    assert len(messages) == 2 and {message["id"] for message in messages} == {first_id, second_id} and {message["m"] for message in messages} == {"from first tab", "from second tab"}, "both simultaneous sends must survive the shared IndexedDB read/modify/write"
+    assert len({message["id"] for message in messages}) == 2, "each tab keeps its own stable message ID"
+    first_state = await first.evaluate("window.__GHDrawTest.liveState()")
+    assert len(first_state["outbox"]) == 1 and first_state["outbox"][0]["id"] == second_id, "ACK for A removes only A; B remains durable and visible while its ACK is withheld"
+    await context.close()
+    print("PASS chat cross-tab: concurrent IndexedDB enqueues merge; ACK removes only its ID and preserves the other tab's pending item")
+
+
 async def test_mobile_tablet_layout(browser, origin):
     for label, viewport in (("mobile", {"width": 390, "height": 844}), ("tablet", {"width": 768, "height": 1024})):
         context, page = await launch_test_page(browser, origin, viewport=viewport, mobile=True)
@@ -392,6 +542,8 @@ async def main():
             await test_unresolved_outbox_survives_handoff(browser, origin)
             await test_restore_intent_recovery(browser, origin, "lost-ack")
             await test_restore_intent_recovery(browser, origin, "checkpoint-failure")
+            await test_chat_outbox_survives_reload_and_lost_ack(browser, origin)
+            await test_chat_outbox_cross_tab_merge(browser, origin)
             await test_mobile_tablet_layout(browser, origin)
         finally:
             await browser.close()
