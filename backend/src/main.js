@@ -25,27 +25,36 @@ export function createAppwriteDb({req,env=process.env,ClientClass=Client,TablesD
  return new TablesDBClass(client);
 }
 
-// Remove an expired fixed-row lock through a transaction so two contenders cannot delete a newly acquired lock.
-const clearExpiredLock=async(db,rowId)=>{
+// Remove a stale fixed-row lock only after reading its current lease inside the transaction.
+const clearExpiredLock=async(db,rowId,cutoff=Date.now())=>{
  const tx=await db.createTransaction({ttl:60});
  try{
-  const row=await db.getRow({databaseId:DB,tableId:TABLE,rowId,transactionId:tx.$id});
+  const row=await db.getRow({databaseId:DB,tableId:TABLE,rowId,transactionId:tx.$id}),data=JSON.parse(row.payload);
   const expiry=Date.parse(row.expiresAt);
-  if(Number.isFinite(expiry)&&expiry>Date.now()){await db.updateTransaction({transactionId:tx.$id,rollback:true});return false}
+  if(data.kind!=='lock'||!Number.isFinite(expiry)||expiry>cutoff){await db.updateTransaction({transactionId:tx.$id,rollback:true});return false}
+  await db.deleteRow({databaseId:DB,tableId:TABLE,rowId,transactionId:tx.$id});
+  await db.updateTransaction({transactionId:tx.$id,commit:true});return true;
+ }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});if(e.code===404||e.code===409)return false;throw e}
+};
+const releaseLock=async(db,rowId,leaseId)=>{
+ const tx=await db.createTransaction({ttl:60});
+ try{
+  const row=await db.getRow({databaseId:DB,tableId:TABLE,rowId,transactionId:tx.$id}),data=JSON.parse(row.payload);
+  if(data.kind!=='lock'||data.leaseId!==leaseId){await db.updateTransaction({transactionId:tx.$id,rollback:true});return false}
   await db.deleteRow({databaseId:DB,tableId:TABLE,rowId,transactionId:tx.$id});
   await db.updateTransaction({transactionId:tx.$id,commit:true});return true;
  }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});if(e.code===404||e.code===409)return false;throw e}
 };
 // Fixed-row lock serializes room writes and the global share-cap count+insert. Function timeout must be < LOCK_LEASE_MS.
 const withLock=async(db,id,fn,{leaseMs=LOCK_LEASE_MS}={})=>{
- const rowId='k'+id.slice(0,31);let got=false;
+ const rowId='k'+id.slice(0,31);let got=false,leaseId=null;
  for(let i=0;i<50&&!got;i++){
-  const now=Date.now(),lock={kind:'lock',ts:now,expires:now+leaseMs};
+  const now=Date.now();leaseId=randomBytes(16).toString('hex');const lock={kind:'lock',leaseId,ts:now,expires:now+leaseMs};
   try{await db.createRow({databaseId:DB,tableId:TABLE,rowId,data:rowData(lock),permissions:[]});got=true}
   catch(e){if(e.code!==409)throw e;await clearExpiredLock(db,rowId).catch(()=>{});await new Promise(r=>setTimeout(r,120+Math.random()*120))}
  }
  if(!got)throw {code:429};
- try{return await fn()}finally{await db.deleteRow({databaseId:DB,tableId:TABLE,rowId}).catch(()=>{})}
+ try{return await fn()}finally{await releaseLock(db,rowId,leaseId).catch(()=>{})}
 };
 // AI quota rows can be renewed while cleanup runs, so re-check and delete them in one transaction.
 const deleteExpiredAiRow=async(db,rowId,cutoff)=>{
@@ -62,6 +71,7 @@ const deleteExpiredAiRow=async(db,rowId,cutoff)=>{
 };
 const deleteExpiredRow=async(db,rowId,cutoff)=>{
  if(rowId.startsWith('ai-'))return deleteExpiredAiRow(db,rowId,cutoff);
+ if(rowId.startsWith('k'))return clearExpiredLock(db,rowId,cutoff);
  try{await db.deleteRow({databaseId:DB,tableId:TABLE,rowId});return true}catch(e){if(e.code===404)return false;throw e}
 };
 

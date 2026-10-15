@@ -7,6 +7,7 @@ const Q={limit:n=>`limit:${n}`,orderAsc:key=>`orderAsc:${key}`,cursorAfter:id=>`
 const DB='ghdraw',TABLE='boards';
 const board=()=>({p:[{id:'page-1',n:'Page 1',e:[{id:'shape-1',type:'rect'}]}]});
 const rowData=data=>({payload:JSON.stringify(data),expiresAt:new Date(data.expires).toISOString()});
+const lockRow=(id,leaseId,expires)=>[id,{$id:id,...rowData({kind:'lock',leaseId,ts:expires-60000,expires}),$permissions:[]}];
 const err=code=>Object.assign(new Error('mock database error'),{code});
 
  test('installed Node SDK sends row and cursor query calls to TablesDB endpoints',async()=>{
@@ -27,10 +28,17 @@ const err=code=>Object.assign(new Error('mock database error'),{code});
  });
 
 class MemoryTablesDB{
- constructor(seed=[]){this.rows=new Map(seed);this.transactions=new Map();this.nextTx=0;this.calls=[];this.tablePermissions=[];this.failDeleteOnceId=null}
+ constructor(seed=[]){this.rows=new Map(seed);this.transactions=new Map();this.nextTx=0;this.calls=[];this.tablePermissions=[];this.failDeleteOnceId=null;this.beforeTxCommit=null}
  #map(transactionId){if(!transactionId)return this.rows;const tx=this.transactions.get(transactionId);if(!tx)throw err(404);return tx.rows}
- async createTransaction(){const $id=`tx-${++this.nextTx}`;this.transactions.set($id,{rows:new Map([...this.rows].map(([id,row])=>[id,structuredClone(row)]))});return {$id}}
- async updateTransaction({transactionId,commit=false}){const tx=this.transactions.get(transactionId);if(!tx)return {};if(commit)this.rows=tx.rows;this.transactions.delete(transactionId);return {status:commit?'committed':'rolled_back'}}
+ async createTransaction(){const $id=`tx-${++this.nextTx}`,copy=()=>new Map([...this.rows].map(([id,row])=>[id,structuredClone(row)]));this.transactions.set($id,{rows:copy(),original:copy()});return {$id}}
+ async updateTransaction({transactionId,commit=false}){
+  const tx=this.transactions.get(transactionId);if(!tx)return {};
+  if(commit){if(this.beforeTxCommit)await this.beforeTxCommit(transactionId,tx);const same=(a,b)=>a===undefined?b===undefined:b!==undefined&&JSON.stringify(a)===JSON.stringify(b),ids=new Set([...tx.original.keys(),...tx.rows.keys()]);
+   for(const id of ids){const old=tx.original.get(id),next=tx.rows.get(id);if(same(old,next))continue;if(!same(this.rows.get(id),old))throw err(409)}
+   for(const id of ids){const old=tx.original.get(id),next=tx.rows.get(id);if(same(old,next))continue;if(next===undefined)this.rows.delete(id);else this.rows.set(id,structuredClone(next))}
+  }
+  this.transactions.delete(transactionId);return {status:commit?'committed':'rolled_back'}
+ }
  async getRow({rowId,transactionId}){const rows=this.#map(transactionId);if(!rows.has(rowId))throw err(404);return structuredClone(rows.get(rowId))}
  async getRowAsAnonymous(rowId){const row=this.rows.get(rowId);if(!row)throw err(404);const permissions=[...this.tablePermissions,...(row.$permissions||[])];if(permissions.some(p=>typeof p==='string'&&/^(read|write)\("any"\)$/.test(p)))return structuredClone(row);throw err(401)}
  async createRow({rowId,data,permissions=[],transactionId}){this.calls.push({op:'createRow',rowId,permissions:structuredClone(permissions)});const rows=this.#map(transactionId);if(rows.has(rowId))throw err(409);const row={$id:rowId,...structuredClone(data),$permissions:structuredClone(permissions)};rows.set(rowId,row);return structuredClone(row)}
@@ -199,4 +207,25 @@ test('runtime configuration failures return a generic response and never log the
  const req={method:'GET',path:'/view/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',headers:{'x-appwrite-key':'test-ephemeral-secret'},bodyText:''};
  const res={json:(body,status=200)=>({body,status}),text:(body,status=200)=>({body,status})};
  const result=await handler({req,res,error:m=>logs.push(String(m))});assert.equal(result.status,500);assert.ok(logs.length);assert.ok(!logs.join('').includes('test-ephemeral-secret'));assert.ok(!logs.join('').includes('runtime configuration'));
+});
+
+test('scheduled cleanup skips a lock reacquired after its expiry page was read',async()=>{
+ const id='k'+'0'.repeat(31),fx=fixture({seed:[lockRow(id,'old-lease',Date.now()-1000)]}),list=fx.db.listRows.bind(fx.db);let reacquired=false;
+ fx.db.listRows=async args=>{const page=await list(args);if(!reacquired){reacquired=true;const expires=Date.now()+60000;fx.db.rows.set(id,{$id:id,...rowData({kind:'lock',leaseId:'fresh-lease',ts:Date.now(),expires}),$permissions:[]})}return page};
+ const result=await fx.call({method:'POST',path:'/ignored',headers:{'x-appwrite-trigger':'schedule'}});
+ assert.equal(result.status,200);assert.equal(result.body.deleted,0);assert.equal(reacquired,true);assert.equal(JSON.parse(fx.db.rows.get(id).payload).leaseId,'fresh-lease');assert.ok(Date.parse(fx.db.rows.get(id).expiresAt)>Date.now());
+});
+
+test('scheduled cleanup transaction conflicts rather than deleting a lock replaced before commit',async()=>{
+ const id='k'+'1'.repeat(31),fx=fixture({seed:[lockRow(id,'old-lease',Date.now()-1000)]});let reacquired=false;
+ fx.db.beforeTxCommit=async(_txId,tx)=>{if(!reacquired&&tx.original.has(id)&&!tx.rows.has(id)){reacquired=true;const expires=Date.now()+60000;fx.db.rows.set(id,{$id:id,...rowData({kind:'lock',leaseId:'fresh-lease',ts:Date.now(),expires}),$permissions:[]})}};
+ const result=await fx.call({method:'POST',path:'/ignored',headers:{'x-appwrite-trigger':'schedule'}});
+ assert.equal(result.status,200);assert.equal(result.body.deleted,0);assert.equal(reacquired,true);assert.equal(JSON.parse(fx.db.rows.get(id).payload).leaseId,'fresh-lease');
+});
+
+test('a lock holder cannot release a newer lease acquired at the same lock row ID',async()=>{
+ const id='k'+'0'.repeat(31),fx=fixture(),list=fx.db.listRows.bind(fx.db);let reacquired=false;
+ fx.db.listRows=async args=>{const page=await list(args);if(!reacquired&&fx.db.rows.has(id)){reacquired=true;const expires=Date.now()+60000;fx.db.rows.set(id,{$id:id,...rowData({kind:'lock',leaseId:'other-holder',ts:Date.now(),expires}),$permissions:[]})}return page};
+ const response=await fx.call({method:'POST',path:'/create',body:{kind:'view',board:board(),requestId:'f'.repeat(32)}});
+ assert.equal(response.status,201);assert.equal(reacquired,true);assert.equal(JSON.parse(fx.db.rows.get(id).payload).leaseId,'other-holder');
 });
