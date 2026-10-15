@@ -5,9 +5,19 @@ import {handleAI} from './ai.js';
 import {applyRoomUpdate,validOpId} from './room-sync.js';
 const DB='ghdraw',TABLE='boards',MAX=12*1024*1024,PAGE_SIZE=100,CREATE_LOCK_SEED='00000000000000000000000000000000',LOCK_LEASE_MS=60000;
 export const ROOM_OP_RECEIPT_LIMIT=9_400;
+export const BOARD_COORD_LIMIT=1e9,BOARD_POINT_LIMIT=1e6;
+export const CLEANUP_ROW_BUDGET=1_000,CLEANUP_SPECIAL_ROW_BUDGET=25,CLEANUP_PAGE_BUDGET=10,CLEANUP_TIME_BUDGET_MS=20_000;
 const validId=x=>typeof x==='string'&&x.length>0&&x.length<=128;
 const validThread=th=>th===undefined||Array.isArray(th)&&th.length<=300&&th.every(m=>m&&typeof m.t==='string'&&m.t.length<=500);
-const validElement=e=>e&&validId(e.id)&&['rect','diamond','ellipse','arrow','line','pen','text','image','video','frame','poly'].includes(e.type)&&validThread(e.th);
+const finiteCoordinate=n=>Number.isFinite(n)&&Math.abs(n)<=BOARD_COORD_LIMIT;
+const validPoints=points=>Array.isArray(points)&&points.length>0&&points.length<=BOARD_POINT_LIMIT&&points.every(p=>Array.isArray(p)&&(p.length===2||p.length===3)&&finiteCoordinate(p[0])&&finiteCoordinate(p[1])&&(p.length<3||p[2]===null||Number.isFinite(p[2])&&p[2]>=0&&p[2]<=1));
+const validElement=e=>{
+ if(!e||typeof e!=='object'||Array.isArray(e)||!validId(e.id)||!['rect','diamond','ellipse','arrow','line','pen','text','image','video','poly'].includes(e.type)||!validThread(e.th))return false;
+ const own=(key)=>Object.prototype.hasOwnProperty.call(e,key),optional=(key,check)=>!own(key)||check(e[key]);
+ if(!optional('x',finiteCoordinate)||!optional('y',finiteCoordinate)||!optional('w',n=>finiteCoordinate(n)&&n>=0)||!optional('h',n=>finiteCoordinate(n)&&n>=0)||!optional('pts',validPoints))return false;
+ if(['line','arrow','pen','poly'].includes(e.type))return validPoints(e.pts);
+ return ['rect','diamond','ellipse','text','image','video'].includes(e.type)&&[e.x,e.y,e.w,e.h].every(finiteCoordinate)&&e.w>=0&&e.h>=0&&Math.abs(e.x+e.w)<=BOARD_COORD_LIMIT&&Math.abs(e.y+e.h)<=BOARD_COORD_LIMIT;
+};
 // Appwrite projects expiry metadata as a narrow DateTime column so scans never download board payloads.
 const rowData=d=>({payload:JSON.stringify(d),expiresAt:new Date(d.expires).toISOString()});
 const createReceiptRowId=requestId=>'g'+createHash('sha256').update('ghdraw-create:'+requestId).digest('hex').slice(0,31);
@@ -102,7 +112,7 @@ const histSnap=async (db,id,board,expires,manual)=>{
 };
 const histRead=async (db,id)=>{try{const row=await db.getRow({databaseId:DB,tableId:TABLE,rowId:HID(id)});return JSON.parse(row.payload)}catch(e){if(e.code===404)return {v:[]};throw e}};
 
-export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=process.env,fetcher=fetch}={}){
+export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=process.env,fetcher=fetch,clock=()=>Date.now()}={}){
  return async ({req,res,error})=>{
   const headers={'Access-Control-Allow-Origin':'https://ghdraw.vercel.app','Access-Control-Allow-Methods':'GET,POST,DELETE,OPTIONS','Access-Control-Allow-Headers':'Content-Type','Cache-Control':'no-store'};
   const reply=(v,status=200)=>res.json(v,status,headers);
@@ -125,17 +135,27 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
   try{
    if(req.method==='GET'&&req.path==='/health')return reply({ok:true});
    if(req.headers?.['x-appwrite-trigger']==='schedule'){
-    const db=await getDb(),cutoff=Date.now();let deleted=0,pendingCursorDelete=null;
-    await forEachRows({select:['$id','expiresAt']},async rows=>{
-     // Keep the previous page's final row until cursorAfter has successfully fetched this page.
-     if(pendingCursorDelete){if(await deleteExpiredRow(db,pendingCursorDelete,cutoff))deleted++;pendingCursorDelete=null}
-     const fullPage=rows.length===PAGE_SIZE,lastId=rows.length?rows[rows.length-1].$id:null;
-     for(const row of rows){if(typeof row.$id!=='string')continue;const expiry=Date.parse(row.expiresAt);if(!Number.isFinite(expiry)||expiry>cutoff)continue;
-      if(fullPage&&row.$id===lastId){pendingCursorDelete=row.$id;continue}
-      if(await deleteExpiredRow(db,row.$id,cutoff))deleted++;
+    const db=await getDb(),started=clock(),cutoff=started,cutoffIso=new Date(cutoff).toISOString();let deleted=0,scanned=0,pages=0,specialRows=0;
+    while(scanned<CLEANUP_ROW_BUDGET&&pages<CLEANUP_PAGE_BUDGET&&clock()-started<CLEANUP_TIME_BUDGET_MS){
+     const limit=Math.min(PAGE_SIZE,CLEANUP_ROW_BUDGET-scanned),queries=[QueryApi.lessThanEqual('expiresAt',cutoffIso),QueryApi.orderAsc('expiresAt'),QueryApi.limit(limit),QueryApi.select(['$id','expiresAt'])];
+     const page=await db.listRows({databaseId:DB,tableId:TABLE,queries});
+     if(!page||!Array.isArray(page.rows))throw new Error('Unexpected TablesDB row-list response');
+     if(!page.rows.length)break;
+     pages++;scanned+=page.rows.length;const directIds=[];let budgetReached=false;
+     for(const row of page.rows){
+      if(clock()-started>=CLEANUP_TIME_BUDGET_MS){budgetReached=true;break}
+      if(typeof row.$id!=='string')continue;
+      if(row.$id.startsWith('ai-')||row.$id.startsWith('k')){
+       if(specialRows>=CLEANUP_SPECIAL_ROW_BUDGET||clock()-started>=CLEANUP_TIME_BUDGET_MS){budgetReached=true;break}
+       specialRows++;if(await deleteExpiredRow(db,row.$id,cutoff))deleted++;
+      }else directIds.push(row.$id);
      }
-    });
-    if(pendingCursorDelete&&await deleteExpiredRow(db,pendingCursorDelete,cutoff))deleted++;
+     if(directIds.length&&!budgetReached&&clock()-started<CLEANUP_TIME_BUDGET_MS){
+      const result=await db.deleteRows({databaseId:DB,tableId:TABLE,queries:[QueryApi.equal('$id',directIds),QueryApi.lessThanEqual('expiresAt',cutoffIso)]});
+      deleted+=Number.isSafeInteger(result?.total)?result.total:directIds.length;
+     }
+     if(budgetReached||page.rows.length<limit||clock()-started>=CLEANUP_TIME_BUDGET_MS)break;
+    }
     return reply({deleted});
    }
    const path=(req.path||'').split('/').filter(Boolean),id=path[1];

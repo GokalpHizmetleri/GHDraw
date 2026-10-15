@@ -2,11 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {Client,Query,TablesDB} from 'node-appwrite';
-import {createAppwriteDb,createHandler,ROOM_OP_RECEIPT_LIMIT} from './main.js';
+import {BOARD_COORD_LIMIT,BOARD_POINT_LIMIT,CLEANUP_PAGE_BUDGET,CLEANUP_ROW_BUDGET,CLEANUP_SPECIAL_ROW_BUDGET,CLEANUP_TIME_BUDGET_MS,createAppwriteDb,createHandler,ROOM_OP_RECEIPT_LIMIT} from './main.js';
 
-const Q={limit:n=>`limit:${n}`,orderAsc:key=>`orderAsc:${key}`,cursorAfter:id=>`cursorAfter:${id}`,select:fields=>`select:${fields.join(',')}`,equal:(key,values)=>`equal:${key}:${JSON.stringify(Array.isArray(values)?values:[values])}`};
+const Q={limit:n=>`limit:${n}`,orderAsc:key=>`orderAsc:${key}`,cursorAfter:id=>`cursorAfter:${id}`,select:fields=>`select:${fields.join(',')}`,equal:(key,values)=>`equal:${key}:${JSON.stringify(Array.isArray(values)?values:[values])}`,lessThanEqual:(key,value)=>`lessThanEqual:${key}:${value}`};
 const DB='ghdraw',TABLE='boards';
-const board=()=>({p:[{id:'page-1',n:'Page 1',e:[{id:'shape-1',type:'rect'}]}]});
+const board=()=>({p:[{id:'page-1',n:'Page 1',e:[{id:'shape-1',type:'rect',x:0,y:0,w:10,h:10}]}]});
 const rowData=data=>({payload:JSON.stringify(data),expiresAt:new Date(data.expires).toISOString()});
 const lockRow=(id,leaseId,expires)=>[id,{$id:id,...rowData({kind:'lock',leaseId,ts:expires-60000,expires}),$permissions:[]}];
 const err=code=>Object.assign(new Error('mock database error'),{code});
@@ -20,12 +20,12 @@ const err=code=>Object.assign(new Error('mock database error'),{code});
  await tables.updateRow({databaseId:DB,tableId:TABLE,rowId:'row-test',data:{payload:'{}'},transactionId:'tx-test'});
  await tables.deleteRow({databaseId:DB,tableId:TABLE,rowId:'row-test',transactionId:'tx-test'});
  await tables.deleteRows({databaseId:DB,tableId:TABLE,queries:[Query.equal('$id',['row-test'])],transactionId:'tx-test'});
- await tables.listRows({databaseId:DB,tableId:TABLE,queries:[Query.orderAsc('$id'),Query.limit(100),Query.cursorAfter('row-test'),Query.select(['$id','expiresAt'])]});
+ await tables.listRows({databaseId:DB,tableId:TABLE,queries:[Query.lessThanEqual('expiresAt','2026-10-15T13:22:00.000Z'),Query.orderAsc('expiresAt'),Query.limit(100),Query.select(['$id','expiresAt'])]});
  await tables.createTransaction({ttl:60});
  await tables.updateTransaction({transactionId:'tx-test',commit:true});
  assert.equal(calls.length,8);assert.ok(calls.every(call=>call.path.includes('/tablesdb/')));assert.ok(calls.every(call=>!call.path.includes('/databases/')));
  assert.equal(calls[0].path,'/v1/tablesdb/ghdraw/tables/boards/rows');assert.equal(calls[0].payload.data.payload,'{}');assert.deepEqual(calls[0].payload.permissions,[]);assert.equal(calls[0].payload.transactionId,'tx-test');
- assert.equal(calls[4].method,'delete');assert.equal(calls[4].path,'/v1/tablesdb/ghdraw/tables/boards/rows');assert.equal(calls[4].payload.transactionId,'tx-test');assert.ok(calls[4].payload.queries[0].includes('row-test'));
+ assert.equal(calls[4].method,'delete');assert.equal(calls[4].path,'/v1/tablesdb/ghdraw/tables/boards/rows');assert.equal(calls[4].payload.transactionId,'tx-test');assert.ok(calls[4].payload.queries[0].includes('row-test'));assert.ok(calls[5].payload.queries.some(q=>q.includes('lessThanEqual')&&q.includes('expiresAt')));assert.ok(calls[5].payload.queries.some(q=>q.includes('orderAsc')&&q.includes('expiresAt')));
  assert.ok(calls.some(call=>call.path.endsWith('/rows/row-test')));assert.ok(calls.some(call=>call.path==='/v1/tablesdb/transactions'));
  assert.ok(calls.some(call=>call.path==='/v1/tablesdb/transactions/tx-test'));
  });
@@ -47,19 +47,19 @@ class MemoryTablesDB{
  async createRow({rowId,data,permissions=[],transactionId}){this.calls.push({op:'createRow',rowId,permissions:structuredClone(permissions)});const rows=this.#map(transactionId);if(rows.has(rowId))throw err(409);const row={$id:rowId,...structuredClone(data),$permissions:structuredClone(permissions)};rows.set(rowId,row);return structuredClone(row)}
  async updateRow({rowId,data,permissions,transactionId}){this.calls.push({op:'updateRow',rowId});const rows=this.#map(transactionId);if(!rows.has(rowId))throw err(404);const old=rows.get(rowId);const row={...old,...structuredClone(data),$id:rowId};if(permissions!==undefined)row.$permissions=structuredClone(permissions);rows.set(rowId,row);return structuredClone(row)}
  async deleteRow({rowId,transactionId}){this.calls.push({op:'deleteRow',rowId});if(this.failDeleteOnceId===rowId){this.failDeleteOnceId=null;throw err(500)}const rows=this.#map(transactionId);if(!rows.has(rowId))throw err(404);rows.delete(rowId);return {}}
- async deleteRows({queries=[],transactionId}){this.calls.push({op:'deleteRows',queries:structuredClone(queries)});const batch=this.calls.filter(call=>call.op==='deleteRows').length;if(this.failDeleteRowsAt===batch){this.failDeleteRowsAt=0;throw err(500)}const rows=this.#map(transactionId);for(const q of queries){if(!q.startsWith('equal:$id:'))continue;for(const id of JSON.parse(q.slice('equal:$id:'.length)))rows.delete(id)}return{}}
+ async deleteRows({queries=[],transactionId}){this.calls.push({op:'deleteRows',queries:structuredClone(queries)});const batch=this.calls.filter(call=>call.op==='deleteRows').length;if(this.failDeleteRowsAt===batch){this.failDeleteRowsAt=0;throw err(500)}const rows=this.#map(transactionId),ids=queries.filter(q=>q.startsWith('equal:$id:')).flatMap(q=>JSON.parse(q.slice('equal:$id:'.length))),expiryQuery=queries.find(q=>q.startsWith('lessThanEqual:expiresAt:')),cutoff=expiryQuery?.slice('lessThanEqual:expiresAt:'.length);let total=0;for(const id of ids){const row=rows.get(id);if(!row||cutoff&&(!row.expiresAt||row.expiresAt>cutoff))continue;rows.delete(id);total++}return{total,rows:[]}}
  async listRows({databaseId,tableId,queries=[]}){
   assert.equal(databaseId,DB);assert.equal(tableId,TABLE);this.calls.push({op:'listRows',queries:[...queries]});let limit=25,cursor=null,select=null,order=null;
-  for(const q of queries){if(q.startsWith('limit:'))limit=Number(q.slice(6));else if(q.startsWith('cursorAfter:'))cursor=q.slice(12);else if(q.startsWith('select:'))select=q.slice(7).split(',');else if(q.startsWith('orderAsc:'))order=q.slice(9)}
-  let all=[...this.rows.values()];if(order==='$id')all.sort((a,b)=>a.$id.localeCompare(b.$id));
+  let expiryCutoff=null;for(const q of queries){if(q.startsWith('limit:'))limit=Number(q.slice(6));else if(q.startsWith('cursorAfter:'))cursor=q.slice(12);else if(q.startsWith('select:'))select=q.slice(7).split(',');else if(q.startsWith('orderAsc:'))order=q.slice(9);else if(q.startsWith('lessThanEqual:expiresAt:'))expiryCutoff=q.slice('lessThanEqual:expiresAt:'.length)}
+  let all=[...this.rows.values()];if(expiryCutoff)all=all.filter(row=>row.expiresAt&&row.expiresAt<=expiryCutoff);if(order==='$id')all.sort((a,b)=>a.$id.localeCompare(b.$id));else if(order==='expiresAt')all.sort((a,b)=>String(a.expiresAt).localeCompare(String(b.expiresAt))||a.$id.localeCompare(b.$id));
   if(cursor){if(!this.rows.has(cursor))throw err(404);all=all.filter(row=>row.$id.localeCompare(cursor)>0)}
   const page=all.slice(0,limit).map(row=>select?Object.fromEntries(select.filter(k=>k in row).map(k=>[k,row[k]])):structuredClone(row));return {total:all.length,rows:page}
  }
 }
 
-function fixture({env={GROQ_API_KEY:'test-groq-key'},seed=[]}={}){
+function fixture({env={GROQ_API_KEY:'test-groq-key'},seed=[],clock=()=>Date.now()}={}){
  const db=new MemoryTablesDB(seed),logs=[];let factories=0;
- const handler=createHandler({dbFactory:()=>{factories++;return db},QueryApi:Q,env,fetcher:async()=>({ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:'Hello from test.'}}]})})});
+ const handler=createHandler({dbFactory:()=>{factories++;return db},QueryApi:Q,env,clock,fetcher:async()=>({ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:'Hello from test.'}}]})})});
  const call=async({method='GET',path='/',body,bodyText,headers={}}={})=>{
   const req={method,path,bodyJson:body,bodyText:bodyText===undefined?(body===undefined?'':JSON.stringify(body)):bodyText,headers};
   const res={json:(value,status=200,responseHeaders={})=>({status,headers:responseHeaders,body:value}),text:(text,status=200,responseHeaders={})=>({status,headers:responseHeaders,body:text})};
@@ -72,7 +72,7 @@ const createShare=async(fx,kind='view')=>{
  assert.equal(response.status,201);return response.body;
 };
 const roomQuotaRowId=id=>'q'+id.slice(0,31);
-const update=(fx,id,{opId='11111111111111111111111111111111',baseRev=0,shapeId='shape-2'}={})=>fx.call({method:'POST',path:`/room/${id}`,body:{opId,baseRev,changes:[{t:'put',pid:'page-1',e:{id:shapeId,type:'ellipse'}}]}});
+const update=(fx,id,{opId='11111111111111111111111111111111',baseRev=0,shapeId='shape-2'}={})=>fx.call({method:'POST',path:`/room/${id}`,body:{opId,baseRev,changes:[{t:'put',pid:'page-1',e:{id:shapeId,type:'ellipse',x:0,y:0,w:10,h:10}}]}});
 const seededShares=n=>Array.from({length:n},(_,i)=>{const id=(0x10000+i).toString(16).padStart(32,'0'),data={kind:'view',expires:Date.now()+86400000,board:board()};return [id,{$id:id,...rowData(data),$permissions:[]}]});
 const MAX_PAYLOAD=12*1024*1024;
 function createBodyForStoredBytes(target){
@@ -114,6 +114,28 @@ test('anonymous share creation and view reads work through the Function while ro
  const stored=fx.db.rows.get(created.id);assert.deepEqual(stored.$permissions,[]);
  const view=await fx.call({method:'GET',path:`/view/${created.id}`});assert.equal(view.status,200);assert.deepEqual(view.body.board,board());assert.equal('owner' in view.body,false);
  assert.equal('userId' in view.body,false);assert.equal('createReceiptId' in view.body,false);assert.ok(fx.db.calls.some(c=>c.op==='createRow'&&c.rowId===created.id&&c.permissions.length===0));
+});
+
+test('create and room writes enforce the frontend coordinate and geometry contract before mutating rows',async()=>{
+ const client=readFileSync(new URL('../../index.html',import.meta.url),'utf8');assert.equal(BOARD_COORD_LIMIT,1e9);assert.equal(BOARD_POINT_LIMIT,1e6);assert.match(client,/const BOARD_COORD_LIMIT=1e9/);assert.match(client,/points\.length<=1e6/);
+ const invalid=[
+  {id:'too-far',type:'rect',x:BOARD_COORD_LIMIT+1,y:0,w:1,h:1},
+  {id:'past-right-edge',type:'rect',x:BOARD_COORD_LIMIT-1,y:0,w:2,h:1},
+  {id:'negative-size',type:'rect',x:0,y:0,w:-1,h:1},
+  {id:'non-finite-point',type:'line',pts:[[Number.POSITIVE_INFINITY,0],[1,1]]},
+  {id:'bad-pressure',type:'pen',pts:[[0,0,1.01],[1,1]]},
+  {id:'empty-line',type:'line',pts:[]}
+ ];
+ for(const element of invalid){
+  const fx=fixture(),result=await fx.call({method:'POST',path:'/create',body:{kind:'view',board:{p:[{id:'page-1',n:'Page 1',e:[element]}]}},bodyText:'{}'});
+  assert.equal(result.status,400,element.id);assert.equal(fx.db.rows.size,0,`${element.id} is rejected before create/receipt writes`);
+ }
+ const fx=fixture(),room=await createShare(fx,'room'),root=fx.db.rows.get(room.id),quotaId=roomQuotaRowId(room.id),beforeRoot=root.payload,beforeQuota=fx.db.rows.get(quotaId).payload;
+ for(const element of invalid){
+  const result=await fx.call({method:'POST',path:`/room/${room.id}`,body:{opId:'a'.repeat(32),baseRev:0,changes:[{t:'put',pid:'page-1',e:element}]},bodyText:'{}'});
+  assert.equal(result.status,400,element.id);assert.equal(root.payload,beforeRoot,'invalid geometry leaves the room board/revision untouched');assert.equal(fx.db.rows.get(quotaId).payload,beforeQuota,'invalid geometry does not increment the receipt ledger');
+  assert.equal([...fx.db.rows.keys()].some(id=>id.startsWith('o')||id.startsWith('h')),false,'invalid geometry creates no operation receipt or history row');
+ }
 });
 
 test('create bounds the exact stored JSON row including server-generated metadata',async()=>{
@@ -269,14 +291,30 @@ test('expired share reads return 410 and remove the expired row',async()=>{
  const result=await fx.call({method:'GET',path:`/view/${created.id}`});assert.equal(result.status,410);assert.equal(fx.db.rows.has(created.id),false);
 });
 
-test('scheduled cleanup pages only expiry metadata, handles mid-page failure and resumes safely',async()=>{
+test('scheduled cleanup uses bounded expiry-only batches and resumes after a bulk failure',async()=>{
  const seed=[],expiredIds=[];for(let i=0;i<205;i++){const id=i.toString(16).padStart(32,'0'),isExpired=i%2===0||i===99||i===199,expires=Date.now()+(isExpired?-1000:86400000);if(isExpired)expiredIds.push(id);seed.push([id,{$id:id,payload:'x'.repeat(50000),expiresAt:new Date(expires).toISOString(),$permissions:[]}])}
  const badId='f'.repeat(32);seed.push([badId,{$id:badId,payload:'not-json',expiresAt:'not-a-date',$permissions:[]}]);
- const fx=fixture({seed});fx.db.failDeleteOnceId=expiredIds[1];
+ const fx=fixture({seed});fx.db.failDeleteRowsAt=1;
  const failed=await fx.call({method:'POST',path:'/ignored',headers:{'x-appwrite-trigger':'schedule'}});assert.equal(failed.status,500);assert.ok(fx.db.rows.has(expiredIds[1]));
  const result=await fx.call({method:'POST',path:'/ignored',headers:{'x-appwrite-trigger':'schedule'}});assert.equal(result.status,200);assert.equal(fx.db.rows.size,101);assert.ok(fx.db.rows.has(badId));for(const id of expiredIds)assert.equal(fx.db.rows.has(id),false);
- const lists=fx.db.calls.filter(c=>c.op==='listRows');assert.ok(lists.length>=4);for(const call of lists){assert.ok(call.queries.includes('orderAsc:$id'));assert.ok(call.queries.includes('limit:100'));assert.ok(call.queries.includes('select:$id,expiresAt'));assert.ok(!call.queries.some(q=>q.includes('payload')))}
- assert.ok(lists.some(c=>c.queries.some(q=>q.startsWith('cursorAfter:'))));assert.ok(!lists.some(c=>c.queries.some(q=>q.startsWith('offset:'))));
+ const lists=fx.db.calls.filter(c=>c.op==='listRows');assert.ok(lists.length>=3);for(const call of lists){assert.ok(call.queries.includes('orderAsc:expiresAt'));assert.ok(call.queries.includes('limit:100'));assert.ok(call.queries.includes('select:$id,expiresAt'));assert.ok(call.queries.some(q=>q.startsWith('lessThanEqual:expiresAt:')));assert.ok(!call.queries.some(q=>q.includes('payload')))}
+ assert.ok(!lists.some(c=>c.queries.some(q=>q.startsWith('cursorAfter:')||q.startsWith('offset:'))));
+ const batches=fx.db.calls.filter(c=>c.op==='deleteRows');assert.ok(batches.length>=2);for(const call of batches){const ids=JSON.parse(call.queries.find(q=>q.startsWith('equal:$id:')).slice('equal:$id:'.length));assert.ok(ids.length<=100);assert.ok(call.queries.some(q=>q.startsWith('lessThanEqual:expiresAt:')))}
+});
+
+test('9400 expired receipts converge across bounded runs without skipping concurrent inserts or deleting active rows',async()=>{
+ const old=Date.now()-60_000,seed=[];for(let i=1;i<=ROOM_OP_RECEIPT_LIMIT;i++){const id='o'+i.toString(16).padStart(31,'0');seed.push([id,{$id:id,...rowData({kind:'room-op-receipt',expires:old}),$permissions:[]}])}
+ const activeId='a'.repeat(32);seed.push([activeId,{$id:activeId,...rowData({kind:'room',expires:Date.now()+86_400_000,board:board()}),$permissions:[]}]);
+ const fx=fixture({seed}),list=fx.db.listRows.bind(fx.db),insertedId='0'.repeat(32);let inserted=false;
+ fx.db.listRows=async args=>{const page=await list(args);if(!inserted){inserted=true;fx.db.rows.set(insertedId,{$id:insertedId,...rowData({kind:'room-op-receipt',expires:old-1000}),$permissions:[]})}return page};
+ let runs=0;while(fx.db.rows.size>1&&runs<20){const beforeCalls=fx.db.calls.length,result=await fx.call({method:'POST',path:'/ignored',headers:{'x-appwrite-trigger':'schedule'}});assert.equal(result.status,200);assert.ok(result.body.deleted<=CLEANUP_ROW_BUDGET);const calls=fx.db.calls.slice(beforeCalls),lists=calls.filter(c=>c.op==='listRows'),deletes=calls.filter(c=>c.op==='deleteRows');assert.ok(lists.length<=CLEANUP_PAGE_BUDGET);assert.ok(lists.length<=Math.ceil(CLEANUP_ROW_BUDGET/100));assert.ok(deletes.length<=Math.ceil(CLEANUP_ROW_BUDGET/100));assert.ok(deletes.every(c=>JSON.parse(c.queries.find(q=>q.startsWith('equal:$id:')).slice('equal:$id:'.length)).length<=100));assert.ok(calls.filter(c=>c.op==='deleteRow').length<=CLEANUP_SPECIAL_ROW_BUDGET);for(const call of lists)assert.ok(call.queries.some(q=>q.startsWith('lessThanEqual:expiresAt:')));runs++}
+ assert.ok(runs>=2&&runs<=Math.ceil((ROOM_OP_RECEIPT_LIMIT+1)/CLEANUP_ROW_BUDGET));assert.equal(fx.db.rows.size,1,'successive runs eventually remove every expired receipt');assert.ok(fx.db.rows.has(activeId),'active room stays outside the expiry-filtered cleanup');assert.ok(inserted,'a concurrent expired insert was introduced');assert.equal(fx.db.rows.has(insertedId),false,'an earlier-key concurrent insert is found by re-querying the first expiry page');
+});
+
+test('scheduled cleanup stops at its elapsed-work budget and leaves remaining rows for the next run',async()=>{
+ let now=Date.now();const seed=Array.from({length:250},(_,i)=>{const id=(i+1).toString(16).padStart(32,'0');return[id,{$id:id,...rowData({kind:'room-op-receipt',expires:now-1000}),$permissions:[]}]}),fx=fixture({seed,clock:()=>now}),list=fx.db.listRows.bind(fx.db);let calls=0;
+ fx.db.listRows=async args=>{calls++;const page=await list(args);if(calls===2)now+=CLEANUP_TIME_BUDGET_MS;return page};
+ const result=await fx.call({method:'POST',path:'/ignored',headers:{'x-appwrite-trigger':'schedule'}});assert.equal(result.status,200);assert.equal(calls,2);assert.equal(result.body.deleted,100);assert.equal(fx.db.rows.size,150,'remaining expired rows are left to a later invocation');
 });
 
 test('cleanup transaction preserves an AI quota row renewed after the expiry page was read',async()=>{
