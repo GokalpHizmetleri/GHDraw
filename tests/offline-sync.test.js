@@ -67,7 +67,9 @@ context.snap=()=>JSON.stringify(context.els);context.syncUI=()=>{};context.rende
 context.syncPage=()=>{const page=context.pages[context.pi];if(page){page.els=context.els;page.cam=context.cam}};
 context.finishEdit=()=>{context.editing=null};context.cloudEnd=()=>{context.cloudRoom=null;context.collabOn=false};
 vm.runInNewContext(source,context);
+context.api.cloudRoomTransitionBoard=context.cloudRoomTransitionBoard;
 const {validCloudChange,cloudCheckpointCanResume,cloudJoinCanContinue,localBoardRecord,parseLocalBoardRecord,localBoardBackupLimits,localBoardBackupUsage,localBoardBackupKeys,writeLocalBoardBackup,localBoardBackupEntries,hasLocalBoardBackups,deleteLocalBoardBackup,preserveLocalBoardBeforeCloudJoin,cloudStaleExportMatchesCurrent,cloudJoinBoardProtected,localBoardFingerprint,ensureStaleLocalBoardProtected,exportQuarantinedLocalBoard,restoreLocalBoardRecord,restoreCloudSnapshot,load,dash,clampBoardCamera,recoverBoardCamera,cloudSelectRejoinBoard,cloudRejoinGenerationBoard,cloudProtocolCompatible,cloudDiff,cloudBoardHasUncheckpointedChanges,cloudApplyChanges,cloudRebase,cloudCanAppendComment}=context.api;
+const cloudRoomTransitionBoard=context.api.cloudRoomTransitionBoard;
 
 function makeBoardHarness(){
   const storage=new Map(),localStorage={getItem:key=>storage.has(key)?storage.get(key):null,setItem:(key,value)=>storage.set(key,String(value)),removeItem:key=>storage.delete(key),key:index=>[...storage.keys()][index]??null,get length(){return storage.size}};
@@ -542,8 +544,112 @@ test('an outbox delta can reconstruct its sent snapshot and safely replay',()=>{
   assert.deepEqual(once.p[0].e.find(x=>x.id==='shape-a').th.map(x=>x.id),['m1','peer-message','m2']);
 });
 
+test('new-room transition reconciles a comment-limit rejection against the latest accepted server board',async()=>{
+  const serverBoard=structuredClone(base);serverBoard.p[0].e[0].th.push({id:'server-accepted',t:'accepted before conflict'});
+  const draft=structuredClone(base);draft.p[0].e[0].th.push({id:'client-pending',t:'pending comment'});
+  const op={opId:'c1'.repeat(16),baseRev:4,changes:cloudDiff(base,draft)};
+  const checkpoint={id:'old-room',base:structuredClone(base),rev:4,expires:Date.now()+60000,generation:0,inflight:op,restoreId:null,restoreIntent:null,updatedAt:1};
+  const store={checkpoint:structuredClone(checkpoint),snapshot:null,transition:null},events=[],kv=new Map([['ghdraw:cloudOwner:old-room','old-owner']]);
+  const localStorage={getItem:key=>kv.get(key)??null,setItem:(key,value)=>kv.set(key,String(value)),removeItem:key=>kv.delete(key)};
+  const ctx={structuredClone,localStorage,navigator:{onLine:true,locks:{request:(_name,_options,task)=>task()}},cloudRoom:{id:'old-room',generation:0,expires:checkpoint.expires},isHost:true,editing:null,drag:false,cloudBase:structuredClone(base),cloudRev:4,cloudInflight:structuredClone(op),cloudPending:true,cloudProtocolBlocked:false,cloudReceiptQuotaBlocked:false,cloudCommentLimitBlocked:true,cloudProtocolVerified:false,cloudOwner:'old-owner',cloudRoomGenerationCurrent:()=>true,cloudCheckpointIsUnsafe:()=>false,cloudRoomTransition:async()=>structuredClone(store.transition),cloudBoard:()=>structuredClone(draft),writeLocalBoardBackup:()=>true,localBoardRecord:()=>'{"savedAt":1}',cloudCheckpoint:async()=>structuredClone(store.checkpoint),cloudLocalSnapshot:async()=>structuredClone(store.snapshot),cloudCheckpointCanResume,cloudGenerationValue:r=>r?.generation??0,validCloudRestoreId:context.api.validCloudRestoreId,normalizeCloudRoomBoard:context.api.normalizeCloudRoomBoard,cloudDiff,cloudRoomTransitionBoard,runCloudRoomLocked:(_id,task)=>task(),finishEdit(){},L2:(_tr,en)=>en,confirm:()=>true,newCloudOpId:()=>'ef'.repeat(16),cloudProtocolCompatible:(d,expected)=>!!d&&d.kind==='room'&&d.syncProtocol==='room-ops-v1'&&Number.isSafeInteger(d.rev)&&(!expected||d.ack===expected.opId),cloudRequest:async(path,body)=>{events.push(body?'POST-old-op':'GET-old');if(body)throw Object.assign(new Error('comment limit'),{status:409,code:'comment_limit'});return{kind:'room',syncProtocol:'room-ops-v1',board:structuredClone(serverBoard),rev:5,expires:checkpoint.expires}},saveCloudCheckpoint:async(id,b,rev,expires,inflight,local,restoreId,generation)=>{store.checkpoint={id,base:structuredClone(b),rev,expires,inflight:inflight&&structuredClone(inflight),restoreId,generation,restoreIntent:null,updatedAt:2};store.snapshot={id,board:structuredClone(local),generation,updatedAt:2}},saveCloudRoomTransition:async record=>{store.transition=structuredClone(record);return structuredClone(record)},localStorage,toast:message=>events.push('toast:'+message)};
+  const start=html.indexOf('async function cloudPrepareRoomTransition(){'),end=html.indexOf('\nasync function cloudStartNewRoom(',start);assert.ok(start>=0&&end>start);
+  vm.runInNewContext(html.slice(start,end)+';globalThis.prepare=cloudPrepareRoomTransition;',ctx);
+  const plan=await ctx.prepare();assert.deepEqual(events,['GET-old','POST-old-op','GET-old']);
+  assert.equal(plan.unresolved,true);assert.equal(plan.serverRev,5,'the authoritative server revision is persisted for a conditional old-room delete');assert.equal(plan.board.p[0].e[0].th.some(m=>m.id==='server-accepted'),true,'the server-accepted comment is copied into the candidate');
+  assert.equal(plan.board.p[0].e[0].th.some(m=>m.id==='client-pending'),true,'the rejected local comment is included when the new-room limits allow it');
+  assert.equal(store.checkpoint.inflight.opId,op.opId,'the old durable outbox remains intact');
+  assert.equal(store.transition.requestId,'ef'.repeat(16),'a stable create request ID is persisted for retries');
+  assert.deepEqual(json(store.snapshot.board),json(draft),'the complete local draft is durably snapshotted before create');
+});
+
+test('room-transition retry metadata is idempotent and isolated from ordinary board snapshots',async()=>{
+  const rows=new Map([['old-room',{id:'old-room',board:structuredClone(base),updatedAt:1}]]);
+  const db={transaction(name){assert.equal(name,'snapshots');const tx={},store={get(key){const req={};queueMicrotask(()=>{req.result=rows.has(key)?structuredClone(rows.get(key)):undefined;req.onsuccess?.();queueMicrotask(()=>tx.oncomplete?.())});return req},put(value){rows.set(value.id,structuredClone(value))},delete(key){rows.delete(key);queueMicrotask(()=>tx.oncomplete?.())}};tx.objectStore=()=>store;return tx}};
+  const context={cloudDB:async()=>db,structuredClone};
+  const start=html.indexOf('function cloudRoomTransitionKey(id){'),end=html.indexOf('\nfunction stageCloudSnapshot(',start);assert.ok(start>=0&&end>start);
+  vm.runInNewContext(html.slice(start,end)+';globalThis.api={cloudRoomTransitionKey,cloudRoomTransition,saveCloudRoomTransition,deleteCloudRoomTransition};',context);
+  const first=await context.api.saveCloudRoomTransition({oldRoomId:'old-room',requestId:'aa'.repeat(16),board:base,sourceBoard:local,unresolved:true});
+  const retry=await context.api.saveCloudRoomTransition({oldRoomId:'old-room',requestId:'bb'.repeat(16),board:local,sourceBoard:base,unresolved:false});
+  assert.equal(first.id,'room-transition:old-room');assert.equal(first.kind,'room-transition');assert.equal(retry.requestId,first.requestId,'retry keeps the original request ID and exact room payload');
+  assert.equal((await context.api.cloudRoomTransition('old-room')).requestId,first.requestId);
+  await context.api.deleteCloudRoomTransition('old-room');assert.equal(await context.api.cloudRoomTransition('old-room'),null);
+  assert.ok(rows.has('old-room'),'cleanup only removes the transition sidecar, not the old room snapshot');
+});
+
+test('cross-tab room stop does not revoke a checkpoint with pending outbox work',async()=>{
+  const messages=[];let lockTask=null,endCalls=0,transitionDeletes=0;
+  const context={cloudRoom:{id:'old-room'},navigator:{locks:{request(){}}},isHost:true,localStorage:{getItem:()=> 'owner'},runCloudRoomLocked:(_id,task)=>{lockTask=task();return lockTask},cloudRoomGenerationCurrent:()=>true,cloudCheckpoint:async()=>({id:'old-room',base:structuredClone(base),rev:4,inflight:{opId:'c1'.repeat(16),baseRev:4,changes:[]}}),cloudLocalSnapshot:async()=>({board:structuredClone(base)}),cloudCheckpointCanResume:()=>true,normalizeCloudRoomBoard:()=>true,cloudDiff:()=>[],deleteCloudRoomTransition:async()=>{transitionDeletes++},cloudEnd:()=>{endCalls++},toast:m=>messages.push(m),L2:(tr,_en)=>tr};
+  const start=html.indexOf('async function cloudStopRoomSafely(id){'),end=html.indexOf('\nfunction sendCursor',start);assert.ok(start>=0&&end>start);
+  vm.runInNewContext(html.slice(start,end)+';globalThis.stop=collabStop;',context);context.stop();await lockTask;
+  assert.equal(endCalls,0);assert.equal(transitionDeletes,0);assert.ok(messages.some(m=>m.includes('bekleyen çalışma')));
+});
+
+test('revision-aware room stop preserves the old room if another device wrote after the copy',async()=>{
+  const messages=[],kv=new Map([['ghdraw:cloudOwner:old-room','owner']]);let lockTask=null,endCalls=0,transitionDeletes=0,deleteBody=null;
+  const context={cloudRoom:{id:'old-room'},navigator:{locks:{request(){}}},isHost:true,localStorage:{getItem:key=>kv.get(key)??null,removeItem:key=>kv.delete(key)},runCloudRoomLocked:(_id,task)=>{lockTask=task();return lockTask},cloudRoomGenerationCurrent:()=>true,cloudCheckpoint:async()=>({id:'old-room',base:structuredClone(base),rev:4,inflight:null}),cloudLocalSnapshot:async()=>({board:structuredClone(base)}),cloudCheckpointCanResume:()=>true,normalizeCloudRoomBoard:()=>true,cloudDiff:()=>[],cloudRoomTransition:async()=>({oldRoomId:'old-room',serverRev:4}),cloudRequest:async(_path,body)=>{deleteBody=body;throw Object.assign(new Error('new collaborator revision'),{status:409,code:'room_revision_changed'})},deleteCloudRoomTransition:async()=>{transitionDeletes++},cloudEnd:()=>{endCalls++},toast:m=>messages.push(m),L2:(_tr,en)=>en};
+  const start=html.indexOf('async function cloudStopRoomSafely(id){'),end=html.indexOf('\nfunction sendCursor',start);assert.ok(start>=0&&end>start);
+  vm.runInNewContext(html.slice(start,end)+';globalThis.stop=cloudStopRoomSafely;',context);context.stop('old-room');await lockTask;
+  assert.equal(deleteBody.expectedRev,4);assert.equal(endCalls,0);assert.equal(transitionDeletes,0);assert.ok(kv.has('ghdraw:cloudOwner:old-room'));assert.ok(messages.some(m=>m.includes('review the latest changes')));
+});
+
+test('transition lease exposes a temporary edit shield and removes its marker on completion',()=>{
+  const rows=new Map(),label={textContent:''},shield={hidden:true,querySelector:()=>label},localStorage={getItem:key=>rows.get(key)??null,setItem:(key,value)=>rows.set(key,String(value)),removeItem:key=>rows.delete(key)};
+  const context={localStorage,cloudRoom:{id:'old-room'},$:(selector)=>selector==='#transitionShield'?shield:null,addEventListener(){},setInterval:()=>1,clearInterval(){},setTimeout:()=>1,clearTimeout(){},newCloudOpId:()=>'ab'.repeat(16),L2:(_tr,en)=>en};
+  const start=html.indexOf('let cloudTransitionLeaseTimer=0'),end=html.indexOf('\nfunction cloudEnd(revoke)',start);assert.ok(start>=0&&end>start);
+  vm.runInNewContext(html.slice(start,end)+';globalThis.begin=beginCloudTransition;globalThis.active=cloudTransitionActive;globalThis.finish=endCloudTransition;',context);
+  assert.equal(context.begin('old-room'),true);assert.equal(context.active('old-room'),true);assert.equal(shield.hidden,false);assert.match(label.textContent,/room transition is in progress/);
+  context.finish('old-room','ab'.repeat(16));assert.equal(context.active('old-room'),false);assert.equal(shield.hidden,true);
+});
+
+function makeRoomStartHarness(plan,{failFirstCreate=false}={}){
+  const events=[],payloads=[],kv=new Map([['ghdraw:cloudOwner:'+plan.oldRoomId,plan.oldOwner||'old-owner']]);let board=structuredClone(plan.sourceBoard),savedBoard=null,createCalls=0;
+  const localStorage={getItem:key=>kv.get(key)??null,setItem:(key,value)=>kv.set(key,String(value)),removeItem:key=>kv.delete(key)};
+  const ctx={structuredClone,localStorage,navigator:{onLine:true},cloudRoom:structuredClone(plan.oldRoom),cloudBase:structuredClone(base),cloudRev:4,cloudInflight:plan.unresolved?{opId:'c1'.repeat(16),baseRev:4,changes:cloudDiff(base,plan.sourceBoard)}:null,cloudPending:!!plan.unresolved,cloudProtocolBlocked:false,cloudReceiptQuotaBlocked:false,cloudCommentLimitBlocked:!!plan.unresolved,cloudProtocolVerified:true,cloudOwner:plan.oldOwner||'old-owner',isHost:true,collabOn:true,roomId:plan.oldRoomId,cloudTimer:0,cloudBoard:()=>structuredClone(board),cloudPrepareRoomTransition:async()=>plan,liveStop(){},cloudCreate:undefined,crypto:{getRandomValues(bytes){bytes.fill(7);return bytes}},ensureStaleLocalBoardProtected:()=>true,cloudRequest:async(path,body,method)=>{if(path==='/create'){createCalls++;payloads.push(structuredClone(body));events.push('create-request');if(failFirstCreate&&createCalls<=2)throw new TypeError('temporary network loss');savedBoard=structuredClone(body.board);return{id:'new-room',owner:'new-owner'}}if(method==='DELETE'){events.push('delete-old');assert.ok(savedBoard.p[0].e[0].th.some(m=>m.id==='server-accepted'),'old deletion is never sent before the accepted server comment has been saved in the new room');return{deleted:true}}throw new Error('unexpected cloud request '+path)},cloudJoin:async(id)=>{events.push('join-new');ctx.cloudRoom={id,generation:0,expires:Date.now()+60000};ctx.cloudBase=structuredClone(savedBoard);ctx.cloudRev=0;ctx.cloudInflight=null;ctx.cloudPending=false;ctx.cloudCommentLimitBlocked=false},cloudCheckpoint:async id=>{events.push('checkpoint:'+id);return id==='new-room'?{id,base:structuredClone(savedBoard||plan.board),rev:0,expires:Date.now()+60000,generation:0,inflight:null,restoreId:null,restoreIntent:null,updatedAt:1}:null},cloudCheckpointCanResume,cloudGenerationValue:r=>r?.generation??0,cloudDiff,cloudRebase,normalizeCloudRoomBoard:context.api.normalizeCloudRoomBoard,restoreCloudSnapshot:({board:next},id)=>{events.push('restore:'+id);board=structuredClone(next);return true},saveCloudCheckpoint:async()=>{throw new Error('unexpected checkpoint write')},cloudSync:async()=>{},setSyncBadge(){},deleteCloudRoomTransition:async id=>{events.push('clear-transition:'+id)},clearInterval(){},setInterval:()=>1,toast:message=>events.push('toast:'+message),L2:(_tr,en)=>en};
+  ctx.navigator.locks={request:(_name,_options,task)=>task()};ctx.runCloudRoomLocked=(_id,task)=>{events.push('lock-enter');return Promise.resolve(task()).finally(()=>events.push('lock-exit'))};ctx.cloudRoomGenerationCurrent=()=>true;ctx.beginCloudTransition=()=>{events.push('busy-on');ctx.cloudTransitionLease={token:'lease'};return true};ctx.endCloudTransition=()=>events.push('busy-off');
+  const createStart=html.indexOf('async function cloudStartNewRoom(){'),createEnd=html.indexOf('\n\n/* ---- expiring cloud shares',createStart);assert.ok(createStart>=0&&createEnd>createStart);
+  const createSource=html.slice(html.indexOf('async function cloudCreate(kind,board,stableRequestId=null){'),html.indexOf('\nfunction cloudBoard(',html.indexOf('async function cloudCreate(kind,board,stableRequestId=null){')));
+  vm.runInNewContext(createSource+'\n'+html.slice(createStart,createEnd)+';globalThis.start=cloudStartNewRoom;',ctx);return{ctx,events,payloads,get board(){return board},get savedBoard(){return savedBoard},get createCalls(){return createCalls}};
+}
+
+test('comment-limit transition keeps the accepted comment, preserves outbox, and retries a failed create without loss',async()=>{
+  const serverBoard=structuredClone(base);serverBoard.p[0].e[0].th.push({id:'server-accepted',t:'accepted before conflict'});
+  const draft=structuredClone(base);draft.p[0].e[0].th.push({id:'client-pending',t:'pending comment'});
+  const plan={oldRoomId:'old-room',requestId:'ef'.repeat(16),board:structuredClone(serverBoard),sourceBoard:structuredClone(draft),serverRev:5,unresolved:true,hasUntransferable:false,generation:0,expires:Date.now()+60000,oldOwner:'old-owner',oldRoom:{id:'old-room',generation:0,expires:Date.now()+60000}};
+  plan.board.p[0].e[0].th.push({id:'client-pending',t:'pending comment'});
+  const h=makeRoomStartHarness(plan,{failFirstCreate:true});
+  assert.equal(await h.ctx.start(),false);assert.deepEqual(json(h.board),json(draft),'a failed create leaves the visible local draft untouched');assert.equal(h.ctx.cloudRoom.id,'old-room');assert.equal(h.events.includes('delete-old'),false);
+  assert.equal(await h.ctx.start(),true);assert.equal(h.createCalls,3,'a two-attempt failure is safely retried on the next user attempt');
+  assert.deepEqual(h.payloads.map(p=>p.requestId),['ef'.repeat(16),'ef'.repeat(16),'ef'.repeat(16)]);
+  assert.ok(h.savedBoard.p[0].e[0].th.some(m=>m.id==='server-accepted'));
+  assert.ok(h.savedBoard.p[0].e[0].th.some(m=>m.id==='client-pending'));
+  assert.equal(h.events.includes('delete-old'),false,'a rejected operation keeps the old room and durable outbox instead of discarding recovery');
+  assert.equal(h.events.includes('clear-transition:old-room'),false,'the durable cross-tab guard remains while the old outbox is unresolved');
+  assert.ok(h.events.indexOf('create-request')<h.events.indexOf('join-new'));
+  assert.ok(h.events.indexOf('busy-on')<h.events.indexOf('create-request')&&h.events.lastIndexOf('busy-off')<h.events.lastIndexOf('lock-exit'));
+});
+
+test('a clean old room is deleted only after the new room checkpoint is verified',async()=>{
+  const serverBoard=structuredClone(base);serverBoard.p[0].e[0].th.push({id:'server-accepted',t:'latest'});
+  const plan={oldRoomId:'old-room',requestId:'ab'.repeat(16),board:serverBoard,sourceBoard:structuredClone(base),serverRev:4,unresolved:false,hasUntransferable:false,generation:0,expires:Date.now()+60000,oldOwner:'old-owner',oldRoom:{id:'old-room',generation:0,expires:Date.now()+60000}};
+  const h=makeRoomStartHarness(plan);assert.equal(await h.ctx.start(),true,JSON.stringify(h.events));
+  const deleteIndex=h.events.indexOf('delete-old'),lastCheckpoint=h.events.lastIndexOf('checkpoint:new-room');
+  assert.ok(deleteIndex>=0&&lastCheckpoint>=0&&deleteIndex>lastCheckpoint,JSON.stringify(h.events));
+  assert.ok(h.events.indexOf('lock-enter')<h.events.indexOf('create-request')&&h.events.indexOf('lock-exit')>deleteIndex,'one cross-tab lock covers creation through old-room deletion');
+  assert.ok(h.events.indexOf('clear-transition:old-room')>deleteIndex,'the durable transition guard is cleared only after deletion');
+  assert.ok(h.savedBoard.p[0].e[0].th.some(m=>m.id==='server-accepted'));
+});
+
+test('a concurrent collaborator revision keeps the old room open after a successful new-room copy',async()=>{
+  const plan={oldRoomId:'old-room',requestId:'cd'.repeat(16),board:structuredClone(base),sourceBoard:structuredClone(base),serverRev:4,unresolved:false,hasUntransferable:false,generation:0,expires:Date.now()+60000,oldOwner:'old-owner',oldRoom:{id:'old-room',generation:0,expires:Date.now()+60000}};
+  plan.board.p[0].e.push({id:'copied-shape',type:'rect',x:20,y:20,w:10,h:10});const h=makeRoomStartHarness(plan),request=h.ctx.cloudRequest;
+  h.ctx.cloudRequest=async(path,body,method)=>{if(method==='DELETE'){assert.equal(body.expectedRev,plan.serverRev);h.events.push('delete-old-conflict');throw Object.assign(new Error('changed during copy'),{status:409,code:'room_revision_changed'})}return request(path,body,method)};
+  assert.equal(await h.ctx.start(),true);assert.ok(h.savedBoard.p[0].e.some(e=>e.id==='copied-shape'));assert.ok(h.events.includes('delete-old-conflict'));assert.equal(h.events.includes('clear-transition:old-room'),false);assert.ok(h.events.some(e=>e.includes('old room received new changes')),'the change is surfaced while the original remains available');
+});
+
 test('offline checkpoint, operation id, acknowledgement, and revision retry paths are present',()=>{
   assert.match(html,/indexedDB\.open\('ghdraw-cloud-sync-v1',2\)/);
+  assert.match(html,/cloudRoomTransitionKey\(id\)\{return'room-transition:'\+id\}/);
+  assert.match(html,/db\.transaction\('snapshots','readwrite'\).*cloudRoomTransitionKey\(record\.oldRoomId\)/);
   assert.match(html,/saveCloudCheckpoint\(id,oldBase,oldRev,cloudRoom\.expires,candidate,durableCurrent\)/);
   assert.match(html,/JSON\.stringify\(durable\.inflight\)!==JSON\.stringify\(candidate\)/);
   assert.match(html,/opId:op\.opId,baseRev:op\.baseRev/);
@@ -568,6 +674,12 @@ test('mobile and tablet styles account for safe areas, touch size, and compact l
   assert.match(html,/viewport-fit=cover/);
   assert.match(html,/@media\(pointer:coarse\)\{\.ib \.k\{display:none\}\.ib\{width:44px;height:44px\}/);
   assert.match(html,/env\(safe-area-inset-bottom\)/);
+  assert.match(html,/#help\{width:44px;height:44px/);
+  assert.match(html,/id="transitionShield" hidden role="status" aria-live="polite"/);
+  assert.match(html,/if\(cloudTransitionActive\(cloudRoom\?\.id\)\)\{ev\.preventDefault\(\);return\}/);
+  assert.match(html,/@media\(max-width:820px\)\{#br\{bottom:calc\(76px \+ env\(safe-area-inset-bottom\)\);z-index:13\}\}/);
+  const compactHide=html.indexOf('#br{display:none}'),compactShow=html.lastIndexOf('@media(max-width:900px) and (max-height:500px){#br{display:flex;bottom:calc(64px + env(safe-area-inset-bottom));z-index:13}}');
+  assert.ok(compactHide>=0&&compactShow>compactHide,'help button remains visible above the compact landscape toolbar');
   assert.match(html,/@media\(max-width:900px\) and \(max-height:500px\)/);
   assert.match(html,/<div id="syncBadge" role="status" aria-live="polite">/);
 });

@@ -322,6 +322,14 @@ test('history restore duplicate ACK survives the receipt cap while new restore I
  const rejected=await fx.call({...request,body:{...request.body,restoreId:'d'.repeat(32)}});assert.equal(rejected.status,409);assert.equal(rejected.body.error,'room_receipt_limit');assert.deepEqual(JSON.parse(fx.db.rows.get(created.id).payload),before,'a new restore does not mutate a full room');
 });
 
+test('conditional owner deletion preserves a newer room revision',async()=>{
+ const fx=fixture(),created=await createShare(fx,'room'),edited=await update(fx,created.id,{opId:'4'.repeat(32),baseRev:0,shapeId:'shape-after-copy'});assert.equal(edited.status,200);assert.equal(edited.body.rev,1);
+ const receipt=[...fx.db.rows].find(([rowId,row])=>rowId.startsWith('o')&&JSON.parse(row.payload).kind==='room-op-receipt'&&JSON.parse(row.payload).roomId===created.id)?.[0];assert.ok(receipt);
+ const invalid=await fx.call({method:'DELETE',path:`/owner/${created.id}`,body:{owner:created.owner,expectedRev:'0'}});assert.equal(invalid.status,400);assert.equal(invalid.body.error,'invalid_room_revision');assert.ok(fx.db.rows.has(created.id));
+ const stale=await fx.call({method:'DELETE',path:`/owner/${created.id}`,body:{owner:created.owner,expectedRev:0}});assert.equal(stale.status,409);assert.equal(stale.body.error,'room_revision_changed');assert.ok(fx.db.rows.has(created.id));assert.ok(fx.db.rows.has(receipt));assert.ok(JSON.parse(fx.db.rows.get(created.id).payload).board.p[0].e.some(e=>e.id==='shape-after-copy'));
+ const current=await fx.call({method:'DELETE',path:`/owner/${created.id}`,body:{owner:created.owner,expectedRev:1}});assert.equal(current.status,200);assert.equal(fx.db.rows.has(created.id),false);assert.equal(fx.db.rows.has(receipt),false);
+});
+
 test('owner deletion is token-protected and removes every indexed operation receipt',async()=>{
  const fx=fixture(),created=(await fx.call({method:'POST',path:'/create',body:{kind:'room',board:board(),requestId:'e'.repeat(32)}})).body;
  await fx.call({method:'POST',path:`/live/${created.id}`,body:{cid:'client01'}});
