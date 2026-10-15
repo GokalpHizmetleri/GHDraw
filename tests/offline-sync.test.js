@@ -21,6 +21,7 @@ function extract(name,next){
   assert.notEqual(end,-1,`missing function following ${name}`);
   return html.slice(start,end);
 }
+function sourceLine(name){const line=html.split('\n').find(value=>value.startsWith(`function ${name}(`));assert.ok(line,`missing one-line function ${name}`);return line}
 const loadStart=html.indexOf('function load(){');
 const loadEnd=html.indexOf('\nconst TOOLS=',loadStart);
 assert.ok(loadStart>=0&&loadEnd>loadStart,'missing load function');
@@ -392,7 +393,7 @@ test('offline join without a room checkpoint exits before loading an IndexedDB s
   const join=html.slice(start,html.indexOf("\naddEventListener('offline'",start));
   const guard=join.indexOf('if(!cloudJoinCanContinue(navigator.onLine,cachedReady?cached:null))');
   assert.ok(guard>=0&&guard<join.indexOf('cloudLocalSnapshot(id)'), 'checkpointless offline exit precedes snapshot loading');
-  assert.ok(guard<join.indexOf('restoreCloudSnapshot({board:safeLocal},id,roomGeneration)'), 'checkpointless offline exit precedes board mutation');
+  assert.ok(guard<join.indexOf('restoreCloudSnapshot({board:safeLocal},id,roomGeneration,transitionContext)'), 'checkpointless offline exit precedes board mutation');
 });
 
 test('online cloudJoin preserves and refuses to overwrite any unvalidated persisted outbox',async()=>{
@@ -601,16 +602,50 @@ test('transition lease exposes a temporary edit shield and removes its marker on
   context.finish('old-room','ab'.repeat(16));assert.equal(context.active('old-room'),false);assert.equal(shield.hidden,true);assert.equal(modal.inert,false,'modal interaction is restored after the lease ends');
 });
 
-function makeRoomStartHarness(plan,{failFirstCreate=false,sharedStorage=null,holdCreate=false}={}){
-  const events=[],payloads=[],kv=sharedStorage||new Map();if(!kv.has('ghdraw:cloudOwner:'+plan.oldRoomId))kv.set('ghdraw:cloudOwner:'+plan.oldRoomId,plan.oldOwner||'old-owner');let board=structuredClone(plan.sourceBoard),savedBoard=null,createCalls=0,releaseCreate=null,createStartedResolve;const createStarted=new Promise(resolve=>createStartedResolve=resolve);
+function makeRoomStartHarness(plan,{failFirstCreate=false,sharedStorage=null,holdCreate=false,realRestore=false,failRestoreOnce=false}={}){
+  const events=[],payloads=[],kv=sharedStorage||new Map();if(!kv.has('ghdraw:cloudOwner:'+plan.oldRoomId))kv.set('ghdraw:cloudOwner:'+plan.oldRoomId,plan.oldOwner||'old-owner');
+  let board=structuredClone(plan.sourceBoard),savedBoard=null,createCalls=0,releaseCreate=null,createStartedResolve,restoreWriteFailed=false;
+  const createStarted=new Promise(resolve=>createStartedResolve=resolve),snapshotRows=new Map(),roomRows=new Map();
+  const initialInflight=plan.unresolved?{opId:'c1'.repeat(16),baseRev:4,changes:cloudDiff(base,plan.sourceBoard)}:null;
+  roomRows.set(plan.oldRoomId,{id:plan.oldRoomId,base:structuredClone(plan.board),rev:plan.serverRev??4,generation:plan.generation??0,inflight:structuredClone(initialInflight)});
   const localStorage={getItem:key=>kv.get(key)??null,setItem:(key,value)=>kv.set(key,String(value)),removeItem:key=>kv.delete(key)};
-  const ctx={structuredClone,localStorage,navigator:{onLine:true},cloudRoom:structuredClone(plan.oldRoom),editing:null,drag:false,cloudBase:structuredClone(base),cloudRev:4,cloudInflight:plan.unresolved?{opId:'c1'.repeat(16),baseRev:4,changes:cloudDiff(base,plan.sourceBoard)}:null,cloudPending:!!plan.unresolved,cloudProtocolBlocked:false,cloudReceiptQuotaBlocked:false,cloudCommentLimitBlocked:!!plan.unresolved,cloudProtocolVerified:true,cloudOwner:plan.oldOwner||'old-owner',isHost:true,collabOn:true,roomId:plan.oldRoomId,cloudTimer:0,cloudBoard:()=>structuredClone(board),cloudPrepareRoomTransition:async()=>plan,liveStop(){},cloudCreate:undefined,crypto:{getRandomValues(bytes){bytes.fill(7);return bytes}},ensureStaleLocalBoardProtected:()=>true,cloudRequest:async(path,body,method)=>{if(path==='/create'){createCalls++;payloads.push(structuredClone(body));events.push('create-request');if(holdCreate){createStartedResolve();await new Promise(resolve=>releaseCreate=resolve)}if(failFirstCreate&&createCalls<=2)throw new TypeError('temporary network loss');savedBoard=structuredClone(body.board);return{id:'new-room',owner:'new-owner'}}if(method==='DELETE'){events.push('delete-old');assert.ok(savedBoard.p[0].e[0].th.some(m=>m.id==='server-accepted'),'old deletion is never sent before the accepted server comment has been saved in the new room');return{deleted:true}}throw new Error('unexpected cloud request '+path)},cloudJoin:async(id)=>{events.push('join-new');ctx.cloudRoom={id,generation:0,expires:Date.now()+60000};ctx.cloudBase=structuredClone(savedBoard);ctx.cloudRev=0;ctx.cloudInflight=null;ctx.cloudPending=false;ctx.cloudCommentLimitBlocked=false},cloudCheckpoint:async id=>{events.push('checkpoint:'+id);return id==='new-room'?{id,base:structuredClone(savedBoard||plan.board),rev:0,expires:Date.now()+60000,generation:0,inflight:null,restoreId:null,restoreIntent:null,updatedAt:1}:null},cloudCheckpointCanResume,cloudGenerationValue:r=>r?.generation??0,cloudDiff,cloudRebase,normalizeCloudRoomBoard:context.api.normalizeCloudRoomBoard,restoreCloudSnapshot:({board:next},id)=>{events.push('restore:'+id);board=structuredClone(next);return true},saveCloudCheckpoint:async()=>{throw new Error('unexpected checkpoint write')},cloudSync:async()=>{},setSyncBadge(){},deleteCloudRoomTransition:async id=>{events.push('clear-transition:'+id)},clearInterval(){},setInterval:()=>1,toast:message=>events.push('toast:'+message),L2:(_tr,en)=>en};
-  ctx.navigator.locks={request:(_name,_options,task)=>task()};ctx.runCloudRoomLocked=(_id,task)=>{events.push('lock-enter');return Promise.resolve(task()).finally(()=>events.push('lock-exit'))};ctx.cloudRoomGenerationCurrent=()=>true;ctx.beginCloudTransition=id=>{events.push('busy-on');const token='lease-token';kv.set('ghdraw:cloudTransitionActive:'+id,JSON.stringify({token,until:Date.now()+30000}));ctx.cloudTransitionLease={id,token};return true};ctx.endCloudTransition=(id,token)=>{events.push('busy-off');if(ctx.cloudTransitionLease?.token===token)kv.delete('ghdraw:cloudTransitionActive:'+id)};ctx.saveCloudTransitionReplacement=(oldId,newId,revision)=>{events.push('handoff:'+oldId+':'+newId);kv.set('ghdraw:cloudTransitionReplacement:'+oldId,JSON.stringify({roomId:newId,revision,until:Date.now()+7*86400000}));return true};
+  const ctx={structuredClone,localStorage,navigator:{onLine:true},cloudRoom:structuredClone(plan.oldRoom),editing:null,drag:false,cloudBase:structuredClone(base),cloudRev:4,cloudInflight:structuredClone(initialInflight),cloudPending:!!plan.unresolved,cloudProtocolBlocked:false,cloudReceiptQuotaBlocked:false,cloudCommentLimitBlocked:!!plan.unresolved,cloudProtocolVerified:true,cloudOwner:plan.oldOwner||'old-owner',isHost:true,collabOn:true,roomId:plan.oldRoomId,cloudTimer:0,cloudPrepareRoomTransition:async()=>plan,liveStop(){},crypto:{getRandomValues(bytes){bytes.fill(7);return bytes}},ensureStaleLocalBoardProtected:()=>true,
+    cloudRequest:async(path,body,method)=>{
+      if(path==='/create'){createCalls++;payloads.push(structuredClone(body));events.push('create-request');if(holdCreate){createStartedResolve();await new Promise(resolve=>releaseCreate=resolve)}if(failFirstCreate&&createCalls<=2)throw new TypeError('temporary network loss');savedBoard=structuredClone(body.board);return{id:'new-room',owner:'new-owner'}}
+      if(method==='DELETE'){events.push('delete-old');ctx.deleteBody=structuredClone(body);assert.ok(savedBoard.p[0].e[0].th.some(m=>m.id==='server-accepted'),'old deletion is never sent before the accepted server comment has been saved in the new room');return{deleted:true}}
+      throw new Error('unexpected cloud request '+path)
+    },
+    cloudJoin:async(id,_host,_createdHere,transitionContext)=>{events.push('join-new');ctx.joinContext=transitionContext;ctx.cloudRoom={id,generation:0,expires:Date.now()+60000};ctx.cloudBase=structuredClone(savedBoard);ctx.cloudRev=0;ctx.cloudInflight=null;ctx.cloudPending=false;ctx.cloudCommentLimitBlocked=false;roomRows.set(id,{id,base:structuredClone(savedBoard),rev:0,generation:0,inflight:null,restoreIntent:null})},
+    cloudCheckpoint:async id=>{events.push('checkpoint:'+id);return id==='new-room'?(roomRows.get(id)||{id,base:structuredClone(savedBoard||plan.board),rev:0,expires:Date.now()+60000,generation:0,inflight:null,restoreId:null,restoreIntent:null,updatedAt:1}):roomRows.get(id)||null},
+    cloudCheckpointCanResume,cloudGenerationValue:r=>r?.generation??0,cloudDiff,cloudRebase,normalizeCloudRoomBoard:context.api.normalizeCloudRoomBoard,
+    saveCloudCheckpoint:async(id,baseBoard,rev,expires,inflight,local,restoreId,generation)=>{events.push('checkpoint-write:'+id);roomRows.set(id,{id,base:structuredClone(baseBoard),rev,expires,inflight:structuredClone(inflight),restoreId,generation,updatedAt:Date.now()});return true},
+    saveCloudLocalSnapshot:async(id,nextBoard,updatedAt,generation,transitionContext)=>{if(ctx.cloudTransitionBlocksWrites(id)&&!ctx.cloudTransitionHandoffContextValid(transitionContext,id))return false;snapshotRows.set(id,{id,board:structuredClone(nextBoard),updatedAt,generation});events.push('snapshot-write:'+id);return true},
+    cloudLocalSnapshot:async id=>{events.push('snapshot-readback:'+id);return snapshotRows.get(id)||null},
+    cloudSync:async()=>{},setSyncBadge(){},deleteCloudRoomTransition:async id=>{events.push('clear-transition:'+id)},clearInterval(){},setInterval:()=>1,toast:message=>events.push('toast:'+message),L2:(_tr,en)=>en};
+  const currentBoard=()=>realRestore?{v:2,d:ctx.dark?1:0,p:(ctx.pages||[]).map(p=>({id:p.id,n:p.name,e:structuredClone(p.els)}))}:structuredClone(board);
+  ctx.cloudBoard=()=>currentBoard();
+  if(realRestore){
+    ctx.pages=plan.sourceBoard.p.map(p=>({id:p.id,name:p.n,els:structuredClone(p.e),cam:{x:0,y:0,z:1}}));ctx.pi=0;ctx.els=ctx.pages[0]?.els||[];ctx.cam={x:0,y:0,z:1};ctx.dark=!!plan.sourceBoard.d;ctx.sel=new Set();ctx.hist=[];ctx.hidx=0;ctx.snap=()=>JSON.stringify(ctx.els);ctx.recoverBoardCamera=()=>({x:0,y:0,z:1});ctx.document={body:{classList:{toggle(){}}}};ctx.syncUI=()=>{};ctx.render=()=>{};
+    ctx.save=(roomId='',generation=null,transitionContext=null)=>{const id=roomId||ctx.cloudRoom?.id||'';if(ctx.cloudTransitionBlocksWrites(id)&&!ctx.cloudTransitionHandoffContextValid(transitionContext,id))return false;if(failRestoreOnce&&!restoreWriteFailed){restoreWriteFailed=true;events.push('restore-save-failed:'+id);return false}const b=currentBoard();localStorage.setItem('ghdraw:v2',JSON.stringify({cloudRoomId:id,restoreGeneration:generation,board:b}));snapshotRows.set(id,{id,board:structuredClone(b),generation,updatedAt:Date.now()});events.push('restore-saved:'+id);return true};
+    const restoreStart=html.indexOf('function restoreCloudSnapshot('),restoreEnd=html.indexOf('\nasync function cloudRequest(',restoreStart);assert.ok(restoreStart>=0&&restoreEnd>restoreStart,'missing real restoreCloudSnapshot source');
+    ctx.cloudTransitionHandoffContext=null;ctx.cloudTransitionRollbackContext=null;
+    const leaseRuntime=[sourceLine('cloudTransitionActiveKey'),sourceLine('readCloudTransitionLease'),sourceLine('cloudTransitionActive'),sourceLine('cloudTransitionHandoffContextValid'),sourceLine('cloudTransitionBlocksWrites')].join('\n');
+    ctx.validCloudRestoreId=context.api.validCloudRestoreId;
+    ctx.cloudTransitionActiveKey=undefined;
+    ctx.restoreSource=html.slice(restoreStart,restoreEnd);
+    ctx.realRestoreRuntime=leaseRuntime;
+  }else ctx.restoreCloudSnapshot=({board:next},roomOrContext)=>{const id=typeof roomOrContext==='object'?roomOrContext.destinationRoomId:roomOrContext;events.push('restore:'+id);board=structuredClone(next);return true};
+  if(!realRestore){ctx.validCloudRestoreId=context.api.validCloudRestoreId;ctx.realRestoreRuntime=[sourceLine('cloudTransitionActiveKey'),sourceLine('readCloudTransitionLease'),sourceLine('cloudTransitionActive'),sourceLine('cloudTransitionHandoffContextValid'),sourceLine('cloudTransitionBlocksWrites')].join('\n')}
+  ctx.navigator.locks={request:(_name,_options,task)=>task()};ctx.runCloudRoomLocked=(_id,task)=>{events.push('lock-enter');return Promise.resolve(task()).finally(()=>events.push('lock-exit'))};ctx.cloudRoomGenerationCurrent=()=>true;
+  ctx.cloudTransitionLease=null;ctx.cloudTransitionHandoffContext=null;ctx.cloudTransitionRollbackContext=null;
+  ctx.beginCloudTransition=id=>{events.push('busy-on');const token='lease-token';kv.set('ghdraw:cloudTransitionActive:'+id,JSON.stringify({token,until:Date.now()+30000}));ctx.cloudTransitionLease={id,token};return true};
+  ctx.endCloudTransition=(id,token)=>{events.push('busy-off');if(ctx.cloudTransitionLease?.token===token){kv.delete('ghdraw:cloudTransitionActive:'+id);ctx.cloudTransitionLease=null;ctx.cloudTransitionHandoffContext=null;ctx.cloudTransitionRollbackContext=null}};
+  ctx.saveCloudTransitionReplacement=(oldId,newId,revision)=>{events.push('handoff:'+oldId+':'+newId);kv.set('ghdraw:cloudTransitionReplacement:'+oldId,JSON.stringify({roomId:newId,revision,until:Date.now()+7*86400000}));return true};
   const createStart=html.indexOf('async function cloudStartNewRoom(){'),createEnd=html.indexOf('\n\n/* ---- expiring cloud shares',createStart);assert.ok(createStart>=0&&createEnd>createStart);
-  const createSource=html.slice(html.indexOf('async function cloudCreate(kind,board,stableRequestId=null){'),html.indexOf('\nfunction cloudBoard(',html.indexOf('async function cloudCreate(kind,board,stableRequestId=null){')));
-  vm.runInNewContext(createSource+'\n'+html.slice(createStart,createEnd)+';globalThis.start=cloudStartNewRoom;',ctx);return{ctx,events,payloads,createStarted,releaseCreate(){releaseCreate?.()},get board(){return board},get savedBoard(){return savedBoard},get createCalls(){return createCalls}};
+  const createStartAt=html.indexOf('async function cloudCreate(kind,board,stableRequestId=null){'),createEndAt=html.indexOf('\nfunction cloudBoard(',createStartAt);assert.ok(createStartAt>=0&&createEndAt>createStartAt);
+  const runtime=[ctx.realRestoreRuntime,realRestore?ctx.restoreSource:'',html.slice(createStartAt,createEndAt),html.slice(createStart,createEnd),';globalThis.start=cloudStartNewRoom;'].join('\n');
+  vm.runInNewContext(runtime,ctx);return{ctx,events,payloads,createStarted,releaseCreate(){releaseCreate?.()},snapshots:snapshotRows,roomRows,get board(){return realRestore?currentBoard():board},get savedBoard(){return savedBoard},get createCalls(){return createCalls}};
 }
-
 test('comment-limit transition keeps the accepted comment, preserves outbox, and retries a failed create without loss',async()=>{
   const serverBoard=structuredClone(base);serverBoard.p[0].e[0].th.push({id:'server-accepted',t:'accepted before conflict'});
   const draft=structuredClone(base);draft.p[0].e[0].th.push({id:'client-pending',t:'pending comment'});
@@ -631,12 +666,34 @@ test('comment-limit transition keeps the accepted comment, preserves outbox, and
 test('a clean old room is deleted only after the new room checkpoint is verified',async()=>{
   const serverBoard=structuredClone(base);serverBoard.p[0].e[0].th.push({id:'server-accepted',t:'latest'});
   const plan={oldRoomId:'old-room',requestId:'ab'.repeat(16),board:serverBoard,sourceBoard:structuredClone(base),serverRev:4,unresolved:false,hasUntransferable:false,generation:0,expires:Date.now()+60000,oldOwner:'old-owner',oldRoom:{id:'old-room',generation:0,expires:Date.now()+60000}};
-  const h=makeRoomStartHarness(plan);assert.equal(await h.ctx.start(),true,JSON.stringify(h.events));
-  const deleteIndex=h.events.indexOf('delete-old'),lastCheckpoint=h.events.lastIndexOf('checkpoint:new-room');
-  assert.ok(deleteIndex>=0&&lastCheckpoint>=0&&deleteIndex>lastCheckpoint,JSON.stringify(h.events));
+  const h=makeRoomStartHarness(plan,{realRestore:true});assert.equal(await h.ctx.start(),true,JSON.stringify(h.events));
+  const deleteIndex=h.events.indexOf('delete-old'),lastCheckpoint=h.events.lastIndexOf('checkpoint:new-room'),snapshotReadback=h.events.lastIndexOf('snapshot-readback:new-room');
+  assert.equal(h.ctx.cloudRoom.id,'new-room','the replacement becomes the active room after the real restore');assert.equal(h.ctx.joinContext.destinationRoomId,'new-room');
+  assert.ok(deleteIndex>=0&&lastCheckpoint>=0&&snapshotReadback>=0&&deleteIndex>lastCheckpoint&&deleteIndex>snapshotReadback,JSON.stringify(h.events));
+  assert.equal(h.ctx.deleteBody.expectedRev,plan.serverRev,'source deletion uses the exact source revision captured before handoff');
+  assert.deepEqual(h.snapshots.get('new-room').board,plan.board,'the real restore persisted the verified board snapshot in the destination IndexedDB row');
+  assert.equal(JSON.parse(h.ctx.localStorage.getItem('ghdraw:v2')).cloudRoomId,'new-room','the local restore record points at the destination room');
   assert.ok(h.events.indexOf('lock-enter')<h.events.indexOf('create-request')&&h.events.indexOf('lock-exit')>deleteIndex,'one cross-tab lock covers creation through old-room deletion');
   assert.ok(h.events.indexOf('clear-transition:old-room')>deleteIndex,'the durable transition guard is cleared only after deletion');
   assert.ok(h.savedBoard.p[0].e[0].th.some(m=>m.id==='server-accepted'));
+});
+
+test('real destination restore failure preserves the source outbox and safely retries the same handoff',async()=>{
+  const serverBoard=structuredClone(base);serverBoard.p[0].e[0].th.push({id:'server-accepted',t:'accepted before conflict'});
+  const draft=structuredClone(base);draft.p[0].e[0].th.push({id:'client-pending',t:'pending comment'});
+  const plan={oldRoomId:'old-room',requestId:'f1'.repeat(16),board:structuredClone(serverBoard),sourceBoard:structuredClone(draft),serverRev:7,unresolved:true,hasUntransferable:false,generation:0,expires:Date.now()+60000,oldOwner:'old-owner',oldRoom:{id:'old-room',generation:0,expires:Date.now()+60000}};
+  plan.board.p[0].e[0].th.push({id:'client-pending',t:'pending comment'});
+  const h=makeRoomStartHarness(plan,{realRestore:true,failRestoreOnce:true}),initialOutbox=structuredClone(h.roomRows.get('old-room').inflight);
+  h.ctx.localStorage.setItem('ghdraw:v2',JSON.stringify({cloudRoomId:'old-room',restoreGeneration:0,board:draft}));
+  assert.equal(await h.ctx.start(),false,'a failed local save/readback aborts the new-room handoff');
+  assert.equal(h.ctx.cloudRoom.id,'old-room');assert.deepEqual(json(h.board),json(draft),'restoreCloudSnapshot rolls back its in-memory board when the destination save fails');
+  assert.equal(JSON.parse(h.ctx.localStorage.getItem('ghdraw:v2')).cloudRoomId,'old-room');assert.deepEqual(h.roomRows.get('old-room').inflight,initialOutbox,'the source IndexedDB outbox remains durable');assert.equal(h.events.includes('delete-old'),false);
+  assert.equal(await h.ctx.start(),true,JSON.stringify(h.events));
+  assert.deepEqual(h.payloads.map(item=>item.requestId),[plan.requestId,plan.requestId],'retry reuses the persisted transition request ID');
+  assert.equal(h.ctx.cloudRoom.id,'new-room');assert.ok(h.events.includes('snapshot-readback:new-room'),'destination IndexedDB snapshot is read back before the handoff is accepted');
+  assert.deepEqual(h.roomRows.get('old-room').inflight,initialOutbox,'unresolved source outbox is preserved after a successful replacement join');
+  assert.equal(h.events.includes('delete-old'),false,'an unresolved source operation prevents destructive cleanup');
+  assert.deepEqual(h.snapshots.get('new-room').board,plan.board);
 });
 
 test('a concurrent collaborator revision keeps the old room open after a successful new-room copy',async()=>{
