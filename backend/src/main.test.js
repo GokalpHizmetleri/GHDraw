@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import {Client,Query,TablesDB} from 'node-appwrite';
-import {BOARD_COORD_LIMIT,BOARD_POINT_LIMIT,CLEANUP_PAGE_BUDGET,CLEANUP_ROW_BUDGET,CLEANUP_SPECIAL_ROW_BUDGET,CLEANUP_TIME_BUDGET_MS,createAppwriteDb,createHandler,ROOM_OP_RECEIPT_LIMIT} from './main.js';
+import {BOARD_COORD_LIMIT,BOARD_POINT_LIMIT,CLEANUP_PAGE_BUDGET,CLEANUP_ROW_BUDGET,CLEANUP_SPECIAL_ROW_BUDGET,CLEANUP_TIME_BUDGET_MS,createAppwriteDb,createHandler,LIVE_CHAT_MESSAGE_LIMIT,LIVE_REQUEST_MAX_BYTES,LIVE_RESPONSE_MAX_BYTES,LIVE_ROOM_PEER_LIMIT,LIVE_ROOM_REQUESTS_PER_SECOND,LIVE_ROW_MAX_BYTES,ROOM_OP_RECEIPT_LIMIT} from './main.js';
 import BoardElementContract from '../shared/board-element-contract.js';
 
 const Q={limit:n=>`limit:${n}`,orderAsc:key=>`orderAsc:${key}`,cursorAfter:id=>`cursorAfter:${id}`,select:fields=>`select:${fields.join(',')}`,equal:(key,values)=>`equal:${key}:${JSON.stringify(Array.isArray(values)?values:[values])}`,lessThanEqual:(key,value)=>`lessThanEqual:${key}:${value}`};
@@ -317,7 +317,36 @@ test('live presence and anonymous chat are stored in private side rows',async()=
  const fx=fixture(),created=await createShare(fx,'room');
  const first=await fx.call({method:'POST',path:`/live/${created.id}`,body:{cid:'client01',n:'A',c:'#123456',x:10,y:20}});assert.equal(first.status,200);assert.deepEqual(first.body.peers,[]);
  const second=await fx.call({method:'POST',path:`/live/${created.id}`,body:{cid:'client02',n:'B',msg:'hello',after:0}});assert.equal(second.status,200);assert.equal(second.body.peers.length,1);assert.equal(second.body.chat[0].m,'hello');
- const liveRow=fx.db.rows.get('p'+created.id.slice(0,31));assert.ok(liveRow);assert.deepEqual(liveRow.$permissions,[]);
+ const liveRow=fx.db.rows.get('p'+created.id.slice(0,31));assert.ok(liveRow);assert.deepEqual(liveRow.$permissions,[]);assert.ok(Buffer.byteLength(liveRow.payload)<=LIVE_ROW_MAX_BYTES);assert.ok(Buffer.byteLength(JSON.stringify(second.body))<=LIVE_RESPONSE_MAX_BYTES);
+});
+
+test('live presence caps active peers, allows same-peer refresh, and reclaims expired slots',async()=>{
+ let now=Date.now();const fx=fixture({clock:()=>now}),created=await createShare(fx,'room'),path=`/live/${created.id}`,send=cid=>fx.call({method:'POST',path,body:{cid}});
+ for(let i=0;i<LIVE_ROOM_PEER_LIMIT;i++)assert.equal((await send(`client${String(i).padStart(2,'0')}`)).status,200);
+ const rowId='p'+created.id.slice(0,31),row=fx.db.rows.get(rowId),beforeRejected=row.payload,data=JSON.parse(row.payload);assert.equal(Object.keys(data.presence).length,LIVE_ROOM_PEER_LIMIT);
+ const refreshed=await send('client00');assert.equal(refreshed.status,200);assert.equal(Object.keys(JSON.parse(fx.db.rows.get(rowId).payload).presence).length,LIVE_ROOM_PEER_LIMIT,'refreshing a peer does not consume another slot');
+ const beforeFull=fx.db.rows.get(rowId).payload,rejected=await send('newclient');assert.equal(rejected.status,409);assert.equal(rejected.body.error,'live_peer_limit');assert.equal(fx.db.rows.get(rowId).payload,beforeFull,'capacity rejection rolls back without touching the side row');assert.notEqual(beforeRejected,beforeFull,'the same-peer refresh was accepted');
+ now+=15_001;const reclaimed=await send('newclient');assert.equal(reclaimed.status,200);assert.deepEqual(reclaimed.body.peers,[]);const after=JSON.parse(fx.db.rows.get(rowId).payload);assert.deepEqual(Object.keys(after.presence),['newclient'],'expired peers are pruned before a new peer is admitted');assert.ok(Buffer.byteLength(JSON.stringify(reclaimed.body))<=LIVE_RESPONSE_MAX_BYTES);
+});
+
+test('parallel live presence joins cannot exceed the per-room peer cap',async()=>{
+ const fx=fixture(),created=await createShare(fx,'room'),path=`/live/${created.id}`;
+ const responses=await Promise.all(Array.from({length:LIVE_ROOM_PEER_LIMIT+8},(_,i)=>fx.call({method:'POST',path,body:{cid:`parallel${String(i).padStart(2,'0')}`}})));
+ assert.ok(responses.some(response=>response.status===200));assert.ok(responses.every(response=>[200,409,429].includes(response.status)),JSON.stringify(responses.map(response=>({status:response.status,body:response.body}))));
+ const data=JSON.parse(fx.db.rows.get('p'+created.id.slice(0,31)).payload);assert.ok(Object.keys(data.presence).length<=LIVE_ROOM_PEER_LIMIT,'concurrent transactions never store more than the hard cap');
+});
+
+test('live presence rejects oversized requests and chat messages without mutation',async()=>{
+ const fx=fixture(),created=await createShare(fx,'room'),path=`/live/${created.id}`,rowId='p'+created.id.slice(0,31);
+ const longMessage=await fx.call({method:'POST',path,body:{cid:'oversize1',msg:'x'.repeat(LIVE_CHAT_MESSAGE_LIMIT+1)}});assert.equal(longMessage.status,413);assert.equal(longMessage.body.error,'live_payload_limit');assert.equal(fx.db.rows.has(rowId),false);
+ const largeBody=await fx.call({method:'POST',path,body:{cid:'oversize1'},bodyText:'x'.repeat(LIVE_REQUEST_MAX_BYTES+1)});assert.equal(largeBody.status,413);assert.equal(largeBody.body.error,'live_payload_limit');assert.equal(fx.db.rows.has(rowId),false,'raw oversized input is rejected before any row is created');
+});
+
+test('live presence applies an atomic per-room rate limit and resets the next window',async()=>{
+ let now=Date.now();const fx=fixture({clock:()=>now}),created=await createShare(fx,'room'),path=`/live/${created.id}`,send=()=>fx.call({method:'POST',path,body:{cid:'rateclient'}});
+ for(let i=0;i<LIVE_ROOM_REQUESTS_PER_SECOND;i++)assert.equal((await send()).status,200);
+ const rowId='p'+created.id.slice(0,31),before=fx.db.rows.get(rowId).payload,limited=await send();assert.equal(limited.status,429);assert.equal(limited.body.error,'live_rate_limit');assert.equal(fx.db.rows.get(rowId).payload,before,'rate-limit rejection does not mutate the row');
+ now+=1_000;assert.equal((await send()).status,200,'a new window allows normal presence refreshes');
 });
 
 test('history endpoint exports a version and restores it without losing revision semantics',async()=>{
@@ -340,6 +369,13 @@ test('history restore receipt quota rejection leaves the board and revision unch
  const quotaRow=fx.db.rows.get(roomQuotaRowId(created.id)),quota=JSON.parse(quotaRow.payload);quota.count=ROOM_OP_RECEIPT_LIMIT;quota.receiptIds=Array.from({length:ROOM_OP_RECEIPT_LIMIT},(_,i)=>'o'+i.toString(16).padStart(31,'0'));quotaRow.payload=JSON.stringify(quota);
  const before=JSON.parse(fx.db.rows.get(created.id).payload),result=await fx.call({method:'POST',path:`/hist/${created.id}`,body:{op:'restore',ts:versions[0].ts,restoreId:'a'.repeat(32)}});
  assert.equal(result.status,409);assert.equal(result.body.error,'room_receipt_limit');assert.deepEqual(JSON.parse(fx.db.rows.get(created.id).payload),before);assert.equal(fx.db.rows.has('h'+created.id.slice(0,31)),true);assert.equal(fx.db.rows.has(quota.receiptIds[0]),false,'no receipt is silently pruned or fabricated');
+});
+
+test('a restore quota 409 during transactional recheck does not mutate room or history rows',async()=>{
+ const fx=fixture(),created=await createShare(fx,'room');await fx.call({method:'POST',path:`/hist/${created.id}`,body:{op:'save'}});const version=(await fx.call({method:'POST',path:`/hist/${created.id}`,body:{op:'list'}})).body.versions[0],historyId='h'+created.id.slice(0,31),quotaId=roomQuotaRowId(created.id),roomRow=fx.db.rows.get(created.id),roomData=JSON.parse(roomRow.payload);roomData.board.p[0].e[0].text='current board not yet in history';roomRow.payload=JSON.stringify(roomData);
+ const historyBefore=fx.db.rows.get(historyId).payload,boardBefore=roomRow.payload,originalGetRow=fx.db.getRow.bind(fx.db);let replacedQuota=false;
+ fx.db.getRow=async args=>{const result=await originalGetRow(args);if(args.rowId===quotaId&&!args.transactionId&&!replacedQuota){replacedQuota=true;const row=fx.db.rows.get(quotaId),quota=JSON.parse(row.payload);quota.count=ROOM_OP_RECEIPT_LIMIT;quota.receiptIds=Array.from({length:ROOM_OP_RECEIPT_LIMIT},(_,i)=>'o'+(i+100).toString(16).padStart(31,'0'));row.payload=JSON.stringify(quota)}return result};
+ const rejected=await fx.call({method:'POST',path:`/hist/${created.id}`,body:{op:'restore',ts:version.ts,restoreId:'e'.repeat(32)}});assert.equal(rejected.status,409);assert.equal(rejected.body.error,'room_receipt_limit');assert.equal(replacedQuota,true);assert.equal(fx.db.rows.get(created.id).payload,boardBefore,'the room board is unchanged');assert.equal(fx.db.rows.get(historyId).payload,historyBefore,'the pre-restore snapshot is not written before quota revalidation');
 });
 
 test('history restore duplicate ACK survives the receipt cap while new restore IDs are rejected',async()=>{

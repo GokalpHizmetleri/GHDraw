@@ -8,6 +8,8 @@ const DB='ghdraw',TABLE='boards',MAX=12*1024*1024,PAGE_SIZE=100,CREATE_LOCK_SEED
 export const ROOM_OP_RECEIPT_LIMIT=9_400;
 export const BOARD_COORD_LIMIT=BoardElementContract.COORD_LIMIT,BOARD_POINT_LIMIT=BoardElementContract.POINT_LIMIT;
 export const CLEANUP_ROW_BUDGET=1_000,CLEANUP_SPECIAL_ROW_BUDGET=25,CLEANUP_PAGE_BUDGET=10,CLEANUP_TIME_BUDGET_MS=20_000;
+export const LIVE_ROOM_PEER_LIMIT=32,LIVE_ROOM_REQUESTS_PER_SECOND=40,LIVE_REQUEST_MAX_BYTES=8*1024,LIVE_ROW_MAX_BYTES=384*1024,LIVE_RESPONSE_MAX_BYTES=320*1024,LIVE_CHAT_MESSAGE_LIMIT=500,LIVE_CHAT_LIMIT=100;
+const LIVE_PEER_TTL_MS=15_000,LIVE_PEER_VISIBLE_MS=12_000,LIVE_RATE_WINDOW_MS=1_000;
 const validId=x=>typeof x==='string'&&x.length>0&&x.length<=128;
 const validElementId=x=>typeof x==='string'&&x.length>0&&x.length<=BoardElementContract.MAX_ELEMENT_ID_LENGTH;
 const validElement=BoardElementContract.validElement;
@@ -159,26 +161,43 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
    if(req.method==='POST'&&req.path==='/ai'){const db=await getDb(),r=await handleAI(req,db,env.GROQ_API_KEY,fetcher);return reply(r.body,r.status)}
    if(req.method==='GET'&&['view','room'].includes(path[0])){const d=await read(id);if(d.kind!==path[0])throw {code:404};const {owner,ops,createReceiptId,...publicData}=d;return reply(path[0]==='room'?{...publicData,syncProtocol:'room-ops-v1'}:publicData)}
    if(req.method==='POST'&&path[0]==='live'){
-    // Presence and chat live in one small side row per room; same expiry as the room.
-    const db=await getDb(),room=await read(id);if(room.kind!=='room')throw {code:404};
+    // One bounded, private side row per room; transactionally cap active peers and writes.
+    const bodyText=typeof req.bodyText==='string'?req.bodyText:JSON.stringify(req.bodyJson||{});
+    if(Buffer.byteLength(bodyText)>LIVE_REQUEST_MAX_BYTES)return reply({error:'live_payload_limit',message:'Presence request exceeds 8 KiB.'},413);
     const b=req.bodyJson||{};if(typeof b.cid!=='string'||!/^[a-z0-9]{6,24}$/.test(b.cid))throw {code:400};
-    const pid='p'+id.slice(0,31),now=Date.now();
+    if(typeof b.msg==='string'&&b.msg.length>LIVE_CHAT_MESSAGE_LIMIT)return reply({error:'live_payload_limit',message:'Chat message exceeds 500 characters.'},413);
+    const db=await getDb(),room=await read(id);if(room.kind!=='room')throw {code:404};
+    const pid='p'+id.slice(0,31),now=clock();
     const num=v=>typeof v==='number'&&isFinite(v)&&Math.abs(v)<1e7?v:null;
     const me={n:String(b.n||'?').slice(0,20),c:/^#[0-9a-fA-F]{6}$/.test(b.c||'')?b.c:'#6965db',x:num(b.x),y:num(b.y),pg:typeof b.pg==='string'?b.pg.slice(0,128):'',ts:now};
-    const msg=typeof b.msg==='string'?b.msg.trim().slice(0,500):'';const after=num(b.after)||0;
+    const msg=typeof b.msg==='string'?b.msg.trim().slice(0,LIVE_CHAT_MESSAGE_LIMIT):'';
+    const after=Number.isSafeInteger(b.after)&&b.after>=0?b.after:0;
     for(let attempt=0;attempt<4;attempt++){
      const tx=await db.createTransaction({ttl:60});
      try{
       let data,exists=true;
       try{const row=await db.getRow({databaseId:DB,tableId:TABLE,rowId:pid,transactionId:tx.$id});data=JSON.parse(row.payload)}catch(e){if(e.code!==404)throw e;exists=false;data={kind:'live',expires:room.expires,presence:{},chat:[]}}
-      data.presence[b.cid]=me;for(const k of Object.keys(data.presence))if(data.presence[k].ts<now-15000)delete data.presence[k];
-      if(msg){data.chat.push({id:randomBytes(6).toString('hex'),cid:b.cid,n:me.n,c:me.c,m:msg,ts:now});data.chat=data.chat.slice(-100)}
-      const args={databaseId:DB,tableId:TABLE,rowId:pid,data:rowData(data),transactionId:tx.$id};
+      if(data.kind!=='live'||!data.presence||typeof data.presence!=='object'||Array.isArray(data.presence)||!Array.isArray(data.chat)){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'live_data_invalid'},409)}
+      for(const [peerId,peer] of Object.entries(data.presence))if(!/^[a-z0-9]{6,24}$/.test(peerId)||!peer||!Number.isSafeInteger(peer.ts)||peer.ts<now-LIVE_PEER_TTL_MS)delete data.presence[peerId];
+      const activeCount=Object.keys(data.presence).length,alreadyPresent=Object.prototype.hasOwnProperty.call(data.presence,b.cid);
+      if(activeCount>LIVE_ROOM_PEER_LIMIT||!alreadyPresent&&activeCount>=LIVE_ROOM_PEER_LIMIT){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'live_peer_limit',message:'This room reached its 32 active-peer limit.'},409)}
+      const rateWindow=Math.floor(now/LIVE_RATE_WINDOW_MS)*LIVE_RATE_WINDOW_MS;
+      if(data.rateWindow!==rateWindow){data.rateWindow=rateWindow;data.rateCount=0}
+      if(!Number.isSafeInteger(data.rateCount)||data.rateCount<0)data.rateCount=0;
+      if(data.rateCount>=LIVE_ROOM_REQUESTS_PER_SECOND){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'live_rate_limit',message:'This room reached its 40-requests-per-second limit.'},429)}
+      data.rateCount++;
+      data.presence[b.cid]=me;
+      if(msg)data.chat.push({id:randomBytes(6).toString('hex'),cid:b.cid,n:me.n,c:me.c,m:msg,ts:now});
+      data.chat=data.chat.slice(-LIVE_CHAT_LIMIT);
+      const peers=Object.entries(data.presence).filter(([k,v])=>k!==b.cid&&v.ts>=now-LIVE_PEER_VISIBLE_MS).map(([k,v])=>({cid:k,...v}));
+      const response={peers,chat:data.chat.filter(m=>m.ts>after),now},stored=rowData(data);
+      if(Buffer.byteLength(stored.payload)>LIVE_ROW_MAX_BYTES){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'live_payload_limit',message:'Presence data exceeds its storage limit.'},413)}
+      if(Buffer.byteLength(JSON.stringify(response))>LIVE_RESPONSE_MAX_BYTES){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'live_response_limit'},409)}
+      const args={databaseId:DB,tableId:TABLE,rowId:pid,data:stored,transactionId:tx.$id};
       if(exists)await db.updateRow(args);else await db.createRow({...args,permissions:[]});
       await db.updateTransaction({transactionId:tx.$id,commit:true});
-      const peers=Object.entries(data.presence).filter(([k,v])=>k!==b.cid&&v.ts>=now-12000).map(([k,v])=>({cid:k,...v}));
-      return reply({peers,chat:data.chat.filter(m=>m.ts>after),now});
-     }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});if(e.code!==409||attempt===3)throw e}
+      return reply(response);
+     }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});if(e.code===409&&attempt===3)return reply({error:'live_contention',message:'Presence changed concurrently; retry shortly.'},409);if(e.code!==409)throw e}
     }
    }
    if(req.method==='POST'&&path[0]==='hist'){
@@ -207,13 +226,13 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
       const receiptIds=quota.receiptIds;
       if(quota.kind!=='room-op-quota'||quota.roomId!==id||!Number.isSafeInteger(quota.count)||quota.count<0||!Array.isArray(receiptIds)||receiptIds.length!==quota.count||receiptIds.some(x=>typeof x!=='string'||!/^o[a-f0-9]{31}$/.test(x))||new Set(receiptIds).size!==receiptIds.length)return reply({error:'room_receipt_limit',message:'This room has no complete safe receipt ledger. Create a new room to continue.'},409);
       if(quota.count>=ROOM_OP_RECEIPT_LIMIT)return reply({error:'room_receipt_limit',message:'This room reached its 9,400-operation receipt limit. Create a new room to continue; existing receipts are retained for safe retries.'},409);
-      await histSnap(db,id,current.board,current.expires,true);
       for(let attempt=0;attempt<4;attempt++){
        const tx=await db.createTransaction({ttl:60});
        try{
         const d=await read(id,tx.$id),q=JSON.parse((await db.getRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id),transactionId:tx.$id})).payload),ids=q.receiptIds;
         if(q.kind!=='room-op-quota'||q.roomId!==id||!Number.isSafeInteger(q.count)||q.count<0||!Array.isArray(ids)||ids.length!==q.count||ids.some(x=>typeof x!=='string'||!/^o[a-f0-9]{31}$/.test(x))||new Set(ids).size!==ids.length){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_limit',message:'This room has no complete safe receipt ledger. Create a new room to continue.'},409)}
         if(q.count>=ROOM_OP_RECEIPT_LIMIT){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_limit',message:'This room reached its 9,400-operation receipt limit. Create a new room to continue; existing receipts are retained for safe retries.'},409)}
+        await histSnap(db,id,d.board,d.expires,true);
         d.board=board;d.rev=(Number.isSafeInteger(d.rev)?d.rev:0)+1;const nextQuota={...q,count:q.count+1,receiptIds:[...ids,receiptId]},receipt={kind:'history-restore-receipt',roomId:id,restoreId:b.restoreId,ts:b.ts,expires:d.expires};
         await db.updateRow({databaseId:DB,tableId:TABLE,rowId:id,data:rowData(d),transactionId:tx.$id});
         await db.updateRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id),data:rowData(nextQuota),transactionId:tx.$id});

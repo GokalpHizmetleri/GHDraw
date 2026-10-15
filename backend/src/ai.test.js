@@ -19,6 +19,7 @@ const req={bodyJson:{op:'correct',text:'hello'},headers:{'x-appwrite-client-ip':
 assert.equal((await handleAI(req,new DB(),'')).status,503);
 assert.equal((await handleAI({...req,bodyJson:{...req.bodyJson,text:'x'.repeat(2001)}},new DB(),'key')).status,400);
 assert.equal((await handleAI({...req,bodyJson:{op:'translate',text:'hello',language:'invalid'}},new DB(),'key')).status,400);
+const obsoleteTranslationDb=new DB();assert.equal((await handleAI({...req,bodyJson:{op:'translate',text:'hello',language:'en'}},obsoleteTranslationDb,'key')).status,400);assert.equal(obsoleteTranslationDb.rows.size,0,'removed translation requests are rejected before quota reservation');
 assert.equal((await handleAI({...req,headers:{}},new DB(),'key')).status,400);
 let called=0;const mock=async(u,o)=>{called++;assert.equal(u,'https://api.groq.com/openai/v1/chat/completions');assert.equal(JSON.parse(o.body).messages[1].content,'hello');return {ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:'Hello.'}}]})}};
 const aiRows=new DB();assert.deepEqual(await handleAI(req,aiRows,'key',mock),{status:200,body:{text:'Hello.'}});assert.equal(called,1);assert.deepEqual([...aiRows.rows.keys()].sort(),['ai-global',`ai-${(await import('node:crypto')).createHmac('sha256','key').update('other').digest('hex').slice(0,24)}`].sort());assert.ok(aiRows.permissions.every(p=>Array.isArray(p)&&p.length===0));
