@@ -38,16 +38,17 @@ The cleanup uses a bounded `expiresAt <= cutoff` query ordered ascending. If tha
 - The private quota row indexes operation/history receipt IDs (`o…`) and durable chat receipt IDs (`j…`); `chatCount` includes every send, while `chatReceiptIds` lists every chat send that created a durable deduplication receipt. Do not remove an ID or alter the counts to make a deletion pass.
 - The live chat response retains only the latest 100 messages, independently of the receipt ledger. Do not prune a receipt to make room: it is needed to deduplicate a delayed retry. Expired chat receipts and the shared quota row are reclaimed by the existing indexed, paginated cleanup (`CLEANUP_ROW_BUDGET` bounds rows per run; the scheduler continues on later runs). The 9,400 total ceiling also preserves the worst-case owner-delete policy of at most 94 bulk deletes of 100 combined `o…`/`j…` receipt rows, plus up to five fixed rows, within the 100-operation transaction budget.
 
-## Legacy or migrated room ledger preflight
+## No legacy data migration
 
-- This rollout targets a **new, blank production `boards` table** and a separate `boards-test` table; it does not migrate old room data. Before routing production clients to this Function, verify `boards` contains no room rows. If any rows exist, keep routing disabled until every room has been inventoried and its private `q<first-31-room-id-chars>` row has been backfilled and independently verified.
-- A valid ledger must identify the same room, contain unique correctly prefixed operation IDs in `receiptIds` and durable chat IDs in `chatReceiptIds`, have safe integer counts within 0–9,400, satisfy `count = receiptIds.length + chatCount`, and satisfy `chatReceiptIds.length <= chatCount`. Backfill must include every extant room-associated operation and chat receipt; never guess missing IDs or infer a complete ledger from the room payload alone.
-- The backend rejects missing/incomplete ledgers for room writes, chat sends, and owner deletion. Keep that fail-closed behavior; do not enable a legacy room by bypassing the guard. If the table cannot be proven blank or every ledger cannot be verified, stop the rollout rather than serving the affected room.
+- This rollout targets a new, blank production `boards` table and a separate `boards-test` table. Do not access the old Appwrite project, migrate room data, backfill ledgers, or modify unexpected rows.
+- If either table contains any unexpected row before smoke testing, stop and keep routing disabled; do not delete, backfill, migrate, or otherwise alter it. Recheck the exact project/database/table identity and resolve the discrepancy before proceeding.
+- The only pre-routing production data permitted is one explicitly disposable, already-expired cleanup fixture on the new `boards` table, created solely to verify the scheduled production cleanup. Confirm that an actual Schedule execution of the exact production deployment deletes it and that `boards` is empty again before routing. Never use real user data.
+- The backend intentionally rejects legacy room rows without a complete receipt ledger. Do not bypass that guard; this rollout does not provide a migration path.
 
 ## Scope and verification
 
 - This checklist is a deployment prerequisite, not proof that a live Appwrite index currently exists.
 - Verify the selected project/database/table in the Console each time; do not infer index state from source code, an old schema note, or the other environment's table.
 - Do not create a second Function for cleanup. Use the existing GHDraw Function and keep its timeout below the backend lock lease as documented in the project README.
-- Keep database and row permissions private. Do not use real user board data for cleanup smoke tests. Disposable smoke-test rows belong only in `boards-test`; production `boards` must remain empty before routing.
+- Keep database and row permissions private. Do not use real user board data for cleanup smoke tests. Functional smoke-test rows belong only in `boards-test`; the one production cleanup fixture must be expired, deleted by the scheduled run, and absent before routing.
 - When packaging the Function from `backend/`, include `shared/package.json` and `shared/board-element-contract.js`; `src/main.js` imports this nested CommonJS module, and the browser loads the same versioned contract from `/backend/shared/board-element-contract.js`.

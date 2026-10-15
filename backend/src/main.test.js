@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import vm from 'node:vm';
 import {Client,Query,TablesDB} from 'node-appwrite';
-import {BOARD_COORD_LIMIT,BOARD_POINT_LIMIT,CLEANUP_PAGE_BUDGET,CLEANUP_ROW_BUDGET,CLEANUP_SPECIAL_ROW_BUDGET,CLEANUP_TIME_BUDGET_MS,bindTargetTable,createAppwriteDb,createHandler,LIVE_CHAT_MESSAGE_LIMIT,LIVE_CHAT_RECEIPT_LIMIT,LIVE_REQUEST_MAX_BYTES,LIVE_RESPONSE_MAX_BYTES,LIVE_ROOM_PEER_LIMIT,LIVE_ROOM_REQUESTS_PER_SECOND,LIVE_ROW_MAX_BYTES,ROOM_OP_RECEIPT_LIMIT} from './main.js';
+import {BOARD_COORD_LIMIT,BOARD_POINT_LIMIT,CLEANUP_PAGE_BUDGET,CLEANUP_ROW_BUDGET,CLEANUP_SPECIAL_ROW_BUDGET,CLEANUP_TIME_BUDGET_MS,bindTargetTable,createAppwriteDb,createHandler,LIVE_CHAT_MESSAGE_LIMIT,LIVE_CHAT_RECEIPT_LIMIT,LIVE_REQUEST_MAX_BYTES,LIVE_RESPONSE_MAX_BYTES,LIVE_ROOM_PEER_LIMIT,LIVE_ROOM_REQUESTS_PER_SECOND,LIVE_ROW_MAX_BYTES,ROOM_OP_RECEIPT_LIMIT,TABLE_ROW_METHODS} from './main.js';
 import BoardElementContract from '../shared/board-element-contract.js';
 import {APPWRITE_DATABASE_ID,APPWRITE_PROJECT_ID,PRODUCTION_TABLE_ID,resolveFunctionTableTarget,TEST_FUNCTION_ID,TEST_TABLE_ID} from './targets.js';
 
@@ -15,6 +15,20 @@ const board=()=>({p:[{id:'page-1',n:'Page 1',e:[{id:'shape-1',type:'rect',x:0,y:
 const rowData=data=>({payload:JSON.stringify(data),expiresAt:new Date(data.expires).toISOString()});
 const lockRow=(id,leaseId,expires)=>[id,{$id:id,...rowData({kind:'lock',leaseId,ts:expires-60000,expires}),$permissions:[]}];
 const err=code=>Object.assign(new Error('mock database error'),{code});
+
+test('every installed TablesDB row API is target-bound and non-allowlisted operations fail closed',async()=>{
+ const sdkRowMethods=Object.getOwnPropertyNames(TablesDB.prototype).filter(name=>/(?:Row|Rows)$/.test(name)||/(?:increment|decrement)RowColumn$/.test(name));
+ assert.deepEqual([...TABLE_ROW_METHODS].sort(),sdkRowMethods.sort());
+ const calls=[],rawDb=Object.create(null);
+ for(const method of [...TABLE_ROW_METHODS,'createTransaction','updateTransaction'])rawDb[method]=function(args){calls.push({method,args,thisIsRaw:this===rawDb});return true};
+ const scoped=bindTargetTable(rawDb,resolveFunctionTableTarget(TEST_ENV));
+ assert.strictEqual(await scoped,scoped);
+ for(const method of TABLE_ROW_METHODS)await scoped[method]({databaseId:'wrong-database',tableId:PRODUCTION_TABLE_ID,rowId:'test-row'});
+ assert.equal(calls.length,TABLE_ROW_METHODS.length);assert.ok(calls.every(call=>call.thisIsRaw&&call.args.databaseId===DB&&call.args.tableId===TABLE));
+ await scoped.createTransaction({ttl:60});await scoped.updateTransaction({transactionId:'tx-test',commit:true});
+ assert.deepEqual(calls.slice(-2).map(call=>call.args),[{ttl:60},{transactionId:'tx-test',commit:true}]);
+ assert.throws(()=>scoped.createTable,/not allowed by the target binding/);
+});
 
 test('installed Node SDK sends row and cursor query calls to TablesDB endpoints',async()=>{
  const client=new Client().setEndpoint('https://fra.cloud.appwrite.io/v1').setProject(APPWRITE_PROJECT_ID).setKey('ephemeral-test-key'),calls=[];

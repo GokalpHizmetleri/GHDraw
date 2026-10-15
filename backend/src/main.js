@@ -6,10 +6,11 @@ import {applyRoomUpdate,validOpId} from './room-sync.js';
 import BoardElementContract from '../shared/board-element-contract.js';
 import {resolveFunctionTableTarget} from './targets.js';
 const MAX=12*1024*1024,PAGE_SIZE=100,CREATE_LOCK_SEED='00000000000000000000000000000000',LOCK_LEASE_MS=60000;
-const TABLE_METHODS=new Set(['createRow','getRow','updateRow','deleteRow','deleteRows','listRows']);
+export const TABLE_ROW_METHODS=Object.freeze(['createRow','createRows','getRow','listRows','updateRow','updateRows','upsertRow','upsertRows','deleteRow','deleteRows','incrementRowColumn','decrementRowColumn']);
+const TABLE_METHODS=new Set(TABLE_ROW_METHODS),TRANSACTION_METHODS=new Set(['createTransaction','updateTransaction']);
 export function bindTargetTable(db,target){
  if(!target||typeof target.databaseId!=='string'||typeof target.tableId!=='string')throw new TypeError('A validated Appwrite table target is required');
- return new Proxy(db,{get(object,property){const method=Reflect.get(object,property,object);if(TABLE_METHODS.has(property)&&typeof method==='function')return args=>method.call(object,{...args,databaseId:target.databaseId,tableId:target.tableId});return typeof method==='function'?method.bind(object):method}});
+ return new Proxy(db,{get(object,property){if(property==='then')return undefined;if(TABLE_METHODS.has(property)){const method=Reflect.get(object,property,object);if(typeof method!=='function')throw new TypeError(`TablesDB row method ${String(property)} is unavailable`);return args=>method.call(object,{...args,databaseId:target.databaseId,tableId:target.tableId})}if(TRANSACTION_METHODS.has(property)){const method=Reflect.get(object,property,object);if(typeof method!=='function')throw new TypeError(`TablesDB transaction method ${String(property)} is unavailable`);return method.bind(object)}throw new TypeError(`TablesDB operation ${String(property)} is not allowed by the target binding`)} });
 }
 // Shared Free-plan per-room receipt budget: board operations, history restores and chat sends.
 export const ROOM_OP_RECEIPT_LIMIT=9_400,LIVE_CHAT_RECEIPT_LIMIT=ROOM_OP_RECEIPT_LIMIT;
