@@ -38,3 +38,14 @@ test('stale base revision rebases onto latest board and preserves other client e
   assert.ok(d.board.p[0].e.some(e=>e.id==='peer-shape'));
   assert.deepEqual(d.board.p[0].e.find(e=>e.id==='shape-1').th.map(m=>m.id),['m1','m2']);
 });
+
+test('an old lost-ACK operation remains deduplicated after more than 256 later changes',()=>{
+  const d=room(),firstId='a'.repeat(32);
+  applyRoomUpdate(d,{opId:firstId,baseRev:0,changes:[{t:'rename',pid:'page-1',n:'first'}]});
+  for(let i=1;i<=300;i++)applyRoomUpdate(d,{opId:i.toString(16).padStart(32,'0'),baseRev:d.rev,changes:[{t:'rename',pid:'page-1',n:`latest-${i}`}]});
+  const revision=d.rev,latest=d.board.p[0].n;
+  assert.equal(d.ops.length,301);
+  const retry=applyRoomUpdate(d,{opId:firstId,baseRev:0,changes:[{t:'rename',pid:'page-1',n:'stale-replay'}]});
+  assert.equal(retry.duplicate,true);assert.equal(retry.ack,firstId);assert.equal(retry.rebased,true);
+  assert.equal(d.rev,revision);assert.equal(d.board.p[0].n,latest);
+});

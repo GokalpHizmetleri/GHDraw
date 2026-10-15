@@ -1,6 +1,7 @@
 import {createHmac} from 'node:crypto';
 export const LANGUAGES={tr:'Turkish',en:'English',de:'German',fr:'French',es:'Spanish',it:'Italian',pt:'Portuguese',ar:'Arabic',ru:'Russian',ja:'Japanese',ko:'Korean',zh:'Chinese'};
 const DB='ghdraw',TABLE='boards';
+const rowData=d=>({payload:JSON.stringify(d),expiresAt:new Date(d.expires).toISOString()});
 // Reserve before inference, transactionally. Store counts and a keyed client hash, never the text or raw IP.
 export async function reserveAI(db,ip,key,now=Date.now()){
  const day=new Date(now).toISOString().slice(0,10),hash=createHmac('sha256',key).update(ip).digest('hex').slice(0,24);
@@ -20,7 +21,7 @@ export async function reserveAI(db,ip,key,now=Date.now()){
    else if(rows[0].data.m>=10)blocked={ok:false,error:'site_limit',retryAfter:60-now%60000/1000|0};
    if(blocked){await db.updateTransaction({transactionId:tx.$id,rollback:true});return blocked}
    rows[1].data.last=now;
-   for(const r of rows){r.data.n++;r.data.m++;const args={databaseId:DB,tableId:TABLE,rowId:r.id,data:{payload:JSON.stringify(r.data)},transactionId:tx.$id};if(r.exists)await db.updateRow(args);else await db.createRow({...args,permissions:[]})}
+   for(const r of rows){r.data.n++;r.data.m++;const args={databaseId:DB,tableId:TABLE,rowId:r.id,data:rowData(r.data),transactionId:tx.$id};if(r.exists)await db.updateRow(args);else await db.createRow({...args,permissions:[]})}
    await db.updateTransaction({transactionId:tx.$id,commit:true});return {ok:true};
   }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});if(e.code!==409||attempt===4)throw e}
  }

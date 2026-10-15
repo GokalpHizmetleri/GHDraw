@@ -332,3 +332,13 @@ test('mobile and tablet styles account for safe areas, touch size, and compact l
   assert.match(html,/@media\(max-width:900px\) and \(max-height:500px\)/);
   assert.match(html,/<div id="syncBadge" role="status" aria-live="polite">/);
 });
+
+test('share creation retries reuse the same cryptographic request ID',async()=>{
+  const calls=[];let attempts=0;
+  const context={crypto:{getRandomValues(bytes){for(let i=0;i<bytes.length;i++)bytes[i]=i;return bytes}},cloudRequest:async(path,body)=>{calls.push({path,body:JSON.stringify(body)});if(attempts++===0)throw new TypeError('offline');return{id:'share-id'}}};
+  const start=html.indexOf('async function cloudCreate('),end=html.indexOf('\nfunction cloudBoard(',start);assert.ok(start>=0&&end>start,'missing cloudCreate');
+  vm.runInNewContext(html.slice(start,end)+';globalThis.runCreate=cloudCreate;',context);
+  const result=await context.runCreate('view',{p:[{id:'page',e:[]}]});
+  assert.equal(result.id,'share-id');assert.equal(calls.length,2);assert.equal(calls[0].path,'/create');assert.equal(calls[0].body,calls[1].body);
+  assert.equal(JSON.parse(calls[0].body).requestId,'000102030405060708090a0b0c0d0e0f');
+});

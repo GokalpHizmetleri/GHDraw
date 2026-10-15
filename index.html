@@ -1090,6 +1090,7 @@ async function cloudRequest(path,body,method){
  const r=await fetch(CLOUD+path,{method:method||(body?'POST':'GET'),headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});
  const d=await r.json();if(!r.ok)throw Object.assign(new Error(d.error||'Cloud error'),{status:r.status});return d;
 }
+async function cloudCreate(kind,board){const bytes=crypto.getRandomValues(new Uint8Array(16)),requestId=Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join(''),payload={kind,board,requestId};for(let attempt=0;attempt<2;attempt++){try{return await cloudRequest('/create',payload)}catch(e){if(attempt||e.status&&e.status<500)throw e}}}
 function cloudBoard(){syncPage();return {v:2,d:dark?1:0,p:pages.map(p=>({id:p.id,n:p.name||'',e:p.els.filter(e=>!('__bak' in e)).map(e=>JSON.parse(ser(e)))}))}}
 function cloudJoinCanContinue(isOnline,cached){return !!isOnline||!!(cached&&cached.base&&Array.isArray(cached.base.p)&&cached.base.p.length>0&&cached.base.p.every(p=>p&&Array.isArray(p.e)))}
 function cloudSelectRejoinBoard(id,savedId,current,snapshot,checkpoint,remote){const valid=b=>!!b&&Array.isArray(b.p)&&b.p.length>0&&b.p.every(p=>p&&Array.isArray(p.e));if(valid(snapshot))return snapshot;if(savedId===id&&valid(current))return current;if(valid(checkpoint))return checkpoint;return valid(remote)?remote:null}
@@ -1182,7 +1183,7 @@ function sharePayload(withMedia){
   return{json,omitted};
 }
 async function makeShareLink(){
- const d=await cloudRequest('/create',{kind:'view',board:cloudBoard()});
+ const d=await cloudCreate('view',cloudBoard());
  return {url:location.href.split('#')[0]+'#share='+d.id,len:32,omitted:0,tooBig:false,expires:d.expires};
 }
 async function openShare(){
@@ -1830,7 +1831,7 @@ function hostAttach(c){
   c.on('close',gone);c.on('error',gone);
 }
 async function collabStart(name){
-  try{const d=await cloudRequest('/create',{kind:'room',board:cloudBoard()});cloudOwner=d.owner;localStorage.setItem('ghdraw:cloudOwner:'+d.id,d.owner);await cloudJoin(d.id,true,true)}catch(e){toast(e.message)}return;
+  try{const d=await cloudCreate('room',cloudBoard());cloudOwner=d.owner;localStorage.setItem('ghdraw:cloudOwner:'+d.id,d.owner);await cloudJoin(d.id,true,true)}catch(e){toast(e.message)}return;
 
   myName=name||myName;localStorage.setItem('ghdraw:name',myName);
   try{await loadPeer()}catch(_){toast(L2('Ortak çizim kütüphanesi yüklenemedi (internet?)','Could not load the collaboration library (offline?)'));return}

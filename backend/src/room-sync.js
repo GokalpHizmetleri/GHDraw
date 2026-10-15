@@ -38,10 +38,11 @@ export function applyRoomUpdate(d, b) {
   }
 
   d.rev = prevRev + (b.changes.length ? 1 : 0);
-  if (b.opId) {
+  // Keep IDs for the room lifetime; the backend's 12 MiB row guard rejects overflow atomically.
+  // Empty operations do not mutate state, so they need no durable deduplication receipt.
+  if (b.opId && b.changes.length) {
     d.ops = Array.isArray(d.ops) ? d.ops : [];
     d.ops.push(b.opId);
-    if (d.ops.length > 256) d.ops.splice(0, d.ops.length - 256);
   }
   return {duplicate: false, ack: b.opId || null, rebased: b.baseRev !== undefined && b.baseRev < prevRev, prevRev};
 }
