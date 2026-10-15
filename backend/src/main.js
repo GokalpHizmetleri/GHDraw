@@ -193,14 +193,15 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
        return reply({id:prior.id,expires:prior.expires,owner:prior.owner,duplicate:true},201);
       }catch(e){if(e.code!==404)throw e}
      }
+     const id=randomBytes(16).toString('hex'),owner=randomBytes(24).toString('hex'),expires=Date.now()+(b.kind==='view'?7*24:48)*3600000;
+     const d={kind:b.kind,expires,board:b.board,room:b.room||null,owner,...(receiptId?{createReceiptId:receiptId}:{}),...(b.kind==='room'?{rev:0,ops:[]}: {})};
+     const stored=rowData(d);if(Buffer.byteLength(stored.payload)>MAX)return reply({error:'Board exceeds 12 MB'},413);
      let shareCount=0;
      await forEachRows({select:['$id']},rows=>{for(const row of rows)if(typeof row.$id==='string'&&!/^[phkg]/.test(row.$id)&&!row.$id.startsWith('ai-'))shareCount++;return shareCount<150});
      if(shareCount>=150)return reply({error:'Free storage is full; ask the project owner to remove old links.'},429);
-     const id=randomBytes(16).toString('hex'),owner=randomBytes(24).toString('hex'),expires=Date.now()+(b.kind==='view'?7*24:48)*3600000;
-     const d={kind:b.kind,expires,board:b.board,room:b.room||null,owner,...(receiptId?{createReceiptId:receiptId}:{}),...(b.kind==='room'?{rev:0,ops:[]}: {})};
      const tx=await db.createTransaction({ttl:60});
      try{
-      await db.createRow({databaseId:DB,tableId:TABLE,rowId:id,data:rowData(d),permissions:[],transactionId:tx.$id});
+      await db.createRow({databaseId:DB,tableId:TABLE,rowId:id,data:stored,permissions:[],transactionId:tx.$id});
       if(receiptId){const receipt={kind:'create-receipt',id,owner,expires,requestHash};await db.createRow({databaseId:DB,tableId:TABLE,rowId:receiptId,data:rowData(receipt),permissions:[],transactionId:tx.$id})}
       await db.updateTransaction({transactionId:tx.$id,commit:true});
      }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});throw e}

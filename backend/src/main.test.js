@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {Client,Query,TablesDB} from 'node-appwrite';
 import {createAppwriteDb,createHandler} from './main.js';
 
@@ -69,6 +70,14 @@ const createShare=async(fx,kind='view')=>{
 };
 const update=(fx,id,{opId='11111111111111111111111111111111',baseRev=0,shapeId='shape-2'}={})=>fx.call({method:'POST',path:`/room/${id}`,body:{opId,baseRev,changes:[{t:'put',pid:'page-1',e:{id:shapeId,type:'ellipse'}}]}});
 const seededShares=n=>Array.from({length:n},(_,i)=>{const id=(0x10000+i).toString(16).padStart(32,'0'),data={kind:'view',expires:Date.now()+86400000,board:board()};return [id,{$id:id,...rowData(data),$permissions:[]}]});
+const MAX_PAYLOAD=12*1024*1024;
+function createBodyForStoredBytes(target){
+ const requestId='c'.repeat(32),b=board(),expires=Date.now()+7*24*3600000;b.p[0].e[0].text='';
+ const stored=()=>({kind:'view',expires,board:b,room:null,owner:'o'.repeat(48),createReceiptId:'g'+'0'.repeat(31)});
+ const padding=target-Buffer.byteLength(JSON.stringify(stored()));assert.ok(padding>=0);b.p[0].e[0].text='x'.repeat(padding);
+ assert.equal(Buffer.byteLength(JSON.stringify(stored())),target);
+ const body={kind:'view',board:b,requestId};assert.ok(Buffer.byteLength(JSON.stringify(body))<=MAX_PAYLOAD,'raw request stays below the old request-only limit');return body;
+}
 
 // Function runtime credentials are ephemeral; no long-lived secret is accepted from the source.
 test('Appwrite client uses runtime endpoint/project and the per-execution x-appwrite-key',()=>{
@@ -78,6 +87,12 @@ test('Appwrite client uses runtime endpoint/project and the per-execution x-appw
  const db=createAppwriteDb({req:{headers:{'x-appwrite-key':'ephemeral-test-key'}},env:{APPWRITE_FUNCTION_API_ENDPOINT:'https://fra.cloud.appwrite.io/v1',APPWRITE_FUNCTION_PROJECT_ID:'project-test'},ClientClass:FakeClient,TablesDBClass:FakeTablesDB});
  assert.ok(db instanceof FakeTablesDB);assert.deepEqual(seen,{endpoint:'https://fra.cloud.appwrite.io/v1',project:'project-test',key:'ephemeral-test-key'});
  assert.throws(()=>createAppwriteDb({req:{headers:{}},env:{},ClientClass:FakeClient,TablesDBClass:FakeTablesDB}),e=>e.code===500&&!e.message.includes('ephemeral'));
+});
+
+test('deployment timeout is explicitly shorter than the lock lease',()=>{
+ const source=readFileSync(new URL('./main.js',import.meta.url),'utf8'),readme=readFileSync(new URL('../../README.md',import.meta.url),'utf8');
+ const leaseMs=Number(source.match(/LOCK_LEASE_MS=(\d+)/)?.[1]),timeoutSeconds=Number(readme.match(/set its Timeout setting to \*\*(\d+) seconds\*\*/)?.[1]);
+ assert.ok(Number.isFinite(leaseMs)&&Number.isFinite(timeoutSeconds));assert.ok(timeoutSeconds*1000<leaseMs,`Function timeout ${timeoutSeconds}s must be shorter than ${leaseMs}ms lock lease`);
 });
 
 test('OPTIONS and health are available without database credentials or a DB connection',async()=>{
@@ -90,6 +105,13 @@ test('anonymous share creation and view reads work through the Function while ro
  const stored=fx.db.rows.get(created.id);assert.deepEqual(stored.$permissions,[]);
  const view=await fx.call({method:'GET',path:`/view/${created.id}`});assert.equal(view.status,200);assert.deepEqual(view.body.board,board());assert.equal('owner' in view.body,false);
  assert.equal('userId' in view.body,false);assert.equal('createReceiptId' in view.body,false);assert.ok(fx.db.calls.some(c=>c.op==='createRow'&&c.rowId===created.id&&c.permissions.length===0));
+});
+
+test('create bounds the exact stored JSON row including server-generated metadata',async()=>{
+ const acceptedFx=fixture(),acceptedBody=createBodyForStoredBytes(MAX_PAYLOAD),accepted=await acceptedFx.call({method:'POST',path:'/create',body:acceptedBody});
+ assert.equal(accepted.status,201);assert.equal(Buffer.byteLength(acceptedFx.db.rows.get(accepted.body.id).payload),MAX_PAYLOAD,'exactly 12 MiB is accepted and stored');
+ const rejectedFx=fixture(),rejectedBody=createBodyForStoredBytes(MAX_PAYLOAD+1),rejected=await rejectedFx.call({method:'POST',path:'/create',body:rejectedBody});
+ assert.equal(rejected.status,413,'one byte over the stored-payload limit is rejected');assert.equal(rejectedFx.db.rows.size,0,'oversized payload and receipt are never written');
 });
 
 test('direct anonymous row access is denied even though the Function route is public',async()=>{

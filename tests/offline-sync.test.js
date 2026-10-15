@@ -312,7 +312,8 @@ test('an outbox delta can reconstruct its sent snapshot and safely replay',()=>{
 
 test('offline checkpoint, operation id, acknowledgement, and revision retry paths are present',()=>{
   assert.match(html,/indexedDB\.open\('ghdraw-cloud-sync-v1',2\)/);
-  assert.match(html,/saveCloudCheckpoint\(id,oldBase,oldRev,cloudRoom\.expires,op,current\)/);
+  assert.match(html,/saveCloudCheckpoint\(id,oldBase,oldRev,cloudRoom\.expires,candidate,current\)/);
+  assert.match(html,/JSON\.stringify\(durable\.inflight\)!==JSON\.stringify\(candidate\)/);
   assert.match(html,/opId:op\.opId,baseRev:op\.baseRev/);
   assert.match(html,/d\.ack===op\.opId/);
   assert.match(html,/cloudLocalSnapshot\(id\)/);
@@ -341,4 +342,38 @@ test('share creation retries reuse the same cryptographic request ID',async()=>{
   const result=await context.runCreate('view',{p:[{id:'page',e:[]}]});
   assert.equal(result.id,'share-id');assert.equal(calls.length,2);assert.equal(calls[0].path,'/create');assert.equal(calls[0].body,calls[1].body);
   assert.equal(JSON.parse(calls[0].body).requestId,'000102030405060708090a0b0c0d0e0f');
+});
+
+function cloudSyncHarness(overrides={}){
+ const calls=[],events=[],current=structuredClone(local),changes=[{t:'put',pid:'p1',e:{id:'shape-a',type:'rect',x:11}}],room={kind:'room',syncProtocol:'room-ops-v1',board:structuredClone(base),rev:0,expires:Date.now()+60000};
+ const context={structuredClone,cloudProtocolBlocked:false,cloudProtocolVerified:false,cloudRoom:{id:'sync-room',expires:0},cloudBase:structuredClone(base),cloudRev:0,cloudInflight:null,cloudBusy:false,cloudPending:false,document:{hidden:false},navigator:{onLine:true},drag:false,editing:null,
+  cloudBoard:()=>structuredClone(current),cloudDiff:()=>structuredClone(changes),cloudApplyChanges:board=>structuredClone(board),newCloudOpId:()=>'durable-operation-1',cloudCheckpoint:async()=>null,cloudLocalSnapshot:async()=>null,saveCloudCheckpoint:async()=>true,
+  cloudRequest:async(path,body)=>{events.push(body?'post':'probe');calls.push({path,body});return body?{...room,rev:1,ack:body.opId}:{...room}},cloudProtocolCompatible:(d,op=null)=>!!d&&d.kind==='room'&&d.syncProtocol==='room-ops-v1'&&Number.isSafeInteger(d.rev)&&(!op||d.ack===op.opId),
+  blockCloudProtocol:()=>{throw new Error('unexpected protocol block')},cloudMerge:()=>{},setSyncBadge:state=>events.push('badge:'+state),L2:(_tr,en)=>en,$:()=>({title:''}),clearInterval:()=>{},liveStop:()=>{},cloudTimer:0};
+ Object.assign(context,overrides);const start=html.indexOf('async function cloudSync(){'),end=html.indexOf('\nfunction activateOfflineCloud(',start);assert.ok(start>=0&&end>start,'missing cloudSync');
+ vm.runInNewContext(html.slice(start,end)+';globalThis.runCloudSync=cloudSync;',context);return{context,calls,events,run:context.runCloudSync};
+}
+
+test('failed IndexedDB outbox persistence never stages an in-memory operation or sends on the next timer',async()=>{
+ const h=cloudSyncHarness({cloudCheckpoint:async()=>null,saveCloudCheckpoint:async()=>{throw new Error('IndexedDB quota exceeded')}});
+ await h.run();assert.equal(h.context.cloudInflight,null,'a failed write cannot mark the operation in flight');
+ await h.run();assert.equal(h.context.cloudInflight,null,'a later retry must stage and persist before marking in flight');
+ assert.equal(h.calls.length,0,'no compatibility probe or room POST is made while durable storage fails');
+});
+
+test('cloudSync refuses to send when IndexedDB readback differs from the exact staged operation',async()=>{
+ let stored=null,reads=0;const h=cloudSyncHarness({
+  cloudCheckpoint:async()=>{reads++;return reads===1?null:{...stored,inflight:{...stored.inflight,opId:'different-operation'}}},
+  saveCloudCheckpoint:async(id,baseBoard,rev,expires,inflight)=>{stored={id,base:baseBoard,rev,expires,inflight}}
+ });
+ await h.run();assert.equal(h.context.cloudInflight,null);assert.equal(h.calls.length,0,'a mismatched IndexedDB readback must not reach the network');
+});
+
+test('cloudSync reads the exact durable outbox before sending its operation',async()=>{
+ let stored=null,context;const events=[];const h=cloudSyncHarness({
+  cloudCheckpoint:async()=>{events.push(stored?.inflight?'readback-op':'read');return stored},
+  saveCloudCheckpoint:async(id,baseBoard,rev,expires,inflight)=>{events.push('write');stored={id,base:baseBoard,rev,expires,inflight}},
+  cloudRequest:async(path,body)=>{if(body){events.push('post');assert.equal(context.cloudInflight.opId,body.opId,'in-memory in-flight is set only after durable readback');return{kind:'room',syncProtocol:'room-ops-v1',board:structuredClone(base),rev:1,expires:Date.now()+60000,ack:body.opId}}events.push('probe');return{kind:'room',syncProtocol:'room-ops-v1',board:structuredClone(base),rev:0,expires:Date.now()+60000}}
+ });context=h.context;await h.run();
+ assert.ok(events.indexOf('write')<events.indexOf('readback-op'));assert.ok(events.indexOf('readback-op')<events.indexOf('post'),'the operation is read back before the POST');
 });
