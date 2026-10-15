@@ -1,6 +1,6 @@
 import {createHmac} from 'node:crypto';
 export const LANGUAGES={tr:'Turkish',en:'English',de:'German',fr:'French',es:'Spanish',it:'Italian',pt:'Portuguese',ar:'Arabic',ru:'Russian',ja:'Japanese',ko:'Korean',zh:'Chinese'};
-const DB='ghdraw',COL='boards';
+const DB='ghdraw',TABLE='boards';
 // Reserve before inference, transactionally. Store counts and a keyed client hash, never the text or raw IP.
 export async function reserveAI(db,ip,key,now=Date.now()){
  const day=new Date(now).toISOString().slice(0,10),hash=createHmac('sha256',key).update(ip).digest('hex').slice(0,24);
@@ -9,7 +9,7 @@ export async function reserveAI(db,ip,key,now=Date.now()){
   const tx=await db.createTransaction({ttl:60});
   try{
    const rows=[];
-   for(const id of ids){let data,exists=true;try{const d=await db.getDocument({databaseId:DB,collectionId:COL,documentId:id,transactionId:tx.$id});data=JSON.parse(d.payload)}catch(e){if(e.code!==404)throw e;exists=false}
+   for(const id of ids){let data,exists=true;try{const row=await db.getRow({databaseId:DB,tableId:TABLE,rowId:id,transactionId:tx.$id});data=JSON.parse(row.payload)}catch(e){if(e.code!==404)throw e;exists=false}
     if(!data||data.day!==day)data={kind:'ai-quota',day,n:0,minute:0,m:0,last:data?.last||0,expires:now+172800000};
     if(data.minute!==Math.floor(now/60000)){data.minute=Math.floor(now/60000);data.m=0}
     rows.push({id,data,exists});
@@ -20,7 +20,7 @@ export async function reserveAI(db,ip,key,now=Date.now()){
    else if(rows[0].data.m>=10)blocked={ok:false,error:'site_limit',retryAfter:60-now%60000/1000|0};
    if(blocked){await db.updateTransaction({transactionId:tx.$id,rollback:true});return blocked}
    rows[1].data.last=now;
-   for(const r of rows){r.data.n++;r.data.m++;const args={databaseId:DB,collectionId:COL,documentId:r.id,data:{payload:JSON.stringify(r.data)},transactionId:tx.$id};if(r.exists)await db.updateDocument(args);else await db.createDocument({...args,permissions:[]})}
+   for(const r of rows){r.data.n++;r.data.m++;const args={databaseId:DB,tableId:TABLE,rowId:r.id,data:{payload:JSON.stringify(r.data)},transactionId:tx.$id};if(r.exists)await db.updateRow(args);else await db.createRow({...args,permissions:[]})}
    await db.updateTransaction({transactionId:tx.$id,commit:true});return {ok:true};
   }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});if(e.code!==409||attempt===4)throw e}
  }

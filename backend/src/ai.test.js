@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {reserveAI,handleAI} from './ai.js';
-class DB{constructor(){this.rows=new Map()}async createTransaction(){return {$id:'tx'}}async updateTransaction(){}async getDocument({documentId}){if(!this.rows.has(documentId))throw {code:404};return {payload:this.rows.get(documentId)}}async createDocument({documentId,data}){this.rows.set(documentId,data.payload)}async updateDocument({documentId,data}){this.rows.set(documentId,data.payload)}}
+class DB{constructor(){this.rows=new Map();this.permissions=[]}async createTransaction(){return {$id:'tx'}}async updateTransaction(){}async getRow({rowId}){if(!this.rows.has(rowId))throw {code:404};return {$id:rowId,payload:this.rows.get(rowId)}}async createRow({rowId,data,permissions}){this.rows.set(rowId,data.payload);this.permissions.push(permissions)}async updateRow({rowId,data}){if(!this.rows.has(rowId))throw {code:404};this.rows.set(rowId,data.payload)}}
 const db=new DB(),day=Date.UTC(2026,9,11,12);
 assert.deepEqual(await reserveAI(db,'ip','key',day),{ok:true});
 assert.deepEqual(await reserveAI(db,'ip','key',day+1),{ok:false,error:'cooldown',retryAfter:180});
@@ -21,7 +21,7 @@ assert.equal((await handleAI({...req,bodyJson:{...req.bodyJson,text:'x'.repeat(2
 assert.equal((await handleAI({...req,bodyJson:{op:'translate',text:'hello',language:'invalid'}},new DB(),'key')).status,400);
 assert.equal((await handleAI({...req,headers:{}},new DB(),'key')).status,400);
 let called=0;const mock=async(u,o)=>{called++;assert.equal(u,'https://api.groq.com/openai/v1/chat/completions');assert.equal(JSON.parse(o.body).messages[1].content,'hello');return {ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:'Hello.'}}]})}};
-assert.deepEqual(await handleAI(req,new DB(),'key',mock),{status:200,body:{text:'Hello.'}});assert.equal(called,1);
+const aiRows=new DB();assert.deepEqual(await handleAI(req,aiRows,'key',mock),{status:200,body:{text:'Hello.'}});assert.equal(called,1);assert.deepEqual([...aiRows.rows.keys()].sort(),['ai-global',`ai-${(await import('node:crypto')).createHmac('sha256','key').update('other').digest('hex').slice(0,24)}`].sort());assert.ok(aiRows.permissions.every(p=>Array.isArray(p)&&p.length===0));
 assert.equal((await handleAI(req,new DB(),'key',async()=>({ok:false,status:429}))).status,429);
 assert.equal((await handleAI(req,new DB(),'key',async()=>({ok:true,json:async()=>({choices:[{finish_reason:'length',message:{content:'partial'}}]})}))).status,502);
 assert.equal([...db.rows.values()].some(x=>x.includes('hello')||x.includes('"ip"')),false);

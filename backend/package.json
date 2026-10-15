@@ -1,1 +1,1 @@
-{"name":"ghdraw-backend","version":"1.0.0","type":"module","dependencies":{"node-appwrite":"^20.0.0"}}
+{"name":"ghdraw-backend","version":"1.0.0","type":"module","scripts":{"test":"node --test src/*.test.js"},"dependencies":{"node-appwrite":"^29.4.0"}}
