@@ -82,7 +82,7 @@ body.dark #welcome img{filter:invert(1) hue-rotate(180deg)}
 #editor{position:fixed;display:none;z-index:20;background:transparent;border:none;outline:1px dashed var(--accent);resize:none;overflow:hidden;white-space:pre;padding:0;margin:0;line-height:1.25;-webkit-user-select:text;user-select:text}
 #modal{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:40;display:none;align-items:center;justify-content:center}
 #modal.open{display:flex}
-#transitionShield{position:fixed;inset:0;z-index:39;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.12);cursor:progress}
+#transitionShield{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.12);cursor:progress}
 #transitionShield[hidden]{display:none}
 #transitionShield span{padding:12px 18px;border-radius:10px;background:var(--panel);color:var(--text);box-shadow:var(--shadow);font-weight:800}
 #modal .box{background:var(--panel);border-radius:14px;padding:22px 26px;max-width:620px;width:92%;max-height:86vh;overflow:auto;box-shadow:var(--shadow)}
@@ -120,6 +120,8 @@ html,body{overscroll-behavior:none;-webkit-touch-callout:none;-webkit-tap-highli
  #right{min-width:0}#collabBtn .lbl{display:none}#exportBtn{padding:0 12px}
  #tools{position:fixed!important;bottom:max(8px,env(safe-area-inset-bottom));left:max(8px,env(safe-area-inset-left));right:max(8px,env(safe-area-inset-right));top:auto;margin:0;max-width:none;flex-wrap:nowrap;overflow-x:auto;justify-content:flex-start;scrollbar-width:none;z-index:12}
  #tools::-webkit-scrollbar{display:none}
+ #tools.mobile-overflow::after{content:'›';position:sticky;right:0;z-index:2;flex:0 0 24px;width:24px;height:40px;display:flex;align-items:center;justify-content:center;background:linear-gradient(90deg,transparent,var(--panel) 42%);color:var(--muted);font-size:22px;pointer-events:none;transition:opacity .15s}
+ #tools.mobile-at-end::after{opacity:0}
  #tools .ib{flex:none}
  #bl{bottom:calc(64px + env(safe-area-inset-bottom))}#br{display:flex;min-width:0;gap:4px}#collabBtn,#exportBtn{height:40px}#hint{bottom:calc(120px + env(safe-area-inset-bottom))}
  #props{left:max(8px,env(safe-area-inset-left));right:auto;width:min(292px,calc(100vw - 16px));top:auto;bottom:calc(112px + env(safe-area-inset-bottom));max-height:40vh}
@@ -470,12 +472,12 @@ function render(){
   $('#welcome').classList.toggle('hide',els.length>0||!!editing||!!drag);
 }
 function snap(){return JSON.stringify(els)}
-function commit(){hist=hist.slice(0,hidx+1);hist.push(snap());if(hist.length>200)hist.shift();hidx=hist.length-1;save();syncUI()}
-function restore(s){els=JSON.parse(s);if(collabOn&&foreign.size){const keep=(window.__els0||[]).filter(e=>foreign.has(e.id));els=els.filter(e=>!foreign.has(e.id)).concat(keep)}els.forEach(e=>{if(e.type==='text')measure(e)});sel=new Set([...sel].filter(id=>els.some(e=>e.id===id)));save();syncUI();render()}
-function undo(){if(editing)return;if(hidx>0){window.__els0=els;hidx--;restore(hist[hidx])}}
-function redo(){if(editing)return;if(hidx<hist.length-1){window.__els0=els;hidx++;restore(hist[hidx])}}
+function commit(){if(cloudTransitionBlocksWrites())return false;hist=hist.slice(0,hidx+1);hist.push(snap());if(hist.length>200)hist.shift();hidx=hist.length-1;save();syncUI();return true}
+function restore(s){if(cloudTransitionBlocksWrites())return false;els=JSON.parse(s);if(collabOn&&foreign.size){const keep=(window.__els0||[]).filter(e=>foreign.has(e.id));els=els.filter(e=>!foreign.has(e.id)).concat(keep)}els.forEach(e=>{if(e.type==='text')measure(e)});sel=new Set([...sel].filter(id=>els.some(e=>e.id===id)));save();syncUI();render();return true}
+function undo(){if(cloudTransitionBlocksWrites()||editing)return;if(hidx>0){window.__els0=els;hidx--;restore(hist[hidx])}}
+function redo(){if(cloudTransitionBlocksWrites()||editing)return;if(hidx<hist.length-1){window.__els0=els;hidx++;restore(hist[hidx])}}
 function localBoardRecord(roomIdHint='',generationHint=null){cam=clampBoardCamera(cam);pages.forEach(p=>p.cam=clampBoardCamera(p.cam||{x:0,y:0,z:1}));syncPage();const id=roomIdHint||cloudRoom?.id||'',generation=id?(Number.isSafeInteger(generationHint)?generationHint:cloudRoom?.id===id&&Number.isSafeInteger(cloudRoom.generation)?cloudRoom.generation:0):0;return JSON.stringify({els,cam,defaults,grid,dark,pi,savedAt:Date.now(),cloudRoomId:id,restoreGeneration:generation,pages:pages.map(p=>({id:p.id,name:p.name,els:p.els,cam:p.cam}))})}
-function save(roomIdHint='',generationHint=null){if(viewOnly)return;histSched();if(collabOn&&!isHost&&!cloudRoom)return;if(cloudRoom&&cloudRoom.id===(roomIdHint||cloudRoom.id)&&!Number.isSafeInteger(generationHint)&&!cloudRoomGenerationCurrent(cloudRoom)){invalidateStaleCloudRoom(cloudRoom.id,readCloudGeneration(cloudRoom.id).value);return}if(!cloudRoom&&cloudStaleLocalRoomId&&!Number.isSafeInteger(generationHint))return;const id=roomIdHint||cloudRoom?.id||'',generation=id?(Number.isSafeInteger(generationHint)?generationHint:cloudRoom?.id===id&&Number.isSafeInteger(cloudRoom.generation)?cloudRoom.generation:0):0;try{localStorage.setItem('ghdraw:v2',localBoardRecord(id,generation));if(id===cloudStaleLocalRoomId){cloudStaleLocalRoomId=null;cloudStaleLoadBackupFailed=false;cloudStaleLoadExported=false;cloudStaleLoadExportFingerprint=null;setSyncBadge('')}}catch(_){if(!window.__storageWarn){window.__storageWarn=true;toast(L2('Tarayıcı depolaması dolu. Çalışmanı .ghdraw dosyası olarak kaydet.','Browser storage is full. Save your board as a .ghdraw file.'))}}if(cloudRoom)scheduleCloudSnapshot(cloudRoom.id,generation)}
+function save(roomIdHint='',generationHint=null){if(cloudTransitionBlocksWrites(roomIdHint||cloudRoom?.id))return false;if(viewOnly)return;histSched();if(collabOn&&!isHost&&!cloudRoom)return;if(cloudRoom&&cloudRoom.id===(roomIdHint||cloudRoom.id)&&!Number.isSafeInteger(generationHint)&&!cloudRoomGenerationCurrent(cloudRoom)){invalidateStaleCloudRoom(cloudRoom.id,readCloudGeneration(cloudRoom.id).value);return}if(!cloudRoom&&cloudStaleLocalRoomId&&!Number.isSafeInteger(generationHint))return;const id=roomIdHint||cloudRoom?.id||'',generation=id?(Number.isSafeInteger(generationHint)?generationHint:cloudRoom?.id===id&&Number.isSafeInteger(cloudRoom.generation)?cloudRoom.generation:0):0;try{localStorage.setItem('ghdraw:v2',localBoardRecord(id,generation));if(id===cloudStaleLocalRoomId){cloudStaleLocalRoomId=null;cloudStaleLoadBackupFailed=false;cloudStaleLoadExported=false;cloudStaleLoadExportFingerprint=null;setSyncBadge('')}}catch(_){if(!window.__storageWarn){window.__storageWarn=true;toast(L2('Tarayıcı depolaması dolu. Çalışmanı .ghdraw dosyası olarak kaydet.','Browser storage is full. Save your board as a .ghdraw file.'))}}if(cloudRoom)scheduleCloudSnapshot(cloudRoom.id,generation);return true}
 function load(){
   let raw=null,d=null;try{raw=localStorage.getItem('ghdraw:v2');d=parseLocalBoardRecord(raw)}catch(_){}
   if(d?.cloudRoomId){const stored=readCloudGeneration(d.cloudRoomId),savedGeneration=Number.isSafeInteger(d.restoreGeneration)?d.restoreGeneration:0;if(!stored.ok||stored.value!==null&&stored.value!==savedGeneration){cloudStaleLocalRoomId=d.cloudRoomId;cloudStaleLoadExported=false;cloudStaleLoadExportFingerprint=null;cloudStaleLoadBackupFailed=!writeLocalBoardBackup(raw,true);d=null}}
@@ -485,6 +487,7 @@ function load(){
   pages.forEach(p=>p.els.forEach(e=>{if(e.type==='text')measure(e)}));
 }
 const TOOLS=[['hand','H'],['select','1'],['rect','2'],['diamond','3'],['ellipse','4'],['arrow','5'],['line','6'],['pen','7'],['text','8'],['eraser','9']];
+function updateToolsScrollHint(){const box=$('#tools');if(!box)return;const overflow=box.scrollWidth>box.clientWidth+2;box.classList.toggle('mobile-overflow',overflow);box.classList.toggle('mobile-at-end',overflow&&box.scrollLeft+box.clientWidth>=box.scrollWidth-2)}
 function buildTools(){
   const box=$('#tools');box.innerHTML='';
   for(const[n,k]of TOOLS){
@@ -494,6 +497,8 @@ function buildTools(){
   const mb=document.createElement('button');mb.className='ib';mb.textContent='▧';mb.title=L2('Medya / GIF','Media / GIF');mb.onclick=openMedia;box.appendChild(mb);
   const sp2=document.createElement('div');sp2.className='sepv';box.appendChild(sp2);
   const lb=document.createElement('button');lb.className='ib'+(libOpen?' on':'');lb.title=t('lib')+' - B';lb.innerHTML=svg('lib')+'<span class="k">B</span>';lb.onclick=()=>toggleLib();box.appendChild(lb);
+  if(!box.__scrollHintBound){box.addEventListener('scroll',updateToolsScrollHint,{passive:true});box.__scrollHintBound=true}
+  requestAnimationFrame(updateToolsScrollHint);
 }
 function cursorFor(n){return n==='hand'?'grab':n==='select'?'default':n==='text'?'text':n==='eraser'?'cell':'crosshair'}
 function setTool(n){
@@ -581,6 +586,7 @@ function buildProps(){
 // Only selected text is submitted. Results are previews until the user applies them.
 function aiClientId(){let id=localStorage.getItem('ghdraw:aiClientId');if(!id){id=crypto.randomUUID();localStorage.setItem('ghdraw:aiClientId',id)}return id}
 function aiSelection(){const a=els.filter(e=>sel.has(e.id));return !viewOnly&&a.length===1&&a[0].type==='text'?a[0]:null}
+function applyTextAIResult(eid,pid,original,text){if(cloudTransitionBlocksWrites())return false;const current=els.find(x=>x.id===eid);if(viewOnly||pages[pi].id!==pid||!current||current.type!=='text'||current.text!==original)return false;const backup=structuredClone(current);current.text=text;measure(current);if(!commit()){for(const k of Object.keys(current))delete current[k];Object.assign(current,backup);return false}render();closeModal();toast(L2('Uygulandı. Geri al ile dönebilirsin.','Applied. You can undo it.'));return true}
 function openTextAI(op){
  const e=aiSelection();if(!e)return;
  const original=e.text,pid=pages[pi].id,eid=e.id;
@@ -607,13 +613,13 @@ function openTextAI(op){
   finally{go.disabled=false}
  };
  apply.onclick=()=>{
-  const current=els.find(x=>x.id===eid);
-  if(viewOnly||pages[pi].id!==pid||!current||current.type!=='text'||current.text!==original){status.textContent=L2('Metin ya da sayfa değişti. Yeniden seçip dene.','The text or page changed. Select it again.');apply.hidden=true;return}
-  current.text=preview.value;measure(current);commit();render();closeModal();toast(L2('Uygulandı. Geri al ile dönebilirsin.','Applied. You can undo it.'));
+  if(cloudTransitionBlocksWrites()){status.textContent=L2('Yeni oda geçişi bitene kadar metin uygulanmadı. Sonuç korunuyor; sonra yeniden dene.','The text was not applied while the room transition is active. The result is kept; try again afterward.');return}
+  if(!applyTextAIResult(eid,pid,original,preview.value)){status.textContent=L2('Metin ya da sayfa değişti. Yeniden seçip dene.','The text or page changed. Select it again.');apply.hidden=true}
  };
 }
 
 function setProp(k,v,noCommit){
+  if(cloudTransitionBlocksWrites())return;
   defaults[k]=v;
   const sl=els.filter(e=>sel.has(e.id));
   for(const e of sl){
@@ -629,6 +635,7 @@ function setProp(k,v,noCommit){
 }
 function commitProp(){if(els.some(e=>sel.has(e.id)))commit();else save()}
 function layer(a){
+  if(cloudTransitionBlocksWrites())return;
   const ids=sel,keep=els.filter(e=>!ids.has(e.id)),pick=els.filter(e=>ids.has(e.id));
   if(a==='back')els=[...pick,...keep];
   else if(a==='front')els=[...keep,...pick];
@@ -640,7 +647,7 @@ function layer(a){
   }
   commit();render();
 }
-function delSel(){if(!sel.size)return;els=els.filter(e=>!sel.has(e.id));sel=new Set();commit();render()}
+function delSel(){if(cloudTransitionBlocksWrites()||!sel.size)return;els=els.filter(e=>!sel.has(e.id));sel=new Set();commit();render()}
 function syncUI(){$('#undo').disabled=hidx<=0;$('#redo').disabled=hidx>=hist.length-1;buildProps()}
 
 function localBoardBackupSummary(data,key){const count=data.pages.reduce((n,p)=>n+(Array.isArray(p.els)?p.els.length:0),0),date=Number(data.savedAt)>0?new Date(data.savedAt).toLocaleString():L2('Tarih bilinmiyor','Unknown date');return date+' · '+data.pages.length+' '+L2('sayfa','pages')+' · '+count+' '+L2('öğe','items')+' · '+(key==='ghdraw:backup-before-collab'?L2('ana yedek','main backup'):L2('arşiv','archive'))}
@@ -838,7 +845,7 @@ function cloneEls(list,dx,dy){
   n.forEach(c=>{for(const k of['b0','b1']){if(c[k]){const v=m.get(c[k]);if(v)c[k]=v;else delete c[k]}}});
   return n;
 }
-function dupSel(){
+function dupSel(){if(cloudTransitionBlocksWrites())return;
   const sl=els.filter(e=>sel.has(e.id));if(!sl.length)return;
   const n=cloneEls(sl,16,16);els.push(...n);sel=new Set(n.map(e=>e.id));commit();render();
 }
@@ -899,7 +906,7 @@ function setFit(r,m){
   cam={z,x:W/2-(r.x+r.w/2)*z,y:H/2-(r.y+r.h/2)*z};
 }
 function fitPage(){const L=els.filter(e=>!e.frame);if(L.length)setFit(unionBox(L),.12)}
-function gotoPage(i){
+function gotoPage(i){if(cloudTransitionBlocksWrites())return;
   if(i<0||i>=pages.length||i===pi)return;
   if(collabOn&&!cloudRoom){toast(L2('Ortak çizim sırasında sayfa değiştirilemez.','Pages are locked during collaboration.'));return}
   if(editing)finishEdit();
@@ -910,15 +917,15 @@ function gotoPage(i){
   if(viewOnly){fitPage();presQ=Math.max(1,Math.min(4,cam.z))}
   save();syncUI();render();buildPages();
 }
-function addPage(){
+function addPage(){if(cloudTransitionBlocksWrites())return;
   if(collabOn&&!cloudRoom){toast(L2('Ortak çizim sırasında sayfa eklenemez.','Pages are locked during collaboration.'));return}
   syncPage();pages.push({id:uid(),name:'',els:[],cam:{x:0,y:0,z:1}});gotoPage(pages.length-1);
 }
-function dupPage(){
+function dupPage(){if(cloudTransitionBlocksWrites())return;
   if(collabOn&&!cloudRoom)return;syncPage();
   const c=cloneEls(els,0,0);pages.splice(pi+1,0,{id:uid(),name:pages[pi].name?pages[pi].name+' 2':'',els:c,cam:Object.assign({},cam)});gotoPage(pi+1);
 }
-function delPage(){
+function delPage(){if(cloudTransitionBlocksWrites())return;
   if(collabOn&&!cloudRoom)return;
   if(pages.length<2){if(confirm(t('confirmClear'))){els=[];sel=new Set();commit();render()}return}
   if(!confirm(L2('Bu sayfa silinsin mi?','Delete this page?')))return;
@@ -926,8 +933,8 @@ function delPage(){
   const p=pages[n];pi=n;els=p.els;cam=p.cam||{x:0,y:0,z:1};hist=p.hist||[snap()];hidx=p.hist?p.hidx:0;p.hist=hist;sel=new Set();
   save();syncUI();render();buildPages();
 }
-function renamePage(){const n=prompt(L2('Sayfa adı:','Page name:'),pages[pi].name||'');if(n===null)return;pages[pi].name=n.trim().slice(0,24);save();buildPages()}
-function movePage(d){if(cloudRoom){toast(L2('Ortak çizimde sayfa sırası sabittir.','Page order is fixed during collaboration.'));return}const j=pi+d;if(j<0||j>=pages.length||(collabOn&&!cloudRoom))return;syncPage();const[p]=pages.splice(pi,1);pages.splice(j,0,p);pi=j;save();buildPages()}
+function renamePage(){if(cloudTransitionBlocksWrites())return;const n=prompt(L2('Sayfa adı:','Page name:'),pages[pi].name||'');if(n===null)return;pages[pi].name=n.trim().slice(0,24);save();buildPages()}
+function movePage(d){if(cloudTransitionBlocksWrites())return;if(cloudRoom){toast(L2('Ortak çizimde sayfa sırası sabittir.','Page order is fixed during collaboration.'));return}const j=pi+d;if(j<0||j>=pages.length||(collabOn&&!cloudRoom))return;syncPage();const[p]=pages.splice(pi,1);pages.splice(j,0,p);pi=j;save();buildPages()}
 function pageMenu(){
   collabModal=false;const b=$('#modalBox');b.innerHTML='';
   const h=mk('h3');h.textContent=pageName(pi);b.appendChild(h);
@@ -1066,13 +1073,13 @@ function cloudRoomTransition(id){return cloudDB().then(db=>new Promise((resolve,
 function saveCloudRoomTransition(record){return cloudDB().then(db=>new Promise((resolve,reject)=>{const tx=db.transaction('snapshots','readwrite'),store=tx.objectStore('snapshots'),key=cloudRoomTransitionKey(record.oldRoomId),q=store.get(key);let value=null;q.onsuccess=()=>{value=q.result||null;if(value?.kind!=='room-transition'){value={...record,id:key,kind:'room-transition'};store.put(value)}};tx.oncomplete=()=>resolve(value);tx.onerror=()=>reject(tx.error||q.error||new Error('IndexedDB transition write failed'));tx.onabort=()=>reject(tx.error||new Error('IndexedDB transition write aborted'))}))}
 function deleteCloudRoomTransition(id){return cloudDB().then(db=>new Promise((resolve,reject)=>{const tx=db.transaction('snapshots','readwrite');tx.objectStore('snapshots').delete(cloudRoomTransitionKey(id));tx.oncomplete=()=>resolve(true);tx.onerror=()=>reject(tx.error||new Error('IndexedDB transition delete failed'));tx.onabort=()=>reject(tx.error||new Error('IndexedDB transition delete aborted'))}))}
 function stageCloudSnapshot(tx,id,board,updatedAt,generation=0){if(!board)return;const store=tx.objectStore('snapshots'),q=store.get(id);q.onsuccess=()=>{const current=q.result||null,currentGeneration=cloudGenerationValue(current)??0;if(!current||currentGeneration<generation||currentGeneration===generation&&current.updatedAt<=updatedAt)store.put({id,board,updatedAt,generation})}}
-function saveCloudLocalSnapshot(id,board,updatedAt=Date.now(),generation=cloudRoom?.id===id?(cloudRoom.generation===undefined?0:cloudRoom.generation):0){return cloudDB().then(db=>new Promise((resolve,reject)=>{const tx=db.transaction(['rooms','snapshots'],'readwrite'),q=tx.objectStore('rooms').get(id);let stale=false;q.onsuccess=()=>{const current=q.result||null;if(!Number.isSafeInteger(generation)||generation<0||!current||cloudGenerationValue(current)!==generation){stale=true;tx.abort();return}stageCloudSnapshot(tx,id,board,updatedAt,generation)};tx.oncomplete=()=>resolve(true);tx.onerror=()=>reject(tx.error||new Error('IndexedDB snapshot write failed'));tx.onabort=()=>reject(tx.error||new Error(stale?'Stale cloud generation; snapshot write rejected':'IndexedDB snapshot write aborted'))}))}
+function saveCloudLocalSnapshot(id,board,updatedAt=Date.now(),generation=cloudRoom?.id===id?(cloudRoom.generation===undefined?0:cloudRoom.generation):0){if(cloudTransitionBlocksWrites(id))return Promise.resolve(false);return runCloudRoomLocked(id,()=>{if(cloudTransitionBlocksWrites(id))return false;return cloudDB().then(db=>new Promise((resolve,reject)=>{const tx=db.transaction(['rooms','snapshots'],'readwrite'),q=tx.objectStore('rooms').get(id);let stale=false;q.onsuccess=()=>{if(cloudTransitionBlocksWrites(id)){stale=true;tx.abort();return}const current=q.result||null;if(!Number.isSafeInteger(generation)||generation<0||!current||cloudGenerationValue(current)!==generation){stale=true;tx.abort();return}stageCloudSnapshot(tx,id,board,updatedAt,generation)};tx.oncomplete=()=>resolve(true);tx.onerror=()=>reject(tx.error||new Error('IndexedDB snapshot write failed'));tx.onabort=()=>reject(tx.error||new Error(stale?'Stale cloud generation or active room transition; snapshot write rejected':'IndexedDB snapshot write aborted'))}))})||Promise.resolve(false)}
 function cloudCheckpointMatches(a,b){try{if(a===null||b===null)return a===b;return a.id===b.id&&a.rev===b.rev&&a.expires===b.expires&&cloudGenerationValue(a)===cloudGenerationValue(b)&&a.updatedAt===b.updatedAt&&a.restoreId===b.restoreId&&JSON.stringify(a.base)===JSON.stringify(b.base)&&JSON.stringify(a.inflight??null)===JSON.stringify(b.inflight??null)&&JSON.stringify(a.restoreIntent??null)===JSON.stringify(b.restoreIntent??null)}catch(_){return false}}
 function saveCloudRestoreIntent(id,intent,expected){if(!validCloudRestoreIntent(intent)||!expected||expected.id!==id||expected.inflight||!cloudCheckpointCanResume(expected))return Promise.resolve(false);return cloudDB().then(db=>new Promise((resolve,reject)=>{const tx=db.transaction('rooms','readwrite'),store=tx.objectStore('rooms');let conflict=false;const q=store.get(id);q.onsuccess=()=>{const current=q.result||null;if(!cloudCheckpointMatches(current,expected)||current.inflight||current.restoreIntent){conflict=true;tx.abort();return}store.put({...current,restoreIntent:intent,updatedAt:Date.now()})};tx.oncomplete=()=>resolve(true);tx.onerror=()=>reject(tx.error||new Error('Restore intent write failed'));tx.onabort=()=>conflict?resolve(false):reject(tx.error||new Error('Restore intent write aborted'))}))}
 function clearCloudRestoreIntent(id,expected){if(!expected||expected.id!==id||!expected.restoreIntent)return Promise.resolve(false);return cloudDB().then(db=>new Promise((resolve,reject)=>{const tx=db.transaction('rooms','readwrite'),store=tx.objectStore('rooms');let conflict=false;const q=store.get(id);q.onsuccess=()=>{const current=q.result||null;if(!cloudCheckpointMatches(current,expected)){conflict=true;tx.abort();return}store.put({...current,restoreIntent:null,updatedAt:Date.now()})};tx.oncomplete=()=>resolve(true);tx.onerror=()=>reject(tx.error||new Error('Restore intent clear failed'));tx.onabort=()=>conflict?resolve(false):reject(tx.error||new Error('Restore intent clear aborted'))}))}
 function saveCloudRestoreCheckpoint(id,base,rev,expires,local,restoreId,expected){const generation=Number.isSafeInteger(expected?.restoreIntent?.generation)?expected.restoreIntent.generation:(cloudGenerationValue(expected)??0)+1;if(!validCloudRestoreId(restoreId)||!expected||expected.id!==id||expected.restoreIntent?.restoreId!==restoreId||expected.inflight||generation!==(cloudGenerationValue(expected)??0)+1)return Promise.resolve(false);return cloudDB().then(db=>new Promise((resolve,reject)=>{const tx=db.transaction(['rooms','snapshots'],'readwrite'),store=tx.objectStore('rooms'),now=Date.now();let conflict=false;const q=store.get(id);q.onsuccess=()=>{const current=q.result||null;if(!cloudCheckpointMatches(current,expected)||current.inflight||current.restoreIntent?.restoreId!==restoreId){conflict=true;tx.abort();return}store.put({id,base,rev,expires:expires||0,generation,inflight:null,restoreId,updatedAt:now});stageCloudSnapshot(tx,id,local,now,generation)};tx.oncomplete=()=>resolve(true);tx.onerror=()=>reject(tx.error||new Error('Restore checkpoint write failed'));tx.onabort=()=>conflict?resolve(false):reject(tx.error||new Error('Restore checkpoint write aborted'))}))}
 function saveCloudCheckpoint(id,base,rev,expires,inflight,local,restoreId=null,generation=cloudRoom?.id===id?(cloudRoom.generation===undefined?0:cloudRoom.generation):0){if(!Number.isSafeInteger(generation)||generation<0)return Promise.reject(new Error('Invalid cloud generation'));return cloudDB().then(db=>new Promise((resolve,reject)=>{const tx=db.transaction(['rooms','snapshots'],'readwrite'),store=tx.objectStore('rooms'),now=Date.now();let conflict=false;const q=store.get(id);q.onsuccess=()=>{const current=q.result||null;if(current&&(cloudGenerationValue(current)!==generation||current.restoreIntent)||!current&&generation!==0){conflict=true;tx.abort();return}store.put({id,base,rev:rev||0,expires:expires||0,generation,inflight:inflight||null,restoreId:restoreId||null,updatedAt:now});stageCloudSnapshot(tx,id,local,now,generation)};tx.oncomplete=()=>resolve(true);tx.onerror=()=>reject(tx.error||new Error('IndexedDB write failed'));tx.onabort=()=>reject(tx.error||new Error(conflict?'Stale cloud generation; checkpoint write rejected':'IndexedDB write aborted'))}))}
-function scheduleCloudSnapshot(id,generation=cloudRoom?.id===id?(cloudRoom.generation===undefined?0:cloudRoom.generation):0){clearTimeout(cloudSnapshotTimer);const board=cloudBoard(true),updatedAt=Date.now();cloudSnapshotTimer=setTimeout(()=>saveCloudLocalSnapshot(id,board,updatedAt,generation).catch(()=>{if(cloudRoom?.id===id&&cloudRoom.generation!==generation)invalidateStaleCloudRoom(id,readCloudGeneration(id).value);else setSyncBadge('storage')}),250)}
+function scheduleCloudSnapshot(id,generation=cloudRoom?.id===id?(cloudRoom.generation===undefined?0:cloudRoom.generation):0){clearTimeout(cloudSnapshotTimer);const board=cloudBoard(true),updatedAt=Date.now();cloudSnapshotTimer=setTimeout(()=>{if(cloudTransitionBlocksWrites(id))return;saveCloudLocalSnapshot(id,board,updatedAt,generation).catch(()=>{if(cloudRoom?.id===id&&cloudRoom.generation!==generation)invalidateStaleCloudRoom(id,readCloudGeneration(id).value);else setSyncBadge('storage')})},250)}
 function localBoardSavedAt(){try{return Number(JSON.parse(localStorage.getItem('ghdraw:v2')||'null')?.savedAt)||0}catch(_){return 0}}
 function isBoardObject(value){return !!value&&typeof value==='object'&&!Array.isArray(value)}
 const BOARD_COORD_LIMIT=1e9,BOARD_CAMERA_LIMIT=9e9;
@@ -1112,11 +1119,11 @@ function cloudStaleExportMatchesCurrent(){if(!cloudStaleLoadExported||typeof clo
 function cloudJoinBoardProtected(){return preserveLocalBoardBeforeCloudJoin()||cloudStaleExportMatchesCurrent()}
 function ensureStaleLocalBoardProtected(){if(!cloudStaleLoadBackupFailed)return true;if(cloudStaleExportMatchesCurrent())return true;if(!cloudStaleLocalRoomId)return false;try{const raw=localStorage.getItem('ghdraw:v2'),record=parseLocalBoardRecord(raw);if(!record||record.cloudRoomId!==cloudStaleLocalRoomId||!writeLocalBoardBackup(raw,true))return false;cloudStaleLoadBackupFailed=false;return true}catch(_){return false}}
 function exportQuarantinedLocalBoard(){if(!cloudStaleLocalRoomId)return false;try{if(editing)finishEdit();const raw=localStorage.getItem('ghdraw:v2'),record=parseLocalBoardRecord(raw);if(!record||record.cloudRoomId!==cloudStaleLocalRoomId)return false;const currentRaw=localBoardRecord(),live=parseLocalBoardRecord(currentRaw),fingerprint=localBoardFingerprint(currentRaw);if(!live||!fingerprint)return false;const payload={type:'ghdraw',version:5,elements:live.els,cam:live.cam,pages:live.pages,pi:live.pi,defaults:live.defaults,grid:live.grid,dark:live.dark,recovery:{kind:'ghdraw-quarantine',quarantined:JSON.parse(raw),live:currentRaw===raw?null:JSON.parse(currentRaw)}};const blob=new Blob([JSON.stringify(payload)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='ghdraw-recovery-'+new Date().toISOString().slice(0,10)+'.ghdraw';a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);cloudStaleLoadExportFingerprint=fingerprint;cloudStaleLoadExported=true;buildMenu();toast(L2('Karantinadaki özgün pano ve güncel çalışma .ghdraw dosyasına aktarıldı. Artık güvenli biçimde yeniden bağlanabilirsin.','The quarantined original board and current work were exported to a .ghdraw file. You can now rejoin safely.'));return true}catch(_){toast(L2('Karantinadaki pano dışa aktarılamadı. Odaya katılım engellendi; alan aç veya tekrar dene.','The quarantined board could not be exported. Joining is blocked; free storage or try again.'));return false}}
-function restoreLocalBoardRecord(record,confirmed){const selected=parseLocalBoardRecord(record);if(!confirmed||collabOn&&!cloudRoom||!selected||!ensureStaleLocalBoardProtected())return false;try{if(editing)finishEdit();const current=localBoardRecord();if(current!==record&&!writeLocalBoardBackup(current)&&!cloudStaleExportMatchesCurrent())return false;if(cloudRoom)cloudEnd(false);localStorage.setItem('ghdraw:v2',record);if(localStorage.getItem('ghdraw:v2')!==record)return false;if(selected.cloudRoomId){cloudStaleLocalRoomId=selected.cloudRoomId;cloudStaleLoadBackupFailed=false;cloudStaleLoadExported=false;cloudStaleLoadExportFingerprint=null}else{cloudStaleLocalRoomId=null;cloudStaleLoadBackupFailed=false;cloudStaleLoadExported=false;cloudStaleLoadExportFingerprint=null;if(typeof setSyncBadge==='function')setSyncBadge('')}return true}catch(_){return false}}
+function restoreLocalBoardRecord(record,confirmed){if(cloudTransitionBlocksWrites())return false;const selected=parseLocalBoardRecord(record);if(!confirmed||collabOn&&!cloudRoom||!selected||!ensureStaleLocalBoardProtected())return false;try{if(editing)finishEdit();const current=localBoardRecord();if(current!==record&&!writeLocalBoardBackup(current)&&!cloudStaleExportMatchesCurrent())return false;if(cloudRoom)cloudEnd(false);localStorage.setItem('ghdraw:v2',record);if(localStorage.getItem('ghdraw:v2')!==record)return false;if(selected.cloudRoomId){cloudStaleLocalRoomId=selected.cloudRoomId;cloudStaleLoadBackupFailed=false;cloudStaleLoadExported=false;cloudStaleLoadExportFingerprint=null}else{cloudStaleLocalRoomId=null;cloudStaleLoadBackupFailed=false;cloudStaleLoadExported=false;cloudStaleLoadExportFingerprint=null;if(typeof setSyncBadge==='function')setSyncBadge('')}return true}catch(_){return false}}
 function localBoardRoomId(){try{return String(JSON.parse(localStorage.getItem('ghdraw:v2')||'null')?.cloudRoomId||'')}catch(_){return ''}}
 function localBoardRestoreGeneration(){try{const d=JSON.parse(localStorage.getItem('ghdraw:v2')||'null');return d&&Number.isSafeInteger(d.restoreGeneration)&&d.restoreGeneration>=0?d.restoreGeneration:0}catch(_){return null}}
 function cloudRejoinGenerationBoard(id,savedId,currentGeneration,current,snapshot,snapshotGeneration,checkpoint,remote,generation){return cloudSelectRejoinBoard(id,savedId,savedId===id&&currentGeneration===generation?current:null,snapshotGeneration===generation?snapshot:null,checkpoint,remote)}
-function restoreCloudSnapshot(record,roomId='',generationHint=null){const b=normalizeCloudRoomBoard(record&&record.board,true);if(!b)return false;const nextPages=b.p.map(p=>({id:p.id,name:p.n,els:structuredClone(p.e),cam:recoverBoardCamera({x:0,y:0,z:1},p.e)}));pages=nextPages;pi=0;els=pages[0].els;cam=pages[0].cam;dark=!!b.d;document.body.classList.toggle('dark',dark);sel=new Set();hist=[snap()];hidx=0;syncUI();render();save(roomId,generationHint);return true}
+function restoreCloudSnapshot(record,roomId='',generationHint=null){if(cloudTransitionBlocksWrites())return false;const b=normalizeCloudRoomBoard(record&&record.board,true);if(!b)return false;const nextPages=b.p.map(p=>({id:p.id,name:p.n,els:structuredClone(p.e),cam:recoverBoardCamera({x:0,y:0,z:1},p.e)}));pages=nextPages;pi=0;els=pages[0].els;cam=pages[0].cam;dark=!!b.d;document.body.classList.toggle('dark',dark);sel=new Set();hist=[snap()];hidx=0;syncUI();render();save(roomId,generationHint);return true}
 async function cloudRequest(path,body,method){
  const r=await fetch(CLOUD+path,{method:method||(body?'POST':'GET'),headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});
  const d=await r.json();if(!r.ok)throw Object.assign(new Error(d.message||d.error||'Cloud error'),{status:r.status,code:d.error||null});return d;
@@ -1170,6 +1177,7 @@ function cloudProtocolCompatible(d,op=null){return !!d&&d.kind==='room'&&d.syncP
 function blockCloudProtocol(){if(cloudProtocolBlocked)return;cloudProtocolBlocked=true;cloudProtocolVerified=false;cloudPending=cloudPending||!!cloudInflight;clearInterval(cloudTimer);cloudTimer=0;liveStop();setSyncBadge('protocol');toast(L2('Sunucu güvenli eşitleme protokolünü desteklemiyor. Değişiklikler cihazda saklandı; backend güncellendikten sonra sayfayı yenile.','Server does not support safe sync. Changes remain on this device; reload after the backend is updated.'))}
 async function cloudSync(){if(!cloudRoom)return;if(!navigator.locks||typeof navigator.locks.request!=='function'){cloudPending=true;clearInterval(cloudTimer);cloudTimer=0;liveStop();setSyncBadge('storage');return}const id=cloudRoom.id;try{return await runCloudRoomLocked(id,()=>cloudSyncLocked(id))}catch(_){cloudPending=true;clearInterval(cloudTimer);cloudTimer=0;liveStop();setSyncBadge('storage')}}
 async function cloudSyncLocked(lockId){
+ if(cloudTransitionBlocksWrites(lockId))return;
  if(cloudProtocolBlocked||cloudReceiptQuotaBlocked||cloudCommentLimitBlocked||!cloudRoom||cloudRoom.id!==lockId||cloudBusy||document.hidden)return;
  if(!cloudRoomGenerationCurrent(cloudRoom)){invalidateStaleCloudRoom(lockId,readCloudGeneration(lockId).value);return}
  if(cloudCheckpointIsUnsafe(lockId)){cloudPending=true;setSyncBadge('storage');return}
@@ -1242,10 +1250,19 @@ let cloudTransitionLeaseTimer=0,cloudTransitionExpiryTimer=0,cloudTransitionLeas
 function cloudTransitionActiveKey(id){return'ghdraw:cloudTransitionActive:'+id}
 function readCloudTransitionLease(id){try{const raw=localStorage.getItem(cloudTransitionActiveKey(id));if(!raw)return null;const value=JSON.parse(raw);return value&&Number.isFinite(value.until)&&value.until>Date.now()?value:null}catch(_){return{token:null,until:Date.now()+30000}}}
 function cloudTransitionActive(id){return !!id&&!!readCloudTransitionLease(id)}
-function updateCloudTransitionShield(id=cloudRoom?.id){const shield=$('#transitionShield');if(!shield)return;clearTimeout(cloudTransitionExpiryTimer);const lease=readCloudTransitionLease(id);if(!lease){shield.hidden=true;return}shield.hidden=false;const label=shield.querySelector('span');if(label)label.textContent=L2('Yeni oda geçişi sürüyor. Düzenlemeler geçici olarak duraklatıldı.','A room transition is in progress. Editing is paused temporarily.');cloudTransitionExpiryTimer=setTimeout(()=>updateCloudTransitionShield(id),Math.max(25,lease.until-Date.now()+25))}
+function cloudTransitionBlocksWrites(id=cloudRoom?.id){return !!id&&cloudTransitionActive(id)}
+function cloudTransitionReplacementKey(id){return'ghdraw:cloudTransitionReplacement:'+id}
+function cloudTransitionReplacement(id){try{const v=JSON.parse(localStorage.getItem(cloudTransitionReplacementKey(id))||'null');return v&&typeof v.roomId==='string'&&/^[\w-]{1,128}$/.test(v.roomId)&&Number.isFinite(v.until)&&v.until>Date.now()?v:null}catch(_){return null}}
+function saveCloudTransitionReplacement(oldId,newId,revision){try{if(!oldId||!newId||!Number.isSafeInteger(revision)||!cloudTransitionLease||cloudTransitionLease.id!==oldId)return false;const value={roomId:newId,revision,until:Date.now()+7*86400000};localStorage.setItem(cloudTransitionReplacementKey(oldId),JSON.stringify(value));const check=cloudTransitionReplacement(oldId);return check?.roomId===newId&&check.revision===revision}catch(_){return false}}
+let cloudTransitionFollowPending=false;
+async function followCloudTransitionReplacement(oldId){if(!oldId||!cloudRoom||cloudRoom.id!==oldId||cloudTransitionActive(oldId)||cloudTransitionFollowPending)return false;const record=cloudTransitionReplacement(oldId);if(!record)return false;cloudTransitionFollowPending=true;try{if(localStorage.getItem('ghdraw:cloudOwner:'+oldId)&&navigator.onLine){try{await cloudRequest('/room/'+oldId);localStorage.removeItem(cloudTransitionReplacementKey(oldId));return false}catch(e){if(e.status!==404&&e.status!==410)return false}}else if(localStorage.getItem('ghdraw:cloudOwner:'+oldId)&&!navigator.onLine)return false;clearInterval(cloudTimer);cloudTimer=0;liveStop();toast(L2('Bu oda başka bir sekmede yeni odaya taşındı; yeni oda bu sekmede açılıyor.','This room was moved to a new room in another tab; opening the new room here.'));await cloudJoin(record.roomId,false);return cloudRoom?.id===record.roomId}finally{cloudTransitionFollowPending=false}}
+function updateCloudTransitionShield(id=cloudRoom?.id){const shield=$('#transitionShield');if(!shield)return;clearTimeout(cloudTransitionExpiryTimer);const lease=readCloudTransitionLease(id),modal=$('#modal');if(modal){modal.inert=!!lease;if(lease)modal.setAttribute('aria-hidden','true');else modal.removeAttribute('aria-hidden')}if(!lease){shield.hidden=true;if(id&&cloudRoom?.id===id)followCloudTransitionReplacement(id);return}shield.hidden=false;const label=shield.querySelector('span');if(label)label.textContent=L2('Yeni oda geçişi sürüyor. Düzenlemeler geçici olarak duraklatıldı.','A room transition is in progress. Editing is paused temporarily.');cloudTransitionExpiryTimer=setTimeout(()=>updateCloudTransitionShield(id),Math.max(25,lease.until-Date.now()+25))}
+function cloudTransitionInputGuard(e){if(!cloudTransitionBlocksWrites())return;if(e.cancelable)e.preventDefault();e.stopImmediatePropagation()}
+document.addEventListener('keydown',cloudTransitionInputGuard,true);document.addEventListener('beforeinput',cloudTransitionInputGuard,true);document.addEventListener('click',cloudTransitionInputGuard,true);document.addEventListener('pointerdown',cloudTransitionInputGuard,true);
 function beginCloudTransition(id){try{if(cloudTransitionActive(id))return false;const token=newCloudOpId(),key=cloudTransitionActiveKey(id),write=()=>{localStorage.setItem(key,JSON.stringify({token,until:Date.now()+30000}));return readCloudTransitionLease(id)?.token===token};if(!write())return false;cloudTransitionLease={id,token};clearInterval(cloudTransitionLeaseTimer);cloudTransitionLeaseTimer=setInterval(()=>{if(!cloudTransitionLease||cloudTransitionLease.id!==id||cloudTransitionLease.token!==token)return;const current=readCloudTransitionLease(id);if(!current||current.token!==token){endCloudTransition(id,token);return}write();updateCloudTransitionShield(id)},10000);updateCloudTransitionShield(id);return true}catch(_){return false}}
 function endCloudTransition(id,token){clearInterval(cloudTransitionLeaseTimer);cloudTransitionLeaseTimer=0;try{const current=JSON.parse(localStorage.getItem(cloudTransitionActiveKey(id))||'null');if(current?.token===token)localStorage.removeItem(cloudTransitionActiveKey(id))}catch(_){}if(cloudTransitionLease?.id===id&&cloudTransitionLease.token===token)cloudTransitionLease=null;updateCloudTransitionShield(id)}
-addEventListener('storage',e=>{if(e.key===cloudTransitionActiveKey(cloudRoom?.id))updateCloudTransitionShield(cloudRoom?.id)});
+function handleCloudTransitionStorage(e){const id=cloudRoom?.id;if(!id)return;if(e.key===cloudTransitionActiveKey(id)){updateCloudTransitionShield(id);if(!cloudTransitionActive(id))followCloudTransitionReplacement(id);return}if((e.key===cloudTransitionReplacementKey(id)||e.key==='ghdraw:cloudOwner:'+id)&&!cloudTransitionActive(id))followCloudTransitionReplacement(id)}
+addEventListener('storage',handleCloudTransitionStorage);
 function cloudEnd(revoke){
 	 if(revoke&&cloudRoom&&cloudTransitionActive(cloudRoom.id)){toast(L2('Yeni oda geçişi sürüyor; eski oda kapatılmadı.','A room transition is in progress; the old room was not closed.'));return false}
 		 const r=cloudRoom;if(revoke&&r&&(cloudInflight||cloudPending||cloudReceiptQuotaBlocked||cloudCommentLimitBlocked||cloudDiff(cloudBase||cloudBoard(),cloudBoard()).length)){toast(L2('Bekleyen çevrimdışı düzenleme/outbox korunuyor. Eski oda kapatılmadan önce “Yeni oda oluştur” ile güvenli kopyayı tamamla.','Pending offline edits/outbox are preserved. Finish “Create new room” before closing the old room.'));return false}const stale=!!r&&(r.generationStale||!cloudRoomGenerationCurrent(r));if(stale)invalidateStaleCloudRoom(r.id,readCloudGeneration(r.id).value);liveStop();clearInterval(cloudTimer);cloudTimer=0;cloudRoom=null;cloudBase=null;cloudRev=0;cloudInflight=null;cloudProtocolBlocked=false;cloudReceiptQuotaBlocked=false;cloudCommentLimitBlocked=false;cloudProtocolVerified=false;collabOn=false;hostConn=null;isHost=false;conns=[];roomId=null;setSyncBadge('');history.replaceState(null,'',location.href.split('#')[0]);if(!stale)save();setStatus();buildPages();render();
@@ -1279,7 +1296,7 @@ async function cloudPrepareRoomTransition(){
 
 async function cloudStartNewRoom(){
  const id=cloudRoom?.id;if(!id||!navigator.locks||typeof navigator.locks.request!=='function'){toast(L2('Bu tarayıcı sekmeler arası güvenli kilidi desteklemiyor; oda geçişi durduruldu.','This browser lacks cross-tab locking; the room transition was stopped.'));return false}
- try{return await runCloudRoomLocked(id,async()=>{if(!cloudRoom||cloudRoom.id!==id||!cloudRoomGenerationCurrent(cloudRoom))throw new Error(L2('Eski oda sürümü değişti; yeni oda açılmadı. Yerel çalışma korunuyor.','The old room generation changed; no new room was created. Local work is preserved.'));const started=beginCloudTransition(id),token=cloudTransitionLease?.token;if(!started||!token)throw new Error(L2('Başka bir sekmede oda geçişi sürüyor veya geçiş kilidi saklanamadı. Eski oda ve düzenlemeler korunuyor.','A room transition is active in another tab, or its lock could not be stored. The old room and edits are preserved.'));try{return await cloudStartNewRoomLocked()}finally{endCloudTransition(id,token)}})}catch(e){toast(e.message);return false}
+ try{return await runCloudRoomLocked(id,async()=>{if(!cloudRoom||cloudRoom.id!==id||!cloudRoomGenerationCurrent(cloudRoom))throw new Error(L2('Eski oda sürümü değişti; yeni oda açılmadı. Yerel çalışma korunuyor.','The old room generation changed; no new room was created. Local work is preserved.'));if(editing)finishEdit();if(drag||editing)throw new Error(L2('Düzenleme tamamlanınca yeni oda geçişini yeniden dene.','Finish the current edit before retrying the room transition.'));const started=beginCloudTransition(id),token=cloudTransitionLease?.token;if(!started||!token)throw new Error(L2('Başka bir sekmede oda geçişi sürüyor veya geçiş kilidi saklanamadı. Eski oda ve düzenlemeler korunuyor.','A room transition is active in another tab, or its lock could not be stored. The old room and edits are preserved.'));try{return await cloudStartNewRoomLocked()}finally{endCloudTransition(id,token)}})}catch(e){toast(e.message);return false}
 }
 async function cloudStartNewRoomLocked(){
  let plan=null,created=null,localBeforeJoin=null,installed=false,joined=false,paused=false,oldState=null;
@@ -1296,7 +1313,7 @@ async function cloudStartNewRoomLocked(){
   merged=cloudRebase(plan.board,plan.sourceBoard,localBeforeJoin).board;merged=cloudRebase(merged,plan.board,cloudBoard(true)).board;if(!normalizeCloudRoomBoard(merged,false))throw new Error(L2('Yeni oda açıldı, ancak geçişteki ek farklar güvenle birleştirilemedi; kurtarma kopyası ve eski oda korunuyor.','The new room opened, but additional transition edits could not be merged safely; the recovery copy and old room are preserved.'));
   if(JSON.stringify(merged)!==JSON.stringify(cloudBoard(true))){if(!restoreCloudSnapshot({board:merged},created.id,cloudGenerationValue(checkpoint)))throw new Error(L2('Yeni odaya ek farklar yüklenemedi; yerel kurtarma kopyası korunuyor.','Additional edits could not be loaded into the new room; the local recovery copy is preserved.'));await saveCloudCheckpoint(created.id,checkpoint.base,checkpoint.rev,checkpoint.expires,null,merged,null,cloudGenerationValue(checkpoint));const verify=await cloudCheckpoint(created.id);if(!verify||verify.rev!==checkpoint.rev||JSON.stringify(verify.base)!==JSON.stringify(checkpoint.base)||verify.inflight)throw new Error(L2('Yeni odadaki ek farkların checkpoint’i doğrulanamadı.','The checkpoint for additional edits in the new room could not be verified.'));cloudBase=structuredClone(verify.base);cloudRev=verify.rev;cloudInflight=null;cloudPending=cloudDiff(verify.base,merged).length>0;setSyncBadge(cloudPending?'pending':'');if(cloudPending&&navigator.onLine)await cloudSync()}
   const finalBoard=cloudBoard(true),finalCheckpoint=await cloudCheckpoint(created.id),settled=!!finalCheckpoint&&!finalCheckpoint.inflight&&!cloudPending&&JSON.stringify(finalCheckpoint.base)===JSON.stringify(finalBoard);let oldDeleted=false,oldChanged=false;
-  if(!plan.unresolved&&settled&&plan.oldOwner&&Number.isSafeInteger(plan.serverRev)){try{await cloudRequest('/owner/'+plan.oldRoomId,{owner:plan.oldOwner,expectedRev:plan.serverRev},'DELETE');oldDeleted=true;localStorage.removeItem('ghdraw:cloudOwner:'+plan.oldRoomId)}catch(e){oldDeleted=false;oldChanged=e.status===409&&e.code==='room_revision_changed'}}
+  if(!plan.unresolved&&settled&&plan.oldOwner&&Number.isSafeInteger(plan.serverRev)&&saveCloudTransitionReplacement(plan.oldRoomId,created.id,plan.serverRev)){try{await cloudRequest('/owner/'+plan.oldRoomId,{owner:plan.oldOwner,expectedRev:plan.serverRev},'DELETE');oldDeleted=true;localStorage.removeItem('ghdraw:cloudOwner:'+plan.oldRoomId)}catch(e){oldDeleted=false;oldChanged=e.status===409&&e.code==='room_revision_changed'}}
   if(oldDeleted)try{await deleteCloudRoomTransition(plan.oldRoomId)}catch(_){}
   if(plan.unresolved)toast(L2('Yeni oda oluşturuldu. Sunucunun kabul etmediği işlem eski odanın outbox’ında ve cihaz kurtarma kopyasında korundu; eski oda silinmedi.','New room created. The operation not accepted by the server remains in the old outbox and device recovery copy; the old room was not deleted.'));
   else if(oldDeleted)toast(L2('Yeni oda eşitlenip doğrulandı; eski oda ancak bundan sonra kapatıldı.','The new room was synced and verified; only then was the old room closed.'));
@@ -1489,7 +1506,7 @@ function startEdit(e,isNew){
   editing=e;e.__new=isNew;ed.value=e.text||'';ed.style.display='block';
   applyEditorStyle();ed.focus();ed.setSelectionRange(ed.value.length,ed.value.length);render();
 }
-function finishEdit(){
+function finishEdit(){if(cloudTransitionBlocksWrites())return;
   if(!editing)return;
   const e=editing;editing=null;ed.style.display='none';
   const txt=ed.value,isNew=e.__new;delete e.__new;
@@ -1690,7 +1707,7 @@ document.addEventListener('keydown',e=>{
   if(map[k]){e.preventDefault();setTool(map[k])}
 });
 document.addEventListener('keyup',e=>{if(e.key===' '){space=false;if(!drag)cv.style.cursor=cursorFor(tool)}});
-function resize(){dpr=window.devicePixelRatio||1;W=innerWidth;H=innerHeight;cv.width=W*dpr;cv.height=H*dpr;gridCanvas.width=W*dpr;gridCanvas.height=H*dpr;render()}
+function resize(){dpr=window.devicePixelRatio||1;W=innerWidth;H=innerHeight;cv.width=W*dpr;cv.height=H*dpr;gridCanvas.width=W*dpr;gridCanvas.height=H*dpr;updateToolsScrollHint();render()}
 addEventListener('resize',resize);
 /* ===== GHDraw v3: shape library, collaboration, touch ===== */
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -1883,7 +1900,7 @@ function buildEmoji(box){
   q.oninput=()=>{emojiQ=q.value;row.querySelectorAll('.ecat').forEach((x,j)=>x.classList.toggle('on',!emojiQ&&j===emojiCat));fill()};
   fill();
 }
-function groupSel(un){
+function groupSel(un){if(cloudTransitionBlocksWrites())return;
   if(!sel.size)return;const g=uid();
   els.forEach(e=>{if(sel.has(e.id)){if(un)delete e.g;else e.g=g}});commit();render();
 }
@@ -2277,6 +2294,7 @@ const NOTE_COLORS=[['#ffec99','#c9a400'],['#b2f2bb','#2f9e44'],['#a5d8ff','#1c7e
 function mkNote(p){return{id:uid(),type:'rect',seed:Math.floor(Math.random()*1e9),stroke:'#c9a400',sw:1,opacity:100,style:'solid',rough:0,x:p.x-90,y:p.y-60,w:180,h:130,bg:'#ffec99',fill:'solid',round:true,note:1,txt:'',au:myName,ts:Date.now()}}
 function mkPin(p){return{id:uid(),type:'ellipse',seed:Math.floor(Math.random()*1e9),stroke:'#ffffff',sw:2,opacity:100,style:'solid',rough:0,x:p.x-15,y:p.y-15,w:30,h:30,bg:'#6965db',fill:'solid',round:true,cm:1,th:[],ts:Date.now(),au:myName}}
 function placeAnno(kind,p){
+  if(cloudTransitionBlocksWrites())return;
   const e=kind==='note'?mkNote(p):mkPin(p);els.push(e);setTool('select');sel=new Set([e.id]);commit();syncUI();render();
   if(kind==='note')editNote(e);else openThread(e);
 }
@@ -2321,11 +2339,11 @@ function editNote(e){
   const h=mk('h3');h.textContent=L2('Yapışkan not','Sticky note');b.appendChild(h);
   const ta=document.createElement('textarea');ta.id='noteTxt';ta.maxLength=600;ta.value=e.txt||'';ta.rows=5;ta.style.cssText='width:100%;resize:vertical;font:inherit;font-size:16px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);user-select:text;-webkit-user-select:text';b.appendChild(ta);
   const cr=mk('div','cact');cr.style.margin='8px 0';
-  for(const[bg,st]of NOTE_COLORS){const x=document.createElement('button');x.style.cssText=`width:34px;height:34px;border-radius:50%;background:${bg};border:2px solid ${e.bg===bg?'#6965db':st}`;x.setAttribute('aria-label',bg);x.onclick=()=>{e.bg=bg;e.stroke=st;[...cr.children].forEach(y=>y.style.borderColor=y===x?'#6965db':y.dataset.st);render()};x.dataset.st=st;cr.appendChild(x)}
+  for(const[bg,st]of NOTE_COLORS){const x=document.createElement('button');x.style.cssText=`width:34px;height:34px;border-radius:50%;background:${bg};border:2px solid ${e.bg===bg?'#6965db':st}`;x.setAttribute('aria-label',bg);x.onclick=()=>{if(cloudTransitionBlocksWrites())return;e.bg=bg;e.stroke=st;[...cr.children].forEach(y=>y.style.borderColor=y===x?'#6965db':y.dataset.st);render()};x.dataset.st=st;cr.appendChild(x)}
   b.appendChild(cr);
   const act=mk('div','cact');
-  const ok=mk('button','pbtn');ok.textContent=L2('Tamam','Done');ok.onclick=()=>{e.txt=ta.value;if(!e.au)e.au=myName;commit();render();closeModal()};
-  const del=mk('button','sbtn');del.textContent=L2('Notu sil','Delete note');del.onclick=()=>{els=els.filter(x=>x.id!==e.id);sel=new Set();commit();syncUI();render();closeModal()};
+  const ok=mk('button','pbtn');ok.textContent=L2('Tamam','Done');ok.onclick=()=>{if(cloudTransitionBlocksWrites())return;e.txt=ta.value;if(!e.au)e.au=myName;commit();render();closeModal()};
+  const del=mk('button','sbtn');del.textContent=L2('Notu sil','Delete note');del.onclick=()=>{if(cloudTransitionBlocksWrites())return;els=els.filter(x=>x.id!==e.id);sel=new Set();commit();syncUI();render();closeModal()};
   act.appendChild(ok);act.appendChild(del);b.appendChild(act);
   $('#modal').classList.add('open');setTimeout(()=>ta.focus(),50);
 }
@@ -2339,9 +2357,9 @@ function openThread(e){
   const ta=document.createElement('textarea');ta.rows=2;ta.maxLength=500;ta.placeholder=L2('Yorum yaz...','Write a comment...');ta.style.cssText='width:100%;resize:vertical;font:inherit;font-size:16px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);user-select:text;-webkit-user-select:text';b.appendChild(ta);
   const act=mk('div','cact');act.style.marginTop='8px';
   if(!cloudCanAppendComment(e)){const limit=mk('p','cn');limit.textContent=L2('Bu başlık 10.000 yorum sınırına ulaştı. Yeni yorum eklenemez.','This thread has reached its 10,000-comment limit. No new comment can be added.');b.appendChild(limit)}
-  const send=mk('button','pbtn');send.textContent=L2('Gönder','Send');send.onclick=()=>{const t=ta.value.trim();if(!t)return;if(!cloudCanAppendComment(e)){toast(L2('Bu başlık 10.000 yorum sınırına ulaştı. Yeni yorum eklenemez.','This thread has reached its 10,000-comment limit. No new comment can be added.'));return}const comments=e.th||[];e.th=comments.concat([{id:uid(),n:myName,c:myColor,t,ts:Date.now()}]);commit();render();openThread(e)};
-  const rs=mk('button','sbtn');rs.textContent=e.done?L2('Yeniden aç','Reopen'):L2('Çözüldü','Resolve');rs.onclick=()=>{e.done=!e.done;e.bg=e.done?'#868e96':'#6965db';commit();render();closeModal()};
-  const del=mk('button','sbtn');del.textContent=L2('Sil','Delete');del.onclick=()=>{els=els.filter(x=>x.id!==e.id);sel=new Set();commit();syncUI();render();closeModal()};
+  const send=mk('button','pbtn');send.textContent=L2('Gönder','Send');send.onclick=()=>{if(cloudTransitionBlocksWrites())return;const t=ta.value.trim();if(!t)return;if(!cloudCanAppendComment(e)){toast(L2('Bu başlık 10.000 yorum sınırına ulaştı. Yeni yorum eklenemez.','This thread has reached its 10,000-comment limit. No new comment can be added.'));return}const comments=e.th||[];e.th=comments.concat([{id:uid(),n:myName,c:myColor,t,ts:Date.now()}]);commit();render();openThread(e)};
+  const rs=mk('button','sbtn');rs.textContent=e.done?L2('Yeniden aç','Reopen'):L2('Çözüldü','Resolve');rs.onclick=()=>{if(cloudTransitionBlocksWrites())return;e.done=!e.done;e.bg=e.done?'#868e96':'#6965db';commit();render();closeModal()};
+  const del=mk('button','sbtn');del.textContent=L2('Sil','Delete');del.onclick=()=>{if(cloudTransitionBlocksWrites())return;els=els.filter(x=>x.id!==e.id);sel=new Set();commit();syncUI();render();closeModal()};
   act.appendChild(send);act.appendChild(rs);act.appendChild(del);b.appendChild(act);
   $('#modal').classList.add('open');setTimeout(()=>ta.focus(),50);
 }
