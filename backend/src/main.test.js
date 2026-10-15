@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
 import vm from 'node:vm';
 import {Client,Query,TablesDB} from 'node-appwrite';
 import {BOARD_COORD_LIMIT,BOARD_POINT_LIMIT,CLEANUP_PAGE_BUDGET,CLEANUP_ROW_BUDGET,CLEANUP_SPECIAL_ROW_BUDGET,CLEANUP_TIME_BUDGET_MS,createAppwriteDb,createHandler,LIVE_CHAT_MESSAGE_LIMIT,LIVE_REQUEST_MAX_BYTES,LIVE_RESPONSE_MAX_BYTES,LIVE_ROOM_PEER_LIMIT,LIVE_ROOM_REQUESTS_PER_SECOND,LIVE_ROW_MAX_BYTES,ROOM_OP_RECEIPT_LIMIT} from './main.js';
@@ -137,6 +138,15 @@ const createShare=async(fx,kind='view')=>{
  assert.equal(response.status,201);return response.body;
 };
 const roomQuotaRowId=id=>'q'+id.slice(0,31);
+const roomOpReceiptRowId=(roomId,opId)=>'o'+createHash('sha256').update(`ghdraw-room-op:${roomId}:${opId}`).digest('hex').slice(0,31);
+const paddedReceiptIds=(existing,count,excluded=[])=>{
+ const ids=[...existing],used=new Set([...existing,...excluded]);
+ for(let serial=0;ids.length<count;serial++){
+  const id='o'+serial.toString(16).padStart(31,'0');if(used.has(id))continue;
+  used.add(id);ids.push(id);
+ }
+ return ids;
+};
 const update=(fx,id,{opId='11111111111111111111111111111111',baseRev=0,shapeId='shape-2'}={})=>fx.call({method:'POST',path:`/room/${id}`,body:{opId,baseRev,changes:[{t:'put',pid:'page-1',e:{id:shapeId,type:'ellipse',x:0,y:0,w:10,h:10}}]}});
 const seededShares=n=>Array.from({length:n},(_,i)=>{const id=(0x10000+i).toString(16).padStart(32,'0'),data={kind:'view',expires:Date.now()+86400000,board:board()};return [id,{$id:id,...rowData(data),$permissions:[]}]});
 const MAX_PAYLOAD=12*1024*1024;
@@ -181,7 +191,23 @@ test('room receipt cap fits a Free-plan owner-delete transaction with 100-row bu
  const freeRowsPerBulk=100,freeTransactionOperations=100,fixedDeleteRows=5,bulkDeleteOperations=Math.ceil(ROOM_OP_RECEIPT_LIMIT/freeRowsPerBulk);
  assert.equal(ROOM_OP_RECEIPT_LIMIT,9400);assert.ok(bulkDeleteOperations+fixedDeleteRows<=freeTransactionOperations,`${bulkDeleteOperations} bulk deletes plus ${fixedDeleteRows} fixed deletes must fit in ${freeTransactionOperations} staged operations`);
 });
-
+test('room receipt limit accepts operation 9,400, rejects the next without mutation, and preserves its duplicate ACK',async()=>{
+ const fx=fixture(),room=await createShare(fx,'room'),firstOpId='1'.repeat(32),finalOpId='2'.repeat(32),rejectedOpId='3'.repeat(32);
+ const first=await update(fx,room.id,{opId:firstOpId,baseRev:0,shapeId:'cap-first'});assert.equal(first.status,200);
+ const quotaId=roomQuotaRowId(room.id),quotaRow=fx.db.rows.get(quotaId),quota=JSON.parse(quotaRow.payload);
+ const finalReceiptId=roomOpReceiptRowId(room.id,finalOpId),rejectedReceiptId=roomOpReceiptRowId(room.id,rejectedOpId);
+ quota.receiptIds=paddedReceiptIds(quota.receiptIds,ROOM_OP_RECEIPT_LIMIT-1,[finalReceiptId,rejectedReceiptId]);quota.count=ROOM_OP_RECEIPT_LIMIT-1;
+ fx.db.rows.set(quotaId,{$id:quotaId,...rowData(quota),$permissions:quotaRow.$permissions});
+ const accepted=await update(fx,room.id,{opId:finalOpId,baseRev:first.body.rev,shapeId:'cap-final'});assert.equal(accepted.status,200);
+ const atLimit=JSON.parse(fx.db.rows.get(quotaId).payload);assert.equal(atLimit.count,ROOM_OP_RECEIPT_LIMIT);assert.equal(atLimit.receiptIds.length,ROOM_OP_RECEIPT_LIMIT);
+ const roomBefore=fx.db.rows.get(room.id).payload,quotaBefore=fx.db.rows.get(quotaId).payload,rowCount=fx.db.rows.size;
+ const rejected=await update(fx,room.id,{opId:rejectedOpId,baseRev:accepted.body.rev,shapeId:'cap-rejected'});
+ assert.equal(rejected.status,409);assert.equal(rejected.body.error,'room_receipt_limit');assert.match(rejected.body.message,/9,400-operation receipt limit/);
+ assert.equal(fx.db.rows.get(room.id).payload,roomBefore,'the 9,401st operation cannot mutate the room');assert.equal(fx.db.rows.get(quotaId).payload,quotaBefore,'the rejected operation cannot increment the receipt ledger');assert.equal(fx.db.rows.size,rowCount,'the rejected operation creates no receipt or side row');assert.equal(fx.db.rows.has(rejectedReceiptId),false);
+ const retry=await update(fx,room.id,{opId:finalOpId,baseRev:first.body.rev,shapeId:'cap-final'});
+ assert.equal(retry.status,200);assert.equal(retry.body.duplicate,true);assert.equal(retry.body.ack,finalOpId,'the accepted 9,400th operation remains retryable at the cap');
+ assert.equal(fx.db.rows.get(room.id).payload,roomBefore,'duplicate ACK does not replay the room mutation');assert.equal(fx.db.rows.get(quotaId).payload,quotaBefore,'duplicate ACK does not consume another receipt');assert.equal(fx.db.rows.size,rowCount);
+});
 test('OPTIONS and health are available without database credentials or a DB connection',async()=>{
  const fx=fixture();const preflight=await fx.call({method:'OPTIONS',path:'/create'});assert.equal(preflight.status,204);assert.equal(preflight.headers['Access-Control-Allow-Origin'],'https://ghdraw.vercel.app');
  const health=await fx.call({method:'GET',path:'/health'});assert.deepEqual(health.body,{ok:true});assert.equal(fx.factories,0);
