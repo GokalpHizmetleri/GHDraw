@@ -1063,7 +1063,7 @@ function saveCloudCheckpoint(id,base,rev,expires,inflight,local,restoreId=null,g
 function scheduleCloudSnapshot(id,generation=cloudRoom?.id===id?(cloudRoom.generation===undefined?0:cloudRoom.generation):0){clearTimeout(cloudSnapshotTimer);const board=cloudBoard(true),updatedAt=Date.now();cloudSnapshotTimer=setTimeout(()=>saveCloudLocalSnapshot(id,board,updatedAt,generation).catch(()=>{if(cloudRoom?.id===id&&cloudRoom.generation!==generation)invalidateStaleCloudRoom(id,readCloudGeneration(id).value);else setSyncBadge('storage')}),250)}
 function localBoardSavedAt(){try{return Number(JSON.parse(localStorage.getItem('ghdraw:v2')||'null')?.savedAt)||0}catch(_){return 0}}
 function isBoardObject(value){return !!value&&typeof value==='object'&&!Array.isArray(value)}
-const BOARD_COORD_LIMIT=1e100,BOARD_CAMERA_LIMIT=9e9;
+const BOARD_COORD_LIMIT=1e9,BOARD_CAMERA_LIMIT=9e9;
 function validBoardCamera(value){return isBoardObject(value)&&Number.isFinite(value.x)&&Number.isFinite(value.y)&&Number.isFinite(value.z)&&value.z>=0.1&&value.z<=8}
 function clampBoardCamera(value){const bound=n=>Number.isFinite(n)?Math.max(-BOARD_CAMERA_LIMIT,Math.min(BOARD_CAMERA_LIMIT,n)):0;return{x:bound(value?.x),y:bound(value?.y),z:Number.isFinite(value?.z)?Math.max(.1,Math.min(8,value.z)):1}}
 function boardElementsBounds(elements){let x=Infinity,y=Infinity,r=-Infinity,b=-Infinity;for(const e of elements){const points=Array.isArray(e.pts)?e.pts:[[e.x,e.y],[e.x+e.w,e.y+e.h]];for(const p of points){x=Math.min(x,p[0]);y=Math.min(y,p[1]);r=Math.max(r,p[0]);b=Math.max(b,p[1])}}return{x,y,w:r-x,h:b-y}}
@@ -1083,7 +1083,7 @@ function validBoardElement(e){
   const validPoints=points=>Array.isArray(points)&&points.length>0&&points.length<=1e6&&points.every(q=>Array.isArray(q)&&(q.length===2||q.length===3)&&finite(q[0])&&finite(q[1])&&(q.length<3||q[2]===null||Number.isFinite(q[2])&&q[2]>=0&&q[2]<=1));
   if(!optional('pts',validPoints))return false;
   if(linear){if(!validPoints(e.pts))return false}
-  else if(!shapes.includes(e.type)||![e.x,e.y,e.w,e.h].every(finite)||e.w<0||e.h<0)return false;
+  else if(!shapes.includes(e.type)||![e.x,e.y,e.w,e.h].every(finite)||e.w<0||e.h<0||Math.abs(e.x+e.w)>BOARD_COORD_LIMIT||Math.abs(e.y+e.h)>BOARD_COORD_LIMIT)return false;
   if(e.type==='text'&&(!Number.isFinite(e.size)||e.size<6||e.size>400))return false;
   if(e.type==='image'&&!((typeof e.src==='string'&&e.src.length>0)||(typeof e.giphyId==='string'&&e.giphyId.length>0)))return false;
   if(e.type==='video'&&!(typeof e.src==='string'&&e.src.length>0))return false;
@@ -1226,9 +1226,10 @@ async function cloudJoinLocked(id,host=false,createdHere=false){
  let localSnapshot=null;try{localSnapshot=await cloudLocalSnapshot(id)}catch(_){}
  const savedRoomId=createdHere?id:localBoardRoomId(),savedGeneration=localBoardRestoreGeneration(),currentGeneration=cloudRoom?.id===id?cloudGenerationValue(cloudRoom):savedGeneration,current=cloudBoard(),snapshotGeneration=localSnapshot?cloudGenerationValue(localSnapshot):null,snapshotBoard=localSnapshot&&snapshotGeneration===roomGeneration&&(localSnapshot.updatedAt>localBoardSavedAt()||savedRoomId!==id)?localSnapshot.board:null,safeLocal=cloudRejoinGenerationBoard(id,savedRoomId,currentGeneration,current,snapshotBoard,snapshotBoard?snapshotGeneration:null,cachedReady?cached.base:null,null,roomGeneration);
  if(safeLocal&&safeLocal!==current){if(!cloudJoinBoardProtected()){setSyncBadge('stale');toast(L2('Katılım sırasında pano değişti ve yedeklenemedi. Üzerine yazılmadı; güncel panoyu .ghdraw olarak dışa aktar veya alan açıp tekrar dene.','The board changed during join and could not be backed up. It was not overwritten; export the latest board as .ghdraw or free storage and retry.'));return}restoreCloudSnapshot({board:safeLocal},id,roomGeneration)}
- if(!navigator.onLine){activateOfflineCloud(id,host,cached);return}
- try{
-  const d=await cloudRequest('/room/'+id);if(d.kind&&d.kind!=='room')throw Object.assign(new Error('room'),{status:404});
+  if(!navigator.onLine){activateOfflineCloud(id,host,cached);return}
+  try{
+   const joinBoardFingerprint=localBoardFingerprint(localBoardRecord());
+   const d=await cloudRequest('/room/'+id);if(editing)finishEdit();if(drag||localBoardFingerprint(localBoardRecord())!==joinBoardFingerprint){if(!cloudJoinBoardProtected()){setSyncBadge('stale');toast(L2('Katılım sırasında pano değişti ve yedeklenemedi. Üzerine yazılmadı; güncel panoyu .ghdraw olarak dışa aktar veya alan açıp tekrar dene.','The board changed during join and could not be backed up. It was not overwritten; export the latest board as a .ghdraw file or free storage and retry.'));return}cloudPending=true;setSyncBadge('pending');toast(L2('Katılım sürerken panoda düzenleme yapıldı. Düzenlemeler cihazda korundu; oda açılmadı. Düzenlemeyi bitirip yeniden bağlan.','The board changed while joining. Your edits were kept on this device; the room was not opened. Finish editing and rejoin.'));return}if(d.kind&&d.kind!=='room')throw Object.assign(new Error('room'),{status:404});
   if(!cloudProtocolCompatible(d)){if(!cachedReady||!activateOfflineCloud(id,host,cached,true))blockCloudProtocol();return}
   if(!cachedReady&&!createdHere&&safeLocal&&cloudBoardHasUncheckpointedChanges(d.board,safeLocal)){cloudPending=true;setSyncBadge('pending');toast(L2('Bu oda için güvenli eşitleme checkpoint’i yok. Yerel değişiklikler korunuyor; üzerine yazmamak için odaya bağlanmadım. Panoyu .ghdraw olarak dışa aktarın veya checkpoint’i olan cihazdan devam edin.','No safe sync checkpoint exists for this room. Local changes are preserved; I did not join to avoid overwriting them. Export the board as .ghdraw or continue from a device with a valid checkpoint.'));return}
   cloudProtocolVerified=true;if(!safeLocal&&!createdHere){if(!cloudJoinBoardProtected()){setSyncBadge('stale');toast(L2('Katılım sırasında pano değişti ve yedeklenemedi. Üzerine yazılmadı; güncel panoyu .ghdraw olarak dışa aktar veya alan açıp tekrar dene.','The board changed during join and could not be backed up. It was not overwritten; export the latest board as .ghdraw or free storage and retry.'));return}restoreCloudSnapshot({board:d.board},id,roomGeneration)}
