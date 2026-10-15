@@ -3,7 +3,7 @@
 ## Frontend endpoint build targets
 
 - The source `index.html` contains no default cloud endpoint. An unbuilt/source page remains offline-only; cloud and AI requests fail closed when no endpoint is configured.
-- Build the test frontend explicitly with `node scripts/build.mjs --target test`. This target always selects `https://ghdraw-test-backend.fra.appwrite.run`, regardless of any production environment variable.
+- Build the test frontend explicitly with `node scripts/build.mjs --target test`. The endpoint comes from `backend/src/targets.js` and selects the isolated test Function, regardless of any production environment variable.
 - Build production only with the actual, newly provisioned production Function URL: `GHDRAW_CLOUD_PRODUCTION_ENDPOINT=https://<function>.<region>.appwrite.run node scripts/build.mjs --target production`.
 - Vercel uses the root `vercel.json` build command (`node scripts/build-vercel.mjs`) and publishes only `dist/vercel/`. The wrapper maps `VERCEL_ENV=production` to the production target and `preview`/`development` to the test target; absent or unknown `VERCEL_ENV` fails closed.
 - Set `GHDRAW_CLOUD_PRODUCTION_ENDPOINT` in Vercel's Production environment only, after the new Function URL exists. Preview builds ignore it and use the test Function. The source root is not a deployable cloud artifact.
@@ -11,15 +11,23 @@
 - The build validates URL shape and rejects known wrong targets; that is **not** proof the Function exists, is active, has the expected runtime, or passes CORS, permission, index, or cleanup checks. Confirm the exact new Function URL and live preflight before routing or deploying production. No production Function URL is currently recorded for this rollout.
 - The Chromium E2E suite builds the test target and installs its mock against the endpoint embedded in that build. It does not contact Appwrite; endpoint selection tests are in `backend/src/endpoint-config.test.js`.
 
-Run this checklist against the **exact Appwrite project, database, and table** that the Function will use. Do not enable or schedule expiry cleanup until every check passes.
+## Runtime Function/table allowlist
+
+- `backend/src/targets.js` is the single source of truth for Function IDs, database/table targets, and the frontend test endpoint.
+- The test Function ID `6ad10a3c0022dd5e25e3` must be configured with `DATABASE_ID=ghdraw` and `TABLE_ID=boards-test`. Its frontend endpoint is `https://ghdraw-test-backend.fra.appwrite.run`.
+- The production Function must use the exact ID `ghdraw-production-backend` and `DATABASE_ID=ghdraw`, `TABLE_ID=boards`. Do not create or enable it until code review and test gates pass.
+- Before any database operation, the backend checks Appwrite's `APPWRITE_FUNCTION_ID` and `APPWRITE_FUNCTION_PROJECT_ID` against the allowlist and requires the configured `DATABASE_ID`/`TABLE_ID` to match. Every TablesDB row operation is then bound to that target; a mismatch fails closed before the database client is constructed. Request data cannot choose a target.
+- Table permissions stay empty; public access, when enabled for anonymous GHDraw routes, belongs only to the Function's execute permission.
+
+Run the checklist below against the **exact Appwrite project, database, and table** for each Function. Do not enable or schedule expiry cleanup until every check passes.
 
 ## Required `expiresAt` index before enabling cleanup
 
-1. In the Appwrite Console, select the target project, then TablesDB database `ghdraw` and table `boards`.
-2. Verify that `expiresAt` exists as a scalar **DateTime** column. The cleanup query projects only `$id` and `expiresAt`; board payloads are not selected.
-3. In that same table, verify an index whose exact key list is `expiresAt` in **ascending** order. Confirm its status is **available/ready**, not building, failed, or absent. A DateTime column alone does not satisfy this preflight.
-4. If the required index is missing or not ready, create/wait for that exact ascending key index in the target table, then repeat the verification. Do not configure the scheduled cleanup until it is ready.
-5. Only after this preflight and a successful Function health check may the single GHDraw Function's expiry-cleanup schedule be enabled.
+1. In the Appwrite Console, select project `6ad06200002e031abe05`, TablesDB database `ghdraw`, and the exact target table: `boards-test` for the test Function or `boards` for production.
+2. Verify `payload` is required Longtext and `expiresAt` is an optional scalar **DateTime** column. The cleanup query projects only `$id` and `expiresAt`; board payloads are not selected.
+3. In that same table, verify the exact `expiresAt_asc` **Key** index on `expiresAt` in ascending order. Confirm its status is **Available/ready**, not building, failed, or absent. A DateTime column alone does not satisfy this preflight.
+4. If the required index is missing or not ready, create/wait for that exact ascending key index in that target table, then repeat the verification. Do not configure scheduled cleanup until it is ready.
+5. Only after this preflight and a successful Function health check may that Function's expiry-cleanup schedule be enabled.
 
 The cleanup uses a bounded `expiresAt <= cutoff` query ordered ascending. If that query fails (including because the index is missing or unavailable), the invocation returns **503**, not a success-shaped `{deleted: 0}` response. It does not delete rows before the first expiry query succeeds. Fix the schema/index in the target project and retry; do not treat a failed invocation as completed cleanup.
 
@@ -32,14 +40,14 @@ The cleanup uses a bounded `expiresAt <= cutoff` query ordered ascending. If tha
 
 ## Legacy or migrated room ledger preflight
 
-- This rollout targets a **new, blank `boards` table** and does not migrate old room data. Before routing production clients to this Function, verify the table contains no room rows. If any rows exist, keep routing disabled until every room has been inventoried and its private `q<first-31-room-id-chars>` row has been backfilled and independently verified.
+- This rollout targets a **new, blank production `boards` table** and a separate `boards-test` table; it does not migrate old room data. Before routing production clients to this Function, verify `boards` contains no room rows. If any rows exist, keep routing disabled until every room has been inventoried and its private `q<first-31-room-id-chars>` row has been backfilled and independently verified.
 - A valid ledger must identify the same room, contain unique correctly prefixed operation IDs in `receiptIds` and durable chat IDs in `chatReceiptIds`, have safe integer counts within 0–9,400, satisfy `count = receiptIds.length + chatCount`, and satisfy `chatReceiptIds.length <= chatCount`. Backfill must include every extant room-associated operation and chat receipt; never guess missing IDs or infer a complete ledger from the room payload alone.
 - The backend rejects missing/incomplete ledgers for room writes, chat sends, and owner deletion. Keep that fail-closed behavior; do not enable a legacy room by bypassing the guard. If the table cannot be proven blank or every ledger cannot be verified, stop the rollout rather than serving the affected room.
 
 ## Scope and verification
 
 - This checklist is a deployment prerequisite, not proof that a live Appwrite index currently exists.
-- Verify the selected project/database/table in the Console each time; do not infer index state from source code, an old schema note, or a different environment.
+- Verify the selected project/database/table in the Console each time; do not infer index state from source code, an old schema note, or the other environment's table.
 - Do not create a second Function for cleanup. Use the existing GHDraw Function and keep its timeout below the backend lock lease as documented in the project README.
-- Keep database and row permissions private. Do not use real user board data for cleanup smoke tests.
+- Keep database and row permissions private. Do not use real user board data for cleanup smoke tests. Disposable smoke-test rows belong only in `boards-test`; production `boards` must remain empty before routing.
 - When packaging the Function from `backend/`, include `shared/package.json` and `shared/board-element-contract.js`; `src/main.js` imports this nested CommonJS module, and the browser loads the same versioned contract from `/backend/shared/board-element-contract.js`.

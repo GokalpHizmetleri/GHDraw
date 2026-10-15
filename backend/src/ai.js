@@ -1,5 +1,4 @@
 import {createHmac} from 'node:crypto';
-const DB='ghdraw',TABLE='boards';
 const rowData=d=>({payload:JSON.stringify(d),expiresAt:new Date(d.expires).toISOString()});
 // Reserve before inference, transactionally. Store counts and a keyed client hash, never the text or raw IP.
 export async function reserveAI(db,ip,key,now=Date.now()){
@@ -9,7 +8,7 @@ export async function reserveAI(db,ip,key,now=Date.now()){
   const tx=await db.createTransaction({ttl:60});
   try{
    const rows=[];
-   for(const id of ids){let data,exists=true;try{const row=await db.getRow({databaseId:DB,tableId:TABLE,rowId:id,transactionId:tx.$id});data=JSON.parse(row.payload)}catch(e){if(e.code!==404)throw e;exists=false}
+   for(const id of ids){let data,exists=true;try{const row=await db.getRow({rowId:id,transactionId:tx.$id});data=JSON.parse(row.payload)}catch(e){if(e.code!==404)throw e;exists=false}
     if(!data||data.day!==day)data={kind:'ai-quota',day,n:0,minute:0,m:0,last:data?.last||0,expires:now+172800000};
     if(data.minute!==Math.floor(now/60000)){data.minute=Math.floor(now/60000);data.m=0}
     rows.push({id,data,exists});
@@ -20,7 +19,7 @@ export async function reserveAI(db,ip,key,now=Date.now()){
    else if(rows[0].data.m>=10)blocked={ok:false,error:'site_limit',retryAfter:60-now%60000/1000|0};
    if(blocked){await db.updateTransaction({transactionId:tx.$id,rollback:true});return blocked}
    rows[1].data.last=now;
-   for(const r of rows){r.data.n++;r.data.m++;const args={databaseId:DB,tableId:TABLE,rowId:r.id,data:rowData(r.data),transactionId:tx.$id};if(r.exists)await db.updateRow(args);else await db.createRow({...args,permissions:[]})}
+   for(const r of rows){r.data.n++;r.data.m++;const args={rowId:r.id,data:rowData(r.data),transactionId:tx.$id};if(r.exists)await db.updateRow(args);else await db.createRow({...args,permissions:[]})}
    await db.updateTransaction({transactionId:tx.$id,commit:true});return {ok:true};
   }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});if(e.code!==409||attempt===4)throw e}
  }

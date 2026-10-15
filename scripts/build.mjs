@@ -1,8 +1,9 @@
 import {copyFile, mkdir, readFile, writeFile} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
+import {TEST_CLOUD_ENDPOINT} from '../backend/src/targets.js';
 
-export const TEST_CLOUD_ENDPOINT = 'https://ghdraw-test-backend.fra.appwrite.run';
+export {TEST_CLOUD_ENDPOINT};
 export const LEGACY_CLOUD_ENDPOINT = 'https://ghdraw-expiring-links.fra.appwrite.run';
 export const PRODUCTION_ENDPOINT_ENV = 'GHDRAW_CLOUD_PRODUCTION_ENDPOINT';
 const CONFIG_MARKER = '<!-- GHDRAW_CLOUD_ENDPOINT_CONFIG -->';

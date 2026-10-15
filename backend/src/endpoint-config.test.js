@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {buildSite, LEGACY_CLOUD_ENDPOINT, PRODUCTION_ENDPOINT_ENV, TEST_CLOUD_ENDPOINT} from '../../scripts/build.mjs';
+import {APPWRITE_DATABASE_ID, FUNCTION_TARGETS, PRODUCTION_FUNCTION_ID, PRODUCTION_TABLE_ID, TEST_FUNCTION_ID, TEST_TABLE_ID} from './targets.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const PRODUCTION_FIXTURE = 'https://ghdraw-production-fixture.fra.appwrite.run';
@@ -33,6 +34,15 @@ function runVercelBuild(outDir, {vercelEnv, productionEndpoint} = {}) {
   assert.equal(runtime, 'node');
   return spawnSync(process.execPath, [path.join(ROOT, script), '--out-dir', outDir], {cwd: ROOT, env, encoding: 'utf8'});
 }
+
+test('frontend test build and backend allowlist select isolated test and production tables', () => {
+  const testTarget = FUNCTION_TARGETS[TEST_FUNCTION_ID];
+  const productionTarget = FUNCTION_TARGETS[PRODUCTION_FUNCTION_ID];
+  assert.equal(TEST_CLOUD_ENDPOINT, testTarget.frontendEndpoint);
+  assert.deepEqual({databaseId: testTarget.databaseId, tableId: testTarget.tableId}, {databaseId: APPWRITE_DATABASE_ID, tableId: TEST_TABLE_ID});
+  assert.deepEqual({databaseId: productionTarget.databaseId, tableId: productionTarget.tableId}, {databaseId: APPWRITE_DATABASE_ID, tableId: PRODUCTION_TABLE_ID});
+  assert.notEqual(testTarget.tableId, productionTarget.tableId);
+});
 
 test('test build explicitly selects the provisioned test Function, independent of production env', async t => {
   const temp = await temporaryDirectory(t);

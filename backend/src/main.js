@@ -4,7 +4,13 @@ import {gzipSync,gunzipSync} from 'node:zlib';
 import {handleAI} from './ai.js';
 import {applyRoomUpdate,validOpId} from './room-sync.js';
 import BoardElementContract from '../shared/board-element-contract.js';
-const DB='ghdraw',TABLE='boards',MAX=12*1024*1024,PAGE_SIZE=100,CREATE_LOCK_SEED='00000000000000000000000000000000',LOCK_LEASE_MS=60000;
+import {resolveFunctionTableTarget} from './targets.js';
+const MAX=12*1024*1024,PAGE_SIZE=100,CREATE_LOCK_SEED='00000000000000000000000000000000',LOCK_LEASE_MS=60000;
+const TABLE_METHODS=new Set(['createRow','getRow','updateRow','deleteRow','deleteRows','listRows']);
+export function bindTargetTable(db,target){
+ if(!target||typeof target.databaseId!=='string'||typeof target.tableId!=='string')throw new TypeError('A validated Appwrite table target is required');
+ return new Proxy(db,{get(object,property){const method=Reflect.get(object,property,object);if(TABLE_METHODS.has(property)&&typeof method==='function')return args=>method.call(object,{...args,databaseId:target.databaseId,tableId:target.tableId});return typeof method==='function'?method.bind(object):method}});
+}
 // Shared Free-plan per-room receipt budget: board operations, history restores and chat sends.
 export const ROOM_OP_RECEIPT_LIMIT=9_400,LIVE_CHAT_RECEIPT_LIMIT=ROOM_OP_RECEIPT_LIMIT;
 export const BOARD_COORD_LIMIT=BoardElementContract.COORD_LIMIT,BOARD_POINT_LIMIT=BoardElementContract.POINT_LIMIT;
@@ -46,19 +52,19 @@ export function createAppwriteDb({req,env=process.env,ClientClass=Client,TablesD
 const clearExpiredLock=async(db,rowId,cutoff=Date.now())=>{
  const tx=await db.createTransaction({ttl:60});
  try{
-  const row=await db.getRow({databaseId:DB,tableId:TABLE,rowId,transactionId:tx.$id}),data=JSON.parse(row.payload);
+  const row=await db.getRow({rowId,transactionId:tx.$id}),data=JSON.parse(row.payload);
   const expiry=Date.parse(row.expiresAt);
   if(data.kind!=='lock'||!Number.isFinite(expiry)||expiry>cutoff){await db.updateTransaction({transactionId:tx.$id,rollback:true});return false}
-  await db.deleteRow({databaseId:DB,tableId:TABLE,rowId,transactionId:tx.$id});
+  await db.deleteRow({rowId,transactionId:tx.$id});
   await db.updateTransaction({transactionId:tx.$id,commit:true});return true;
  }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});if(e.code===404||e.code===409)return false;throw e}
 };
 const releaseLock=async(db,rowId,leaseId)=>{
  const tx=await db.createTransaction({ttl:60});
  try{
-  const row=await db.getRow({databaseId:DB,tableId:TABLE,rowId,transactionId:tx.$id}),data=JSON.parse(row.payload);
+  const row=await db.getRow({rowId,transactionId:tx.$id}),data=JSON.parse(row.payload);
   if(data.kind!=='lock'||data.leaseId!==leaseId){await db.updateTransaction({transactionId:tx.$id,rollback:true});return false}
-  await db.deleteRow({databaseId:DB,tableId:TABLE,rowId,transactionId:tx.$id});
+  await db.deleteRow({rowId,transactionId:tx.$id});
   await db.updateTransaction({transactionId:tx.$id,commit:true});return true;
  }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});if(e.code===404||e.code===409)return false;throw e}
 };
@@ -67,7 +73,7 @@ const withLock=async(db,id,fn,{leaseMs=LOCK_LEASE_MS}={})=>{
  const rowId='k'+id.slice(0,31);let got=false,leaseId=null;
  for(let i=0;i<50&&!got;i++){
   const now=Date.now();leaseId=randomBytes(16).toString('hex');const lock={kind:'lock',leaseId,ts:now,expires:now+leaseMs};
-  try{await db.createRow({databaseId:DB,tableId:TABLE,rowId,data:rowData(lock),permissions:[]});got=true}
+  try{await db.createRow({rowId,data:rowData(lock),permissions:[]});got=true}
   catch(e){if(e.code!==409)throw e;await clearExpiredLock(db,rowId).catch(()=>{});await new Promise(r=>setTimeout(r,120+Math.random()*120))}
  }
  if(!got)throw {code:429};
@@ -78,9 +84,9 @@ const deleteExpiredAiRow=async(db,rowId,cutoff)=>{
  for(let attempt=0;attempt<3;attempt++){
   const tx=await db.createTransaction({ttl:60});
   try{
-   const row=await db.getRow({databaseId:DB,tableId:TABLE,rowId,transactionId:tx.$id}),expiry=Date.parse(row.expiresAt);
+   const row=await db.getRow({rowId,transactionId:tx.$id}),expiry=Date.parse(row.expiresAt);
    if(!Number.isFinite(expiry)||expiry>cutoff){await db.updateTransaction({transactionId:tx.$id,rollback:true});return false}
-   await db.deleteRow({databaseId:DB,tableId:TABLE,rowId,transactionId:tx.$id});
+   await db.deleteRow({rowId,transactionId:tx.$id});
    await db.updateTransaction({transactionId:tx.$id,commit:true});return true;
   }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});if(e.code===404)return false;if(e.code!==409||attempt===2)throw e}
  }
@@ -89,7 +95,7 @@ const deleteExpiredAiRow=async(db,rowId,cutoff)=>{
 const deleteExpiredRow=async(db,rowId,cutoff)=>{
  if(rowId.startsWith('ai-'))return deleteExpiredAiRow(db,rowId,cutoff);
  if(rowId.startsWith('k'))return clearExpiredLock(db,rowId,cutoff);
- try{await db.deleteRow({databaseId:DB,tableId:TABLE,rowId});return true}catch(e){if(e.code===404)return false;throw e}
+ try{await db.deleteRow({rowId});return true}catch(e){if(e.code===404)return false;throw e}
 };
 
 // Per-room write lock: a row created with a fixed id succeeds for exactly one caller (409 for the rest).
@@ -100,34 +106,35 @@ const histSnap=async (db,id,board,expires,manual)=>{
   const tx=await db.createTransaction({ttl:60});
   try{
    let data,exists=true;
-   try{const row=await db.getRow({databaseId:DB,tableId:TABLE,rowId:HID(id),transactionId:tx.$id});data=JSON.parse(row.payload)}catch(e){if(e.code!==404)throw e;exists=false;data={kind:'hist',expires,v:[]}}
+   try{const row=await db.getRow({rowId:HID(id),transactionId:tx.$id});data=JSON.parse(row.payload)}catch(e){if(e.code!==404)throw e;exists=false;data={kind:'hist',expires,v:[]}}
    const last=data.v[data.v.length-1];
    if(last&&(last.h===hash||(!manual&&now-last.ts<HGAP))){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});return 'skipped'}
    z=z||gzipSync(json).toString('base64');if(z.length>HMAX_ONE){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});return 'toolarge'}
    data.v.push({ts:now,m:manual?1:0,h:hash,n,pc,z});
    while(data.v.length>HMAX_N||(data.v.length>1&&data.v.reduce((a,x)=>a+x.z.length,0)>HMAX_TOTAL))data.v.shift();
-   const args={databaseId:DB,tableId:TABLE,rowId:HID(id),data:rowData(data),transactionId:tx.$id};
+   const args={rowId:HID(id),data:rowData(data),transactionId:tx.$id};
    if(exists)await db.updateRow(args);
    else await db.createRow({...args,permissions:[]});
    await db.updateTransaction({transactionId:tx.$id,commit:true});return 'saved';
   }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});if(e.code!==409||attempt===3)throw e}
  }
 };
-const histRead=async (db,id)=>{try{const row=await db.getRow({databaseId:DB,tableId:TABLE,rowId:HID(id)});return JSON.parse(row.payload)}catch(e){if(e.code===404)return {v:[]};throw e}};
+const histRead=async (db,id)=>{try{const row=await db.getRow({rowId:HID(id)});return JSON.parse(row.payload)}catch(e){if(e.code===404)return {v:[]};throw e}};
 
 export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=process.env,fetcher=fetch,clock=()=>Date.now()}={}){
  return async ({req,res,error})=>{
   const headers={'Access-Control-Allow-Origin':'https://ghdraw.vercel.app','Access-Control-Allow-Methods':'GET,POST,DELETE,OPTIONS','Access-Control-Allow-Headers':'Content-Type','Cache-Control':'no-store'};
   const reply=(v,status=200)=>res.json(v,status,headers);
   if(req.method==='OPTIONS')return res.text('',204,headers);
-  let dbInstance;
-  const getDb=()=>dbInstance||(dbInstance=dbFactory({req,env}));
-  const read=async (id,transactionId)=>{if(!/^[a-f0-9]{32}$/.test(id||''))throw {code:404};const row=await (await getDb()).getRow({databaseId:DB,tableId:TABLE,rowId:id,transactionId});const data=JSON.parse(row.payload);if(data.expires<=Date.now()){await (await getDb()).deleteRow({databaseId:DB,tableId:TABLE,rowId:id}).catch(()=>{});throw {code:410}}return data};
+  let dbInstance,target;
+  const getTarget=()=>target||(target=resolveFunctionTableTarget(env));
+  const getDb=()=>{if(!dbInstance){const targetTable=getTarget();dbInstance=bindTargetTable(dbFactory({req,env}),targetTable)}return dbInstance};
+  const read=async (id,transactionId)=>{if(!/^[a-f0-9]{32}$/.test(id||''))throw {code:404};const row=await (await getDb()).getRow({rowId:id,transactionId});const data=JSON.parse(row.payload);if(data.expires<=Date.now()){await (await getDb()).deleteRow({rowId:id}).catch(()=>{});throw {code:410}}return data};
   const forEachRows=async ({select,pageSize=PAGE_SIZE},visit)=>{
    const db=await getDb();let cursor=null;
    for(;;){
     const queries=[QueryApi.orderAsc('$id'),QueryApi.limit(pageSize)];if(cursor)queries.push(QueryApi.cursorAfter(cursor));if(select)queries.push(QueryApi.select(select));
-    const page=await db.listRows({databaseId:DB,tableId:TABLE,queries});
+    const page=await db.listRows({queries});
     if(!page||!Array.isArray(page.rows))throw new Error('Unexpected TablesDB row-list response');
     const keepGoing=await visit(page.rows),lastId=page.rows.length?page.rows[page.rows.length-1].$id:null;
     if(keepGoing===false||page.rows.length<pageSize)break;
@@ -141,7 +148,7 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
     const db=await getDb(),started=clock(),cutoff=started,cutoffIso=new Date(cutoff).toISOString();let deleted=0,scanned=0,pages=0,specialRows=0;
     while(scanned<CLEANUP_ROW_BUDGET&&pages<CLEANUP_PAGE_BUDGET&&clock()-started<CLEANUP_TIME_BUDGET_MS){
      const limit=Math.min(PAGE_SIZE,CLEANUP_ROW_BUDGET-scanned),queries=[QueryApi.lessThanEqual('expiresAt',cutoffIso),QueryApi.orderAsc('expiresAt'),QueryApi.limit(limit),QueryApi.select(['$id','expiresAt'])];
-     let page;try{page=await db.listRows({databaseId:DB,tableId:TABLE,queries})}catch(_){return reply({error:'Cleanup could not run. Verify that boards has a ready ascending expiresAt index; no successful cleanup was reported.'},503)}
+     let page;try{page=await db.listRows({queries})}catch(_){return reply({error:'Cleanup could not run. Verify that the configured table has a ready ascending expiresAt index; no successful cleanup was reported.'},503)}
      if(!page||!Array.isArray(page.rows))throw new Error('Unexpected TablesDB row-list response');
      if(!page.rows.length)break;
      pages++;scanned+=page.rows.length;const directIds=[];let budgetReached=false;
@@ -154,7 +161,7 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
       }else directIds.push(row.$id);
      }
      if(directIds.length&&!budgetReached&&clock()-started<CLEANUP_TIME_BUDGET_MS){
-      const result=await db.deleteRows({databaseId:DB,tableId:TABLE,queries:[QueryApi.equal('$id',directIds),QueryApi.lessThanEqual('expiresAt',cutoffIso)]});
+      const result=await db.deleteRows({queries:[QueryApi.equal('$id',directIds),QueryApi.lessThanEqual('expiresAt',cutoffIso)]});
       deleted+=Number.isSafeInteger(result?.total)?result.total:directIds.length;
      }
      if(budgetReached||page.rows.length<limit||clock()-started>=CLEANUP_TIME_BUDGET_MS)break;
@@ -181,7 +188,7 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
      let chatAck=null;
      try{
       let data,exists=true;
-      try{const row=await db.getRow({databaseId:DB,tableId:TABLE,rowId:pid,transactionId:tx.$id});data=JSON.parse(row.payload)}catch(e){if(e.code!==404)throw e;exists=false;data={kind:'live',expires:room.expires,presence:{},chat:[]}}
+      try{const row=await db.getRow({rowId:pid,transactionId:tx.$id});data=JSON.parse(row.payload)}catch(e){if(e.code!==404)throw e;exists=false;data={kind:'live',expires:room.expires,presence:{},chat:[]}}
       if(data.kind!=='live'||!data.presence||typeof data.presence!=='object'||Array.isArray(data.presence)||!Array.isArray(data.chat)){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'live_data_invalid'},409)}
       for(const [peerId,peer] of Object.entries(data.presence))if(!/^[a-z0-9]{6,24}$/.test(peerId)||!peer||!Number.isSafeInteger(peer.ts)||peer.ts<now-LIVE_PEER_TTL_MS)delete data.presence[peerId];
       const activeCount=Object.keys(data.presence).length,alreadyPresent=Object.prototype.hasOwnProperty.call(data.presence,b.cid);
@@ -196,19 +203,19 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
        let receipt=null,prior=null,messageHash=null,receiptId=null;
        if(b.mid){
         messageHash=createHash('sha256').update(msg).digest('hex');receiptId=liveChatReceiptRowId(id,b.mid);
-        try{receipt=JSON.parse((await db.getRow({databaseId:DB,tableId:TABLE,rowId:receiptId,transactionId:tx.$id})).payload)}catch(e){if(e.code!==404)throw e}
+        try{receipt=JSON.parse((await db.getRow({rowId:receiptId,transactionId:tx.$id})).payload)}catch(e){if(e.code!==404)throw e}
         prior=data.chat.find(m=>m?.id===b.mid);
         if(prior&&prior.m!==msg||receipt&&(receipt.kind!=='live-chat-receipt'||receipt.roomId!==id||receipt.mid!==b.mid||receipt.messageHash!==messageHash)){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'live_message_id_conflict',message:'This message ID was already used for a different message.'},409)}
         if(receipt)chatAck=b.mid;
        }
        if(!chatAck){
-        let quota;try{quota=JSON.parse((await db.getRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id),transactionId:tx.$id})).payload)}catch(e){if(e.code!==404)throw e;await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_limit',message:'This room has no safe shared receipt counter. The message was not sent.'},409)}
+        let quota;try{quota=JSON.parse((await db.getRow({rowId:roomOpQuotaRowId(id),transactionId:tx.$id})).payload)}catch(e){if(e.code!==404)throw e;await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_limit',message:'This room has no safe shared receipt counter. The message was not sent.'},409)}
         if(!validRoomReceiptQuota(quota,id)){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_limit',message:'This room has no complete safe receipt ledger. The message was not sent.'},409)}
         if(quota.count>=LIVE_CHAT_RECEIPT_LIMIT){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'live_chat_receipt_limit',message:'This room reached its shared 9,400 room receipt limit. The message remains queued and was not sent.'},409)}
         const nextQuota={...quota,count:quota.count+1,chatCount:roomChatCount(quota)+1,chatReceiptIds:b.mid?[...quota.chatReceiptIds,receiptId]:quota.chatReceiptIds};
-        if(b.mid){if(!prior)data.chat.push({id:b.mid,cid:b.cid,n:me.n,c:me.c,m:msg,ts:now});const record={kind:'live-chat-receipt',roomId:id,mid:b.mid,messageHash,expires:room.expires};await db.createRow({databaseId:DB,tableId:TABLE,rowId:receiptId,data:rowData(record),permissions:[],transactionId:tx.$id});chatAck=b.mid}
+        if(b.mid){if(!prior)data.chat.push({id:b.mid,cid:b.cid,n:me.n,c:me.c,m:msg,ts:now});const record={kind:'live-chat-receipt',roomId:id,mid:b.mid,messageHash,expires:room.expires};await db.createRow({rowId:receiptId,data:rowData(record),permissions:[],transactionId:tx.$id});chatAck=b.mid}
         else data.chat.push({id:randomBytes(6).toString('hex'),cid:b.cid,n:me.n,c:me.c,m:msg,ts:now});
-        await db.updateRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id),data:rowData(nextQuota),transactionId:tx.$id});
+        await db.updateRow({rowId:roomOpQuotaRowId(id),data:rowData(nextQuota),transactionId:tx.$id});
        }
       }
       data.chat=data.chat.slice(-LIVE_CHAT_LIMIT);
@@ -217,7 +224,7 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
       const response={peers,chat:data.chat,...(chatAck?{ack:chatAck}:{}),now},stored=rowData(data);
       if(Buffer.byteLength(stored.payload)>LIVE_ROW_MAX_BYTES){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'live_payload_limit',message:'Presence data exceeds its storage limit.'},413)}
       if(Buffer.byteLength(JSON.stringify(response))>LIVE_RESPONSE_MAX_BYTES){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'live_response_limit'},409)}
-      const args={databaseId:DB,tableId:TABLE,rowId:pid,data:stored,transactionId:tx.$id};
+      const args={rowId:pid,data:stored,transactionId:tx.$id};
       if(exists)await db.updateRow(args);else await db.createRow({...args,permissions:[]});
       await db.updateTransaction({transactionId:tx.$id,commit:true});
       return reply(response);
@@ -237,7 +244,7 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
      return await withLock(db,id,async()=>{
       const receiptId=historyRestoreReceiptRowId(id,b.restoreId);
       try{
-       const receipt=JSON.parse((await db.getRow({databaseId:DB,tableId:TABLE,rowId:receiptId})).payload);
+       const receipt=JSON.parse((await db.getRow({rowId:receiptId})).payload);
        if(receipt.kind!=='history-restore-receipt'||receipt.roomId!==id||receipt.restoreId!==b.restoreId)return reply({error:'History restore receipt is invalid'},409);
        if(receipt.ts!==b.ts)return reply({error:'restore_id_conflict'},409);
        const current=await read(id),{owner,ops,createReceiptId,...publicData}=current;
@@ -246,21 +253,21 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
       const h=await histRead(db,id),v=h.v.find(x=>x.ts===b.ts);if(!v)throw {code:404};
       const board=JSON.parse(gunzipSync(Buffer.from(v.z,'base64')).toString());if(!validBoard(board))throw {code:400};
       const current=await read(id);let quota;
-      try{quota=JSON.parse((await db.getRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id)})).payload)}catch(e){if(e.code!==404)throw e;return reply({error:'room_receipt_limit',message:'This room has no safe receipt counter. Create a new room to continue.'},409)}
+      try{quota=JSON.parse((await db.getRow({rowId:roomOpQuotaRowId(id)})).payload)}catch(e){if(e.code!==404)throw e;return reply({error:'room_receipt_limit',message:'This room has no safe receipt counter. Create a new room to continue.'},409)}
       const receiptIds=quota.receiptIds;
       if(!validRoomReceiptQuota(quota,id))return reply({error:'room_receipt_limit',message:'This room has no complete safe receipt ledger. Create a new room to continue.'},409);
       if(quota.count>=ROOM_OP_RECEIPT_LIMIT)return reply({error:'room_receipt_limit',message:'This room reached its shared 9,400 room receipt limit. Create a new room to continue; existing receipts are retained for safe retries.'},409);
       for(let attempt=0;attempt<4;attempt++){
        const tx=await db.createTransaction({ttl:60});
        try{
-        const d=await read(id,tx.$id),q=JSON.parse((await db.getRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id),transactionId:tx.$id})).payload),ids=q.receiptIds;
+        const d=await read(id,tx.$id),q=JSON.parse((await db.getRow({rowId:roomOpQuotaRowId(id),transactionId:tx.$id})).payload),ids=q.receiptIds;
         if(!validRoomReceiptQuota(q,id)){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_limit',message:'This room has no complete safe receipt ledger. Create a new room to continue.'},409)}
         if(q.count>=ROOM_OP_RECEIPT_LIMIT){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_limit',message:'This room reached its shared 9,400 room receipt limit. Create a new room to continue; existing receipts are retained for safe retries.'},409)}
         await histSnap(db,id,d.board,d.expires,true);
         d.board=board;d.rev=(Number.isSafeInteger(d.rev)?d.rev:0)+1;const nextQuota={...q,count:q.count+1,chatCount:roomChatCount(q),receiptIds:[...ids,receiptId]},receipt={kind:'history-restore-receipt',roomId:id,restoreId:b.restoreId,ts:b.ts,expires:d.expires};
-        await db.updateRow({databaseId:DB,tableId:TABLE,rowId:id,data:rowData(d),transactionId:tx.$id});
-        await db.updateRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id),data:rowData(nextQuota),transactionId:tx.$id});
-        await db.createRow({databaseId:DB,tableId:TABLE,rowId:receiptId,data:rowData(receipt),permissions:[],transactionId:tx.$id});
+        await db.updateRow({rowId:id,data:rowData(d),transactionId:tx.$id});
+        await db.updateRow({rowId:roomOpQuotaRowId(id),data:rowData(nextQuota),transactionId:tx.$id});
+        await db.createRow({rowId:receiptId,data:rowData(receipt),permissions:[],transactionId:tx.$id});
         await db.updateTransaction({transactionId:tx.$id,commit:true});const {owner,ops,createReceiptId,...publicData}=d;return reply({...publicData,syncProtocol:'room-ops-v1',ack:b.restoreId,duplicate:false});
        }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});if(e.code!==409||attempt===3)throw e}
       }
@@ -276,7 +283,7 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
     return await withLock(db,CREATE_LOCK_SEED,async()=>{
      const receiptId=b.requestId?createReceiptRowId(b.requestId):null;
      if(receiptId){
-      try{const prior=JSON.parse((await db.getRow({databaseId:DB,tableId:TABLE,rowId:receiptId})).payload);
+      try{const prior=JSON.parse((await db.getRow({rowId:receiptId})).payload);
        if(prior.requestHash!==requestHash)return reply({error:'Create request ID was already used'},409);
        if(prior.expires<=Date.now())return reply({error:'This link has expired'},410);
        return reply({id:prior.id,expires:prior.expires,owner:prior.owner,duplicate:true},201);
@@ -290,9 +297,9 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
      if(shareCount>=150)return reply({error:'Free storage is full; ask the project owner to remove old links.'},429);
      const tx=await db.createTransaction({ttl:60});
      try{
-      await db.createRow({databaseId:DB,tableId:TABLE,rowId:id,data:stored,permissions:[],transactionId:tx.$id});
-      if(b.kind==='room'){const quota={kind:'room-op-quota',roomId:id,count:0,chatCount:0,receiptIds:[],chatReceiptIds:[],expires};await db.createRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id),data:rowData(quota),permissions:[],transactionId:tx.$id})}
-      if(receiptId){const receipt={kind:'create-receipt',id,owner,expires,requestHash};await db.createRow({databaseId:DB,tableId:TABLE,rowId:receiptId,data:rowData(receipt),permissions:[],transactionId:tx.$id})}
+      await db.createRow({rowId:id,data:stored,permissions:[],transactionId:tx.$id});
+      if(b.kind==='room'){const quota={kind:'room-op-quota',roomId:id,count:0,chatCount:0,receiptIds:[],chatReceiptIds:[],expires};await db.createRow({rowId:roomOpQuotaRowId(id),data:rowData(quota),permissions:[],transactionId:tx.$id})}
+      if(receiptId){const receipt={kind:'create-receipt',id,owner,expires,requestHash};await db.createRow({rowId:receiptId,data:rowData(receipt),permissions:[],transactionId:tx.$id})}
       await db.updateTransaction({transactionId:tx.$id,commit:true});
      }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});throw e}
      return reply({id,expires,owner},201);
@@ -308,9 +315,9 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
      try{
       const d=await read(id,tx.$id);if(d.kind!=='room')throw {code:404};
       const opReceiptId=b.opId&&b.changes.length?roomOpReceiptRowId(id,b.opId):null;let alreadyApplied=false,quota=null;
-      if(opReceiptId){try{const receipt=JSON.parse((await db.getRow({databaseId:DB,tableId:TABLE,rowId:opReceiptId,transactionId:tx.$id})).payload);if(receipt.kind!=='room-op-receipt'||receipt.roomId!==id||receipt.opId!==b.opId)throw {code:409};alreadyApplied=true}catch(e){if(e.code!==404)throw e}if(!alreadyApplied&&Array.isArray(d.ops)&&d.ops.includes(b.opId))alreadyApplied=true}
+      if(opReceiptId){try{const receipt=JSON.parse((await db.getRow({rowId:opReceiptId,transactionId:tx.$id})).payload);if(receipt.kind!=='room-op-receipt'||receipt.roomId!==id||receipt.opId!==b.opId)throw {code:409};alreadyApplied=true}catch(e){if(e.code!==404)throw e}if(!alreadyApplied&&Array.isArray(d.ops)&&d.ops.includes(b.opId))alreadyApplied=true}
       if(opReceiptId&&!alreadyApplied){
-       try{quota=JSON.parse((await db.getRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id),transactionId:tx.$id})).payload)}catch(e){if(e.code!==404)throw e;await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_limit',message:'This room has no safe receipt counter. Create a new room to continue.'},409)}
+       try{quota=JSON.parse((await db.getRow({rowId:roomOpQuotaRowId(id),transactionId:tx.$id})).payload)}catch(e){if(e.code!==404)throw e;await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_limit',message:'This room has no safe receipt counter. Create a new room to continue.'},409)}
        if(!Array.isArray(quota.receiptIds)&&quota.count===0)quota.receiptIds=[];
        if(!validRoomReceiptQuota(quota,id)){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_limit',message:'This room has no complete safe receipt ledger. Create a new room to continue.'},409)}
        if(quota.count>=ROOM_OP_RECEIPT_LIMIT){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_limit',message:'This room reached its shared 9,400 room receipt limit. Create a new room to continue; existing receipts are retained for safe retries.'},409)}
@@ -319,8 +326,8 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
       const op=applyRoomUpdate(d,b,{alreadyApplied});
       if(op.duplicate){await db.updateTransaction({transactionId:tx.$id,rollback:true});const {owner,ops,createReceiptId,...publicData}=d;return reply({...publicData,syncProtocol:'room-ops-v1',ack:op.ack,duplicate:true,rebased:op.rebased})}
       if(!validBoard(d.board)){if(boardHasCommentOverflow(d.board)){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'comment_limit',message:commentLimitMessage},409)}throw {code:400}}if(Buffer.byteLength(JSON.stringify(d))>MAX)throw {code:413};
-      await db.updateRow({databaseId:DB,tableId:TABLE,rowId:id,data:rowData(d),transactionId:tx.$id});
-      if(opReceiptId&&!alreadyApplied){await db.updateRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id),data:rowData(quota),transactionId:tx.$id});const receipt={kind:'room-op-receipt',roomId:id,opId:b.opId,expires:d.expires};await db.createRow({databaseId:DB,tableId:TABLE,rowId:opReceiptId,data:rowData(receipt),permissions:[],transactionId:tx.$id})}
+      await db.updateRow({rowId:id,data:rowData(d),transactionId:tx.$id});
+      if(opReceiptId&&!alreadyApplied){await db.updateRow({rowId:roomOpQuotaRowId(id),data:rowData(quota),transactionId:tx.$id});const receipt={kind:'room-op-receipt',roomId:id,opId:b.opId,expires:d.expires};await db.createRow({rowId:opReceiptId,data:rowData(receipt),permissions:[],transactionId:tx.$id})}
       await db.updateTransaction({transactionId:tx.$id,commit:true});
       if(b.changes.length)await histSnap(db,id,d.board,d.expires,false).catch(()=>{});
       const {owner,ops,createReceiptId,...publicData}=d;return reply({...publicData,syncProtocol:'room-ops-v1',ack:op.ack,rebased:op.rebased});
@@ -335,11 +342,11 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
       const d=await read(id,tx.$id);if(req.bodyJson?.owner!==d.owner){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'Not authorized'},403)}
       const expectedRev=req.bodyJson?.expectedRev;if(expectedRev!==undefined&&!Number.isSafeInteger(expectedRev)){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'invalid_room_revision'},400)}if(expectedRev!==undefined&&(d.kind!=='room'||d.rev!==expectedRev)){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_revision_changed',message:'The room changed after the requested snapshot; it was not deleted.'},409)}
       let receiptIds=[];if(d.kind==='room'){
-       let quota;try{quota=JSON.parse((await db.getRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id),transactionId:tx.$id})).payload)}catch(e){if(e.code!==404)throw e;await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_ledger_incomplete',message:'The room receipt ledger is unavailable; the room was not deleted.'},409)}
+       let quota;try{quota=JSON.parse((await db.getRow({rowId:roomOpQuotaRowId(id),transactionId:tx.$id})).payload)}catch(e){if(e.code!==404)throw e;await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_ledger_incomplete',message:'The room receipt ledger is unavailable; the room was not deleted.'},409)}
        if(!validRoomReceiptQuota(quota,id)){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_ledger_incomplete',message:'The room receipt ledger is incomplete; the room was not deleted.'},409)}receiptIds=[...quota.receiptIds,...quota.chatReceiptIds];
       }
-      for(let i=0;i<receiptIds.length;i+=100)await db.deleteRows({databaseId:DB,tableId:TABLE,queries:[QueryApi.equal('$id',receiptIds.slice(i,i+100))],transactionId:tx.$id});
-      for(const rowId of [id,'p'+id.slice(0,31),HID(id),roomOpQuotaRowId(id),d.createReceiptId].filter(Boolean))await db.deleteRow({databaseId:DB,tableId:TABLE,rowId,transactionId:tx.$id}).catch(e=>{if(e.code!==404)throw e});
+      for(let i=0;i<receiptIds.length;i+=100)await db.deleteRows({queries:[QueryApi.equal('$id',receiptIds.slice(i,i+100))],transactionId:tx.$id});
+      for(const rowId of [id,'p'+id.slice(0,31),HID(id),roomOpQuotaRowId(id),d.createReceiptId].filter(Boolean))await db.deleteRow({rowId,transactionId:tx.$id}).catch(e=>{if(e.code!==404)throw e});
       await db.updateTransaction({transactionId:tx.$id,commit:true});return reply({ok:true});
      }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});throw e}
     });

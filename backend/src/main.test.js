@@ -4,31 +4,33 @@ import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import vm from 'node:vm';
 import {Client,Query,TablesDB} from 'node-appwrite';
-import {BOARD_COORD_LIMIT,BOARD_POINT_LIMIT,CLEANUP_PAGE_BUDGET,CLEANUP_ROW_BUDGET,CLEANUP_SPECIAL_ROW_BUDGET,CLEANUP_TIME_BUDGET_MS,createAppwriteDb,createHandler,LIVE_CHAT_MESSAGE_LIMIT,LIVE_CHAT_RECEIPT_LIMIT,LIVE_REQUEST_MAX_BYTES,LIVE_RESPONSE_MAX_BYTES,LIVE_ROOM_PEER_LIMIT,LIVE_ROOM_REQUESTS_PER_SECOND,LIVE_ROW_MAX_BYTES,ROOM_OP_RECEIPT_LIMIT} from './main.js';
+import {BOARD_COORD_LIMIT,BOARD_POINT_LIMIT,CLEANUP_PAGE_BUDGET,CLEANUP_ROW_BUDGET,CLEANUP_SPECIAL_ROW_BUDGET,CLEANUP_TIME_BUDGET_MS,bindTargetTable,createAppwriteDb,createHandler,LIVE_CHAT_MESSAGE_LIMIT,LIVE_CHAT_RECEIPT_LIMIT,LIVE_REQUEST_MAX_BYTES,LIVE_RESPONSE_MAX_BYTES,LIVE_ROOM_PEER_LIMIT,LIVE_ROOM_REQUESTS_PER_SECOND,LIVE_ROW_MAX_BYTES,ROOM_OP_RECEIPT_LIMIT} from './main.js';
 import BoardElementContract from '../shared/board-element-contract.js';
+import {APPWRITE_DATABASE_ID,APPWRITE_PROJECT_ID,PRODUCTION_TABLE_ID,resolveFunctionTableTarget,TEST_FUNCTION_ID,TEST_TABLE_ID} from './targets.js';
 
 const Q={limit:n=>`limit:${n}`,orderAsc:key=>`orderAsc:${key}`,cursorAfter:id=>`cursorAfter:${id}`,select:fields=>`select:${fields.join(',')}`,equal:(key,values)=>`equal:${key}:${JSON.stringify(Array.isArray(values)?values:[values])}`,lessThanEqual:(key,value)=>`lessThanEqual:${key}:${value}`};
-const DB='ghdraw',TABLE='boards';
+const DB=APPWRITE_DATABASE_ID,TABLE=TEST_TABLE_ID;
+const TEST_ENV={APPWRITE_FUNCTION_ID:TEST_FUNCTION_ID,APPWRITE_FUNCTION_PROJECT_ID:APPWRITE_PROJECT_ID,DATABASE_ID:APPWRITE_DATABASE_ID,TABLE_ID:TEST_TABLE_ID,GROQ_API_KEY:'test-groq-key'};
 const board=()=>({p:[{id:'page-1',n:'Page 1',e:[{id:'shape-1',type:'rect',x:0,y:0,w:10,h:10}]}]});
 const rowData=data=>({payload:JSON.stringify(data),expiresAt:new Date(data.expires).toISOString()});
 const lockRow=(id,leaseId,expires)=>[id,{$id:id,...rowData({kind:'lock',leaseId,ts:expires-60000,expires}),$permissions:[]}];
 const err=code=>Object.assign(new Error('mock database error'),{code});
 
 test('installed Node SDK sends row and cursor query calls to TablesDB endpoints',async()=>{
- const client=new Client().setEndpoint('https://fra.cloud.appwrite.io/v1').setProject('project-test').setKey('ephemeral-test-key'),calls=[];
+ const client=new Client().setEndpoint('https://fra.cloud.appwrite.io/v1').setProject(APPWRITE_PROJECT_ID).setKey('ephemeral-test-key'),calls=[];
  client.call=async(method,uri,headers,payload)=>{calls.push({method,path:uri.pathname,headers,payload});return {rows:[]}};
- const tables=new TablesDB(client);
- await tables.createRow({databaseId:DB,tableId:TABLE,rowId:'row-test',data:{payload:'{}'},permissions:[],transactionId:'tx-test'});
- await tables.getRow({databaseId:DB,tableId:TABLE,rowId:'row-test',transactionId:'tx-test'});
- await tables.updateRow({databaseId:DB,tableId:TABLE,rowId:'row-test',data:{payload:'{}'},transactionId:'tx-test'});
- await tables.deleteRow({databaseId:DB,tableId:TABLE,rowId:'row-test',transactionId:'tx-test'});
- await tables.deleteRows({databaseId:DB,tableId:TABLE,queries:[Query.equal('$id',['row-test'])],transactionId:'tx-test'});
- await tables.listRows({databaseId:DB,tableId:TABLE,queries:[Query.lessThanEqual('expiresAt','2026-10-15T13:22:00.000Z'),Query.orderAsc('expiresAt'),Query.limit(100),Query.select(['$id','expiresAt'])]});
+ const target=resolveFunctionTableTarget(TEST_ENV),tables=bindTargetTable(new TablesDB(client),target);
+ await tables.createRow({databaseId:DB,tableId:'boards',rowId:'row-test',data:{payload:'{}'},permissions:[],transactionId:'tx-test'});
+ await tables.getRow({rowId:'row-test',transactionId:'tx-test'});
+ await tables.updateRow({rowId:'row-test',data:{payload:'{}'},transactionId:'tx-test'});
+ await tables.deleteRow({rowId:'row-test',transactionId:'tx-test'});
+ await tables.deleteRows({queries:[Query.equal('$id',['row-test'])],transactionId:'tx-test'});
+ await tables.listRows({queries:[Query.lessThanEqual('expiresAt','2026-10-15T13:22:00.000Z'),Query.orderAsc('expiresAt'),Query.limit(100),Query.select(['$id','expiresAt'])]});
  await tables.createTransaction({ttl:60});
  await tables.updateTransaction({transactionId:'tx-test',commit:true});
  assert.equal(calls.length,8);assert.ok(calls.every(call=>call.path.includes('/tablesdb/')));assert.ok(calls.every(call=>!call.path.includes('/databases/')));
- assert.equal(calls[0].path,'/v1/tablesdb/ghdraw/tables/boards/rows');assert.equal(calls[0].payload.data.payload,'{}');assert.deepEqual(calls[0].payload.permissions,[]);assert.equal(calls[0].payload.transactionId,'tx-test');
- assert.equal(calls[4].method,'delete');assert.equal(calls[4].path,'/v1/tablesdb/ghdraw/tables/boards/rows');assert.equal(calls[4].payload.transactionId,'tx-test');assert.ok(calls[4].payload.queries[0].includes('row-test'));assert.ok(calls[5].payload.queries.some(q=>q.includes('lessThanEqual')&&q.includes('expiresAt')));assert.ok(calls[5].payload.queries.some(q=>q.includes('orderAsc')&&q.includes('expiresAt')));
+ assert.equal(calls[0].path,'/v1/tablesdb/ghdraw/tables/boards-test/rows');assert.equal(calls[0].payload.data.payload,'{}');assert.deepEqual(calls[0].payload.permissions,[]);assert.equal(calls[0].payload.transactionId,'tx-test');
+ assert.equal(calls[4].method,'delete');assert.equal(calls[4].path,'/v1/tablesdb/ghdraw/tables/boards-test/rows');assert.equal(calls[4].payload.transactionId,'tx-test');assert.ok(calls[4].payload.queries[0].includes('row-test'));assert.ok(calls[5].payload.queries.some(q=>q.includes('lessThanEqual')&&q.includes('expiresAt')));assert.ok(calls[5].payload.queries.some(q=>q.includes('orderAsc')&&q.includes('expiresAt')));
  assert.ok(calls.some(call=>call.path.endsWith('/rows/row-test')));assert.ok(calls.some(call=>call.path==='/v1/tablesdb/transactions'));
  assert.ok(calls.some(call=>call.path==='/v1/tablesdb/transactions/tx-test'));
  });
@@ -123,7 +125,7 @@ class MemoryTablesDB{
  }
 }
 
-function fixture({env={GROQ_API_KEY:'test-groq-key'},seed=[],clock=()=>Date.now()}={}){
+function fixture({env={...TEST_ENV},seed=[],clock=()=>Date.now()}={}){
  const db=new MemoryTablesDB(seed),logs=[];let factories=0;
  const handler=createHandler({dbFactory:()=>{factories++;return db},QueryApi:Q,env,clock,fetcher:async()=>({ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:'Hello from test.'}}]})})});
  const call=async({method='GET',path='/',body,bodyText,headers={}}={})=>{
@@ -212,6 +214,11 @@ test('room receipt limit accepts operation 9,400, rejects the next without mutat
 test('OPTIONS and health are available without database credentials or a DB connection',async()=>{
  const fx=fixture();const preflight=await fx.call({method:'OPTIONS',path:'/create'});assert.equal(preflight.status,204);assert.equal(preflight.headers['Access-Control-Allow-Origin'],'https://ghdraw.vercel.app');
  const health=await fx.call({method:'GET',path:'/health'});assert.deepEqual(health.body,{ok:true});assert.equal(fx.factories,0);
+});
+
+test('mismatched Function table configuration fails before database construction or row access',async()=>{
+ const fx=fixture({env:{...TEST_ENV,TABLE_ID:PRODUCTION_TABLE_ID}}),response=await fx.call({method:'POST',path:'/create',body:{kind:'view',board:board()}});
+ assert.equal(response.status,500);assert.equal(response.body.error,'Service unavailable');assert.equal(fx.factories,0);assert.equal(fx.db.calls.length,0);
 });
 
 test('anonymous share creation and view reads work through the Function while rows remain private',async()=>{
