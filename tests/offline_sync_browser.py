@@ -10,6 +10,9 @@ import asyncio
 import copy
 import json
 import os
+import re
+import subprocess
+import tempfile
 import threading
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -19,7 +22,8 @@ from urllib.parse import urlparse
 from playwright.async_api import async_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
-BACKEND_ORIGIN = "https://ghdraw-test-backend.fra.appwrite.run"
+APP_ROOT: Path = ROOT
+BACKEND_ORIGIN: str | None = None
 OLD_ID = "a" * 32
 NEW_ID = "b" * 32
 OWNER = "test-old-owner"
@@ -275,7 +279,7 @@ async def launch_test_page(browser, origin, *, viewport=None, mobile=False):
     async def local_route(route):
         path = urlparse(route.request.url).path
         if path in ("/", "/index.html"):
-            html = (ROOT / "index.html").read_text()
+            html = (APP_ROOT / "index.html").read_text()
             marker = "})();"
             at = html.rfind(marker)
             if at < 0:
@@ -711,29 +715,47 @@ async def test_mobile_tablet_layout(browser, origin):
 
 
 async def main():
-    server = ThreadingHTTPServer(("127.0.0.1", 0), partial(QuietHandler, directory=str(ROOT)))
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    origin = f"http://127.0.0.1:{server.server_port}"
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, executable_path=os.environ.get("GH_DRAW_CHROMIUM", "/usr/bin/chromium"), args=["--no-sandbox"])
+    global APP_ROOT, BACKEND_ORIGIN
+    with tempfile.TemporaryDirectory(prefix="ghdraw-browser-build-") as build_dir:
+        app_root = Path(build_dir) / "site"
+        subprocess.run([
+            "node", str(ROOT / "scripts" / "build.mjs"), "--target", "test", "--out-dir", str(app_root)
+        ], cwd=ROOT, check=True, capture_output=True, text=True)
+        built_html = (app_root / "index.html").read_text(encoding="utf-8")
+        configured = re.search(r'window\.GHDRAW_CLOUD_ENDPOINT=("(?:\\.|[^"\\])*");', built_html)
+        if not configured:
+            raise AssertionError("test build did not inject a cloud endpoint")
+        BACKEND_ORIGIN = json.loads(configured.group(1))
+        if urlparse(BACKEND_ORIGIN).scheme != "https":
+            raise AssertionError(f"test build selected a non-HTTPS backend: {BACKEND_ORIGIN}")
+        APP_ROOT = app_root
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), partial(QuietHandler, directory=str(app_root)))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        origin = f"http://127.0.0.1:{server.server_port}"
         try:
-            await test_handoff_success_and_two_tab_lock(browser, origin)
-            await test_handoff_failures(browser, origin)
-            await test_unresolved_outbox_survives_handoff(browser, origin)
-            await test_selected_snapshot_join_gate(browser, origin, "indexeddb-readback")
-            await test_selected_snapshot_join_gate(browser, origin, "board-persistence")
-            await test_selected_snapshot_join_gate(browser, origin, None)
-            await test_restore_intent_recovery(browser, origin, "lost-ack")
-            await test_restore_intent_recovery(browser, origin, "checkpoint-failure")
-            await test_chat_outbox_survives_reload_and_lost_ack(browser, origin)
-            await test_chat_manual_retry_after_status_write_failure(browser, origin)
-            await test_stale_tab_snapshot_is_rejected_and_rejoin_is_safe(browser, origin)
-            await test_chat_contention_retries_but_permanent_errors_do_not(browser, origin)
-            await test_chat_outbox_cross_tab_merge(browser, origin)
-            await test_mobile_tablet_layout(browser, origin)
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True, executable_path=os.environ.get("GH_DRAW_CHROMIUM", "/usr/bin/chromium"), args=["--no-sandbox"])
+                try:
+                    await test_handoff_success_and_two_tab_lock(browser, origin)
+                    await test_handoff_failures(browser, origin)
+                    await test_unresolved_outbox_survives_handoff(browser, origin)
+                    await test_selected_snapshot_join_gate(browser, origin, "indexeddb-readback")
+                    await test_selected_snapshot_join_gate(browser, origin, "board-persistence")
+                    await test_selected_snapshot_join_gate(browser, origin, None)
+                    await test_restore_intent_recovery(browser, origin, "lost-ack")
+                    await test_restore_intent_recovery(browser, origin, "checkpoint-failure")
+                    await test_chat_outbox_survives_reload_and_lost_ack(browser, origin)
+                    await test_chat_manual_retry_after_status_write_failure(browser, origin)
+                    await test_stale_tab_snapshot_is_rejected_and_rejoin_is_safe(browser, origin)
+                    await test_chat_contention_retries_but_permanent_errors_do_not(browser, origin)
+                    await test_chat_outbox_cross_tab_merge(browser, origin)
+                    await test_mobile_tablet_layout(browser, origin)
+                finally:
+                    await browser.close()
         finally:
-            await browser.close()
-    server.shutdown()
+            server.shutdown()
+            server.server_close()
     print("All real-browser offline-sync E2E cases passed; remote Appwrite was not contacted.")
 
 

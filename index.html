@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>GHDraw - Hand-drawn whiteboard</title>
+<!-- GHDRAW_CLOUD_ENDPOINT_CONFIG -->
 <script src="./backend/shared/board-element-contract.js"></script>
 <link rel="icon" type="image/svg+xml" href="logo.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -602,7 +603,7 @@ function openTextAI(){
  go.onclick=async()=>{
   go.disabled=true;apply.hidden=true;preview.hidden=true;status.textContent=L2('Hazırlanıyor...','Working...');
   try{
-	   const r=await fetch(CLOUD+'/ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({op:'correct',text:original,clientId:aiClientId()}),signal:AbortSignal.timeout(28000)}),d=await r.json();
+   const r=await fetch(cloudUrl('/ai'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({op:'correct',text:original,clientId:aiClientId()}),signal:AbortSignal.timeout(28000)}),d=await r.json();
    if(!r.ok){const wait=Math.max(1,Math.ceil(Number(d.retryAfter)||180));const messages={cooldown:L2('3 dakikada 1 işlem yapabilirsin. '+wait+' saniye sonra tekrar dene.','You can make 1 request every 3 minutes. Try again in '+wait+' seconds.'),daily_limit:L2('Günlük işlem kotası doldu. '+Math.ceil(wait/60)+' dakika sonra tekrar dene.','Daily request limit reached. Try again in '+Math.ceil(wait/60)+' minutes.'),site_limit:L2('Ortak site yoğunluk sınırına ulaştı. '+wait+' saniye sonra tekrar dene.','The shared site rate limit is reached. Try again in '+wait+' seconds.'),not_configured:L2('AI henüz yapılandırılmadı.','AI is not configured yet.'),limit:L2('İşlem kotası doldu. Daha sonra dene.','Request limit reached. Try later.'),provider_limit:L2('AI hizmetinin ücretsiz kotası doldu. Daha sonra dene.','The AI service free quota is reached. Try later.'),incomplete:L2('Sonuç tamamlanamadı. Metni kısaltıp tekrar dene.','Result was incomplete. Shorten the text and try again.')};throw Error(messages[d.error]||L2('AI hizmetine ulaşılamadı. Metnin değiştirilmedi.','AI is unavailable. Your text was not changed.'))}
    if(typeof d.text!=='string'||!d.text.trim()||d.text.length>6000)throw Error(L2('Geçersiz sonuç.','Invalid result.'));
    if(!box.isConnected||!preview.isConnected)return;
@@ -1045,7 +1046,7 @@ I18.tr.sc.push(["Sunum modu","Ctrl+Shift+P"],["Sunumda ileri / geri","Ok tuşlar
 I18.en.sc.push(["Presentation mode","Ctrl+Shift+P"],["Next / previous step","Arrow keys, Space"]);
 
 /* GHDraw cloud links: anonymous capability links, private database, server expiry. */
-const CLOUD='https://ghdraw-test-backend.fra.appwrite.run';
+function cloudUrl(path){const endpoint=window.GHDRAW_CLOUD_ENDPOINT||'';if(!endpoint)throw new Error('Cloud backend is not configured for this build');return endpoint+path}
 let cloudRoom=null,cloudBase=null,cloudRev=0,cloudInflight=null,cloudTimer=0,cloudBusy=false,cloudPending=false,cloudApplying=false,cloudProtocolBlocked=false,cloudReceiptQuotaBlocked=false,cloudCommentLimitBlocked=false,cloudProtocolVerified=false,cloudOwner=null,cloudDBPromise=null,cloudSnapshotTimer=0,cloudStaleLocalRoomId=null,cloudStaleLoadBackupFailed=false,cloudStaleLoadExported=false,cloudStaleLoadExportFingerprint=null;
 function setSyncBadge(state){
  const badge=$('#syncBadge');if(!badge)return;
@@ -1137,7 +1138,7 @@ function restoreCloudSnapshot(record,roomId='',generationHint=null,transitionCon
  syncUI();render();return true
 }
 async function cloudRequest(path,body,method){
- const r=await fetch(CLOUD+path,{method:method||(body?'POST':'GET'),headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});
+ const r=await fetch(cloudUrl(path),{method:method||(body?'POST':'GET'),headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});
  const d=await r.json();if(!r.ok)throw Object.assign(new Error(d.message||d.error||'Cloud error'),{status:r.status,code:d.error||null});return d;
 }
 async function cloudCreate(kind,board,stableRequestId=null){if(!ensureStaleLocalBoardProtected())throw new Error(L2('Paylaşmadan önce karantinadaki pano yedeklenmeli veya dışa aktarılmalı.','The quarantined local board must be backed up or exported before cloud sharing'));const bytes=crypto.getRandomValues(new Uint8Array(16)),requestId=stableRequestId||Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');if(!/^(?:[a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})$/.test(requestId))throw new Error('Invalid create request ID');const payload={kind,board,requestId};for(let attempt=0;attempt<2;attempt++){try{return await cloudRequest('/create',payload)}catch(e){if(attempt||e.status&&e.status<500)throw e}}}

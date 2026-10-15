@@ -6,9 +6,11 @@ import BoardElementContract from '../backend/shared/board-element-contract.js';
 import {applyRoomUpdate} from '../backend/src/room-sync.js';
 
 const html=readFileSync(new URL('../index.html',import.meta.url),'utf8');
-test('frontend targets the provisioned GHDraw test Function',()=>{
-  assert.match(html,/const CLOUD='https:\/\/ghdraw-test-backend\.fra\.appwrite\.run';/);
-  assert.doesNotMatch(html,/ghdraw-expiring-links\.fra\.appwrite\.run/);
+test('frontend source has no baked-in backend endpoint and requires build-time configuration',()=>{
+  assert.match(html,/<!-- GHDRAW_CLOUD_ENDPOINT_CONFIG -->/);
+  assert.match(html,/function cloudUrl\(path\)\{const endpoint=window\.GHDRAW_CLOUD_ENDPOINT\|\|'';/);
+  assert.match(html,/if\(!endpoint\)throw new Error\(/);
+  assert.doesNotMatch(html,/https:\/\/ghdraw-(?:test-backend|expiring-links)\.fra\.appwrite\.run/);
 });
 const restoreGateStart=html.indexOf('function historyRestoreBlocksInput('),restoreGateEnd=html.indexOf("\ndocument.addEventListener('pointerdown',historyRestoreBlocksInput,true);",restoreGateStart);
 assert.ok(restoreGateStart>=0&&restoreGateEnd>restoreGateStart,'missing restore input/close guards');
@@ -896,10 +898,13 @@ test('cloudSync refuses to replay or post from a tab whose room generation is st
 
 
 test('room receipt limit response exposes a stable code and actionable message',async()=>{
-  const payload={error:'room_receipt_limit',message:'Create a new room to continue.'},context={CLOUD:'https://example.test',fetch:async()=>({ok:false,status:409,json:async()=>payload})};
-  const start=html.indexOf('async function cloudRequest('),end=html.indexOf('\nasync function cloudCreate(',start);assert.ok(start>=0&&end>start);
-  vm.runInNewContext(html.slice(start,end)+';globalThis.runRequest=cloudRequest;',context);
+  const payload={error:'room_receipt_limit',message:'Create a new room to continue.'};let requestedUrl=null;
+  const context={window:{GHDRAW_CLOUD_ENDPOINT:'https://example.test'},fetch:async(url)=>{requestedUrl=url;return{ok:false,status:409,json:async()=>payload}}};
+  const helperStart=html.indexOf('function cloudUrl('),helperEnd=html.indexOf('\nfunction setSyncBadge(',helperStart),start=html.indexOf('async function cloudRequest('),end=html.indexOf('\nasync function cloudCreate(',start);
+  assert.ok(helperStart>=0&&helperEnd>helperStart&&start>=0&&end>start);
+  vm.runInNewContext(html.slice(helperStart,helperEnd)+'\n'+html.slice(start,end)+';globalThis.runRequest=cloudRequest;',context);
   await assert.rejects(context.runRequest('/room/id',{changes:[]}),e=>e.status===409&&e.code==='room_receipt_limit'&&e.message===payload.message);
+  assert.equal(requestedUrl,'https://example.test/room/id','requests use the endpoint selected by the build configuration');
 });
 
 test('receipt quota rejection keeps the durable outbox and pauses automatic retries',async()=>{

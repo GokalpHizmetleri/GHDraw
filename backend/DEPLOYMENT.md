@@ -1,5 +1,14 @@
 # GHDraw backend deployment preflight
 
+## Frontend endpoint build targets
+
+- The source `index.html` contains no default cloud endpoint. An unbuilt/source page remains offline-only; cloud and AI requests fail closed when no endpoint is configured.
+- Build the test frontend explicitly with `node scripts/build.mjs --target test`. This target always selects `https://ghdraw-test-backend.fra.appwrite.run`, regardless of any production environment variable.
+- Build production only with the actual, newly provisioned production Function URL: `GHDRAW_CLOUD_PRODUCTION_ENDPOINT=https://<function>.<region>.appwrite.run node scripts/build.mjs --target production`.
+- Production builds fail before writing output when the variable is absent, malformed, equal to the test endpoint, or equal to the retired production endpoint. Do not put a guessed or placeholder URL into a deployable artifact.
+- The build validates URL shape and rejects known wrong targets; that is **not** proof the Function exists, is active, has the expected runtime, or passes CORS, permission, index, or cleanup checks. Confirm the exact new Function URL and live preflight before routing or deploying production. No production Function URL is currently recorded for this rollout.
+- The Chromium E2E suite builds the test target and installs its mock against the endpoint embedded in that build. It does not contact Appwrite; endpoint selection tests are in `backend/src/endpoint-config.test.js`.
+
 Run this checklist against the **exact Appwrite project, database, and table** that the Function will use. Do not enable or schedule expiry cleanup until every check passes.
 
 ## Required `expiresAt` index before enabling cleanup
