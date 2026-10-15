@@ -55,6 +55,27 @@ test('cloudBoard text wire payload roundtrips through backend create and room ed
  const before=fx.db.rows.get(created.body.id).payload,invalid=await fx.call({method:'POST',path:`/room/${created.body.id}`,body:{opId:'f'.repeat(32),baseRev:1,changes:[{t:'put',pid:'page-1',e:{...edited,w:-1}}]}});
  assert.equal(invalid.status,400,'supplied invalid text metrics remain rejected');assert.equal(fx.db.rows.get(created.body.id).payload,before,'invalid metrics cannot mutate the shared board');
 });
+test('element ID boundaries roundtrip through the production client wire format, room writes and history restore',async()=>{
+ const clientHtml=readFileSync(new URL('../../index.html',import.meta.url),'utf8'),serializer=clientHtml.split('\n').find(line=>line.startsWith('const ser=')),start=clientHtml.indexOf('function cloudBoard('),end=clientHtml.indexOf('\nfunction validCloudElement(',start);assert.ok(serializer&&start>=0&&end>start);
+ const wireFor=id=>{const browser={pages:[{id:'page-1',name:'Boundary',els:[{id,type:'rect',x:0,y:0,w:10,h:10}]}],dark:false,syncPage(){}};vm.runInNewContext(`${serializer}\n${clientHtml.slice(start,end)}\nglobalThis.wireBoard=cloudBoard();`,browser);return JSON.parse(JSON.stringify(browser.wireBoard))};
+ assert.equal(BoardElementContract.MAX_ELEMENT_ID_LENGTH,256);
+ const fx=fixture();
+ for(const [index,length] of [128,129,256].entries()){
+  const id='i'.repeat(length),payload=wireFor(id);assert.equal(payload.p[0].e[0].id,id);assert.equal(BoardElementContract.validElement(payload.p[0].e[0]),true);
+  const created=await fx.call({method:'POST',path:'/create',body:{kind:'room',board:payload,requestId:'d'.repeat(30)+(index+1).toString(16).padStart(2,'0')}});assert.equal(created.status,201,`create accepts ${length}-character ID`);
+  let room=await fx.call({method:'GET',path:`/room/${created.body.id}`});assert.equal(room.status,200);assert.equal(room.body.board.p[0].e[0].id,id,'room load preserves the exact opaque ID');
+  const firstSave=await fx.call({method:'POST',path:`/hist/${created.body.id}`,body:{op:'save'}});assert.equal(firstSave.status,200);
+  const edited={...payload.p[0].e[0],x:3},update=await fx.call({method:'POST',path:`/room/${created.body.id}`,body:{opId:'a'.repeat(30)+(index+1).toString(16).padStart(2,'0'),baseRev:0,changes:[{t:'put',pid:'page-1',e:edited}]}});assert.equal(update.status,200,`room write accepts ${length}-character ID`);assert.equal(update.body.board.p[0].e[0].id,id);
+  assert.equal((await fx.call({method:'POST',path:`/hist/${created.body.id}`,body:{op:'save'}})).status,200);
+  const versions=await fx.call({method:'POST',path:`/hist/${created.body.id}`,body:{}});assert.equal(versions.status,200);assert.ok(versions.body.versions.length>=2);
+  const oldTs=versions.body.versions.at(-1).ts,loadedVersion=await fx.call({method:'POST',path:`/hist/${created.body.id}`,body:{op:'get',ts:oldTs}});assert.equal(loadedVersion.status,200);assert.equal(loadedVersion.body.board.p[0].e[0].id,id,'history load preserves the exact ID');
+  const restoreId='b'.repeat(30)+(index+1).toString(16).padStart(2,'0'),restored=await fx.call({method:'POST',path:`/hist/${created.body.id}`,body:{op:'restore',ts:oldTs,restoreId}});assert.equal(restored.status,200);assert.equal(restored.body.ack,restoreId);assert.equal(restored.body.board.p[0].e[0].id,id,'server restore preserves the exact ID');
+  room=await fx.call({method:'GET',path:`/room/${created.body.id}`});assert.equal(room.body.board.p[0].e[0].id,id,'final load after restore preserves the exact ID');
+ }
+ const oversize='x'.repeat(257),invalidBoard=wireFor(oversize);assert.equal(invalidBoard.p[0].e[0].id,oversize,'serializer never truncates an oversize ID');assert.equal(BoardElementContract.validElement(invalidBoard.p[0].e[0]),false);
+ const invalidCreateFx=fixture(),invalidCreate=await invalidCreateFx.call({method:'POST',path:'/create',body:{kind:'room',board:invalidBoard,requestId:'c'.repeat(32)}});assert.equal(invalidCreate.status,400);assert.equal(invalidCreateFx.db.rows.size,0,'invalid create causes no room, receipt or quota mutation');
+ const updateFx=fixture(),validRoom=await createShare(updateFx,'room'),before=updateFx.db.rows.get(validRoom.id).payload,quotaId=roomQuotaRowId(validRoom.id),quotaBefore=updateFx.db.rows.get(quotaId).payload,rejected=await updateFx.call({method:'POST',path:`/room/${validRoom.id}`,body:{opId:'e'.repeat(32),baseRev:0,changes:[{t:'put',pid:'page-1',e:invalidBoard.p[0].e[0]}]}});assert.equal(rejected.status,400);assert.equal(updateFx.db.rows.get(validRoom.id).payload,before,'invalid update cannot mutate board or revision');assert.equal(updateFx.db.rows.get(quotaId).payload,quotaBefore,'invalid update cannot mutate the receipt counter');assert.equal([...updateFx.db.rows.keys()].some(rowId=>rowId.startsWith('o')||rowId.startsWith('h')),false,'invalid update creates no receipt or history');
+});
 test('301-comment room update survives lost ACK and duplicate retry without replaying comments',async()=>{
  const initialMessages=Array.from({length:300},(_,i)=>({id:'m'+i,t:'comment '+i})),allMessages=[...initialMessages,{id:'m300',t:'comment 300'}];
  const thread=(messages)=>({id:'comment-pin',type:'ellipse',x:0,y:0,w:20,h:20,cm:1,th:messages});

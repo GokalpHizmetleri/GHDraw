@@ -59,7 +59,7 @@ const source=[
   extract('cloudRebase','cloudMerge'),
   extract('cloudProtocolCompatible','blockCloudProtocol'),
   serLine,
-  'globalThis.api={validCloudChange,cloudGenerationKey,readCloudGeneration,writeCloudGeneration,cloudGenerationValue,cloudRoomGenerationCurrent,invalidateStaleCloudRoom,handleCloudGenerationStorageEvent,cloudCheckpointUnsafeKey,validCloudRestoreId,validCloudRestoreIntent,cloudCheckpointUnsafeMarker,cloudCheckpointIsUnsafe,cloudCheckpointMarkerMatches,markCloudCheckpointUnsafe,clearCloudCheckpointUnsafe,cloudCheckpointCanResume,cloudJoinCanContinue,BOARD_COORD_LIMIT,localBoardRecord,parseLocalBoardRecord,localBoardRestoreGeneration,cloudRejoinGenerationBoard,localBoardBackupLimits,localBoardBackupUsage,localBoardBackupKeys,writeLocalBoardBackup,localBoardBackupEntries,hasLocalBoardBackups,deleteLocalBoardBackup,preserveLocalBoardBeforeCloudJoin,cloudStaleExportMatchesCurrent,cloudJoinBoardProtected,localBoardFingerprint,ensureStaleLocalBoardProtected,exportQuarantinedLocalBoard,restoreLocalBoardRecord,restoreCloudSnapshot,load,dash,clampBoardCamera,recoverBoardCamera,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudBoardHasUncheckpointedChanges,cloudApplyChanges,cloudRebase,cloudBoard,normalizeCloudRoomBoard,cloudCanAppendComment,ser};'
+  'globalThis.api={validCloudChange,validCloudElement,cloudGenerationKey,readCloudGeneration,writeCloudGeneration,cloudGenerationValue,cloudRoomGenerationCurrent,invalidateStaleCloudRoom,handleCloudGenerationStorageEvent,cloudCheckpointUnsafeKey,validCloudRestoreId,validCloudRestoreIntent,cloudCheckpointUnsafeMarker,cloudCheckpointIsUnsafe,cloudCheckpointMarkerMatches,markCloudCheckpointUnsafe,clearCloudCheckpointUnsafe,cloudCheckpointCanResume,cloudJoinCanContinue,BOARD_COORD_LIMIT,localBoardRecord,parseLocalBoardRecord,localBoardRestoreGeneration,cloudRejoinGenerationBoard,localBoardBackupLimits,localBoardBackupUsage,localBoardBackupKeys,writeLocalBoardBackup,localBoardBackupEntries,hasLocalBoardBackups,deleteLocalBoardBackup,preserveLocalBoardBeforeCloudJoin,cloudStaleExportMatchesCurrent,cloudJoinBoardProtected,localBoardFingerprint,ensureStaleLocalBoardProtected,exportQuarantinedLocalBoard,restoreLocalBoardRecord,restoreCloudSnapshot,load,dash,clampBoardCamera,recoverBoardCamera,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudBoardHasUncheckpointedChanges,cloudApplyChanges,cloudRebase,cloudBoard,normalizeCloudRoomBoard,cloudCanAppendComment,ser};'
 ].join('\n');
 const storage=new Map();
 const mockLocalStorage={getItem:key=>storage.has(key)?storage.get(key):null,setItem:(key,value)=>storage.set(key,String(value)),removeItem:key=>storage.delete(key),key:index=>[...storage.keys()][index]??null,get length(){return storage.size}};
@@ -110,6 +110,23 @@ test('cloudBoard sends contract-valid text without derived metrics and remeasure
   const received=c.api.normalizeCloudRoomBoard(wire,true).p[0].e[0];
   assert.deepEqual(json({w:received.w,h:received.h,lw:received.lw}),{w:84,h:35,lw:[84]},'text measurements are recomputed on receipt');
   assert.equal(BoardElementContract.validElement({...serialized,w:84,h:35}),true,'valid legacy payloads that include metrics remain accepted');
+});
+test('element IDs roundtrip exactly at 128, 129 and 256 characters and reject 257 using the shared contract',()=>{
+  assert.equal(BoardElementContract.MAX_ELEMENT_ID_LENGTH,256);
+  for(const length of [128,129,256,257]){
+    const h=makeBoardHarness(),c=h.context,id='x'.repeat(length),element=recordElement(id);
+    c.pages=[{id:'p1',name:'Boundary',els:[element],cam:{x:0,y:0,z:1}}];c.els=[element];c.pi=0;
+    const wire=c.api.cloudBoard(),wireElement=wire.p[0].e[0],valid=length<=BoardElementContract.MAX_ELEMENT_ID_LENGTH;
+    assert.equal(wireElement.id,id,`serializer must preserve every ID byte at length ${length}`);
+    assert.equal(BoardElementContract.validElement(wireElement),valid,`shared contract at length ${length}`);
+    assert.equal(c.api.validCloudElement(wireElement),valid,`client cloud validator at length ${length}`);
+    assert.equal(c.api.validCloudChange({t:'put',pid:'p1',e:wireElement}),valid,`client wire change validation at length ${length}`);
+    assert.equal(c.api.normalizeCloudRoomBoard(wire,false)!==null,valid,`client room load validation at length ${length}`);
+    if(valid){
+      assert.equal(c.api.restoreCloudSnapshot({board:wire}),true,`client restore accepts length ${length}`);
+      assert.equal(c.api.cloudBoard().p[0].e[0].id,id,`client restore keeps exact ID length ${length}`);
+    }else assert.equal(c.api.restoreCloudSnapshot({board:wire}),false,'oversize ID is explicitly rejected, not truncated');
+  }
 });
 test('one shared 10,000-comment contract supports adds through the limit and blocks the next add',()=>{
   const comments=Array.from({length:BoardElementContract.MAX_COMMENTS},(_,i)=>({id:'m'+i,t:'x'}));

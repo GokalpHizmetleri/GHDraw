@@ -1141,7 +1141,7 @@ async function cloudRequest(path,body,method){
 }
 async function cloudCreate(kind,board,stableRequestId=null){if(!ensureStaleLocalBoardProtected())throw new Error(L2('Paylaşmadan önce karantinadaki pano yedeklenmeli veya dışa aktarılmalı.','The quarantined local board must be backed up or exported before cloud sharing'));const bytes=crypto.getRandomValues(new Uint8Array(16)),requestId=stableRequestId||Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');if(!/^(?:[a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})$/.test(requestId))throw new Error('Invalid create request ID');const payload={kind,board,requestId};for(let attempt=0;attempt<2;attempt++){try{return await cloudRequest('/create',payload)}catch(e){if(attempt||e.status&&e.status<500)throw e}}}
 function cloudBoard(includeTextMetrics=false){syncPage();return {v:2,d:dark?1:0,p:pages.map(p=>({id:p.id,n:p.name||'',e:p.els.filter(e=>!('__bak' in e)).map(e=>JSON.parse(ser(e,includeTextMetrics)))}))}}
-function validCloudElement(e){return validBoardElement(e)&&e.id.length<=128&&(!e.th||e.th.length<=GHDrawBoardElementContract.MAX_COMMENTS&&e.th.every(m=>isBoardObject(m)&&typeof m.t==='string'&&m.t.length<=500))}
+function validCloudElement(e){return validBoardElement(e)&&e.id.length<=GHDrawBoardElementContract.MAX_ELEMENT_ID_LENGTH&&(!e.th||e.th.length<=GHDrawBoardElementContract.MAX_COMMENTS&&e.th.every(m=>isBoardObject(m)&&typeof m.t==='string'&&m.t.length<=500))}
 function cloudCanAppendComment(e){return !!e&&(!Object.prototype.hasOwnProperty.call(e,'th')||Array.isArray(e.th)&&e.th.length<GHDrawBoardElementContract.MAX_COMMENTS)}
 function validCloudPage(p){return isBoardObject(p)&&typeof p.id==='string'&&p.id.length>0&&p.id.length<=128&&typeof p.n==='string'&&p.n.length<=100&&Array.isArray(p.e)&&p.e.length<=10000&&p.e.every(validCloudElement)}
 function validCloudChange(c){if(!isBoardObject(c)||typeof c.t!=='string')return false;const id=v=>typeof v==='string'&&v.length>0&&v.length<=128;if(c.t==='addPage')return validCloudPage(c.p)&&!!normalizeCloudRoomBoard({v:2,d:0,p:[c.p]},false);if(!id(c.pid))return false;if(c.t==='delPage')return true;if(c.t==='rename')return typeof c.n==='string';if(c.t==='put')return validCloudElement(c.e);if(c.t==='del')return id(c.eid);if(c.t==='order')return Array.isArray(c.ids)&&c.ids.length<=10000&&c.ids.every(id);return false}
@@ -1971,8 +1971,7 @@ function updateCollabBtn(){
 function setStatus(){updateCollabBtn();if(collabModal&&$('#modal').classList.contains('open'))openCollab()}
 function snapEls(){return els.filter(e=>!('__bak' in e)).map(e=>JSON.parse(ser(e)))}
 function schedPush(){
-  if(cloudRoom){cloudPending=true;return}
-
+  if(cloudRoom){const current=cloudBoard();cloudPending=cloudPending||!!cloudInflight||cloudDiff(cloudBase||current,current).length>0;return}
   if(!collabOn||!conns.length||pushT)return;
   pushT=setTimeout(()=>{pushT=0;collabPush()},50);
 }
