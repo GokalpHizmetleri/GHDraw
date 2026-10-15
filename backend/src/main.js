@@ -12,6 +12,7 @@ const validElement=e=>e&&validId(e.id)&&['rect','diamond','ellipse','arrow','lin
 const rowData=d=>({payload:JSON.stringify(d),expiresAt:new Date(d.expires).toISOString()});
 const createReceiptRowId=requestId=>'g'+createHash('sha256').update('ghdraw-create:'+requestId).digest('hex').slice(0,31);
 const roomOpReceiptRowId=(roomId,opId)=>'o'+createHash('sha256').update('ghdraw-room-op:'+roomId+':'+opId).digest('hex').slice(0,31);
+const historyRestoreReceiptRowId=(roomId,restoreId)=>'o'+createHash('sha256').update('ghdraw-room-restore:'+roomId+':'+restoreId).digest('hex').slice(0,31);
 const roomOpQuotaRowId=id=>'q'+id.slice(0,31);
 // Board history: one side row per room ('h'+id), same expiry as the room. Newest 20 versions, gzip+base64, 8 MB total.
 const HID=id=>'h'+id.slice(0,31),HMAX_N=20,HMAX_TOTAL=8e6,HMAX_ONE=3e6,HGAP=120000;
@@ -167,18 +168,43 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
     const db=await getDb(),room=await read(id);if(room.kind!=='room')throw {code:404};
     const b=req.bodyJson||{};
     if(b.op==='save')return await withLock(db,id,async()=>{const cur=await read(id);return reply({result:await histSnap(db,id,cur.board,cur.expires,true)})});
-    if(b.op==='get'||b.op==='restore'){
+    if(b.op==='get'){
      const h=await histRead(db,id),v=h.v.find(x=>x.ts===b.ts);if(!v)throw {code:404};
-     const board=JSON.parse(gunzipSync(Buffer.from(v.z,'base64')).toString());if(!validBoard(board))throw {code:400};
-     if(b.op==='get')return reply({board});
-     return await withLock(db,id,async()=>{const cur=await read(id);await histSnap(db,id,cur.board,cur.expires,true);
-     for(let attempt=0;attempt<4;attempt++){
-      const tx=await db.createTransaction({ttl:60});
-      try{const d=await read(id,tx.$id);d.board=board;d.rev=(Number.isSafeInteger(d.rev)?d.rev:0)+1;
-       await db.updateRow({databaseId:DB,tableId:TABLE,rowId:id,data:rowData(d),transactionId:tx.$id});
-       await db.updateTransaction({transactionId:tx.$id,commit:true});const {owner,ops,createReceiptId,...publicData}=d;return reply(publicData);
-      }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});if(e.code!==409||attempt===3)throw e}
-     }});
+     const board=JSON.parse(gunzipSync(Buffer.from(v.z,'base64')).toString());if(!validBoard(board))throw {code:400};return reply({board});
+    }
+    if(b.op==='restore'){
+     if(!validOpId(b.restoreId)||!Number.isSafeInteger(b.ts)||b.ts<0)return reply({error:'Invalid history restore request'},400);
+     return await withLock(db,id,async()=>{
+      const receiptId=historyRestoreReceiptRowId(id,b.restoreId);
+      try{
+       const receipt=JSON.parse((await db.getRow({databaseId:DB,tableId:TABLE,rowId:receiptId})).payload);
+       if(receipt.kind!=='history-restore-receipt'||receipt.roomId!==id||receipt.restoreId!==b.restoreId)return reply({error:'History restore receipt is invalid'},409);
+       if(receipt.ts!==b.ts)return reply({error:'restore_id_conflict'},409);
+       const current=await read(id),{owner,ops,createReceiptId,...publicData}=current;
+       return reply({...publicData,syncProtocol:'room-ops-v1',ack:b.restoreId,duplicate:true});
+      }catch(e){if(e.code!==404)throw e}
+      const h=await histRead(db,id),v=h.v.find(x=>x.ts===b.ts);if(!v)throw {code:404};
+      const board=JSON.parse(gunzipSync(Buffer.from(v.z,'base64')).toString());if(!validBoard(board))throw {code:400};
+      const current=await read(id);let quota;
+      try{quota=JSON.parse((await db.getRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id)})).payload)}catch(e){if(e.code!==404)throw e;return reply({error:'room_receipt_limit',message:'This room has no safe receipt counter. Create a new room to continue.'},409)}
+      const receiptIds=quota.receiptIds;
+      if(quota.kind!=='room-op-quota'||quota.roomId!==id||!Number.isSafeInteger(quota.count)||quota.count<0||!Array.isArray(receiptIds)||receiptIds.length!==quota.count||receiptIds.some(x=>typeof x!=='string'||!/^o[a-f0-9]{31}$/.test(x))||new Set(receiptIds).size!==receiptIds.length)return reply({error:'room_receipt_limit',message:'This room has no complete safe receipt ledger. Create a new room to continue.'},409);
+      if(quota.count>=ROOM_OP_RECEIPT_LIMIT)return reply({error:'room_receipt_limit',message:'This room reached its 9,400-operation receipt limit. Create a new room to continue; existing receipts are retained for safe retries.'},409);
+      await histSnap(db,id,current.board,current.expires,true);
+      for(let attempt=0;attempt<4;attempt++){
+       const tx=await db.createTransaction({ttl:60});
+       try{
+        const d=await read(id,tx.$id),q=JSON.parse((await db.getRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id),transactionId:tx.$id})).payload),ids=q.receiptIds;
+        if(q.kind!=='room-op-quota'||q.roomId!==id||!Number.isSafeInteger(q.count)||q.count<0||!Array.isArray(ids)||ids.length!==q.count||ids.some(x=>typeof x!=='string'||!/^o[a-f0-9]{31}$/.test(x))||new Set(ids).size!==ids.length){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_limit',message:'This room has no complete safe receipt ledger. Create a new room to continue.'},409)}
+        if(q.count>=ROOM_OP_RECEIPT_LIMIT){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_limit',message:'This room reached its 9,400-operation receipt limit. Create a new room to continue; existing receipts are retained for safe retries.'},409)}
+        d.board=board;d.rev=(Number.isSafeInteger(d.rev)?d.rev:0)+1;const nextQuota={...q,count:q.count+1,receiptIds:[...ids,receiptId]},receipt={kind:'history-restore-receipt',roomId:id,restoreId:b.restoreId,ts:b.ts,expires:d.expires};
+        await db.updateRow({databaseId:DB,tableId:TABLE,rowId:id,data:rowData(d),transactionId:tx.$id});
+        await db.updateRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id),data:rowData(nextQuota),transactionId:tx.$id});
+        await db.createRow({databaseId:DB,tableId:TABLE,rowId:receiptId,data:rowData(receipt),permissions:[],transactionId:tx.$id});
+        await db.updateTransaction({transactionId:tx.$id,commit:true});const {owner,ops,createReceiptId,...publicData}=d;return reply({...publicData,syncProtocol:'room-ops-v1',ack:b.restoreId,duplicate:false});
+       }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});if(e.code!==409||attempt===3)throw e}
+      }
+     });
     }
     const h=await histRead(db,id);return reply({versions:h.v.map(x=>({ts:x.ts,manual:!!x.m,n:x.n,pc:x.pc,size:x.z.length})).reverse(),expires:room.expires,max:HMAX_N});
    }

@@ -222,18 +222,37 @@ test('history endpoint exports a version and restores it without losing revision
  const list=await fx.call({method:'POST',path:`/hist/${created.id}`,body:{op:'list'}});assert.equal(list.status,200);assert.ok(list.body.versions.length>=1);
  const version=list.body.versions[0],exported=await fx.call({method:'POST',path:`/hist/${created.id}`,body:{op:'get',ts:version.ts}});assert.equal(exported.status,200);assert.ok(exported.body.board.p[0].e.some(e=>e.id==='shape-2'));
  await update(fx,created.id,{opId:'44444444444444444444444444444444',baseRev:1,shapeId:'shape-3'});
- const restored=await fx.call({method:'POST',path:`/hist/${created.id}`,body:{op:'restore',ts:version.ts}});assert.equal(restored.status,200);assert.ok(restored.body.board.p[0].e.some(e=>e.id==='shape-2'));assert.ok(!restored.body.board.p[0].e.some(e=>e.id==='shape-3'));assert.equal(restored.body.rev,3);
- const historyRow=fx.db.rows.get('h'+created.id.slice(0,31));assert.ok(historyRow);assert.deepEqual(historyRow.$permissions,[]);
+ const restoreId='f'.repeat(32),request={method:'POST',path:`/hist/${created.id}`,body:{op:'restore',ts:version.ts,restoreId}};
+ const restored=await fx.call(request);assert.equal(restored.status,200);assert.ok(restored.body.board.p[0].e.some(e=>e.id==='shape-2'));assert.ok(!restored.body.board.p[0].e.some(e=>e.id==='shape-3'));assert.equal(restored.body.rev,3);assert.equal(restored.body.ack,restoreId);assert.equal(restored.body.syncProtocol,'room-ops-v1');assert.equal(restored.body.duplicate,false);
+ await update(fx,created.id,{opId:'55555555555555555555555555555555',baseRev:3,shapeId:'shape-4'});
+ const duplicate=await fx.call(request);assert.equal(duplicate.status,200);assert.equal(duplicate.body.duplicate,true);assert.equal(duplicate.body.ack,restoreId);assert.equal(duplicate.body.rev,4);assert.ok(duplicate.body.board.p[0].e.some(e=>e.id==='shape-4'),'retry after a lost restore ACK returns the current room instead of rewinding a second time');
+ const reused=await fx.call({method:'POST',path:`/hist/${created.id}`,body:{op:'restore',ts:version.ts+1,restoreId}});assert.equal(reused.status,409);assert.equal(reused.body.error,'restore_id_conflict');
+ const missing=await fx.call({method:'POST',path:`/hist/${created.id}`,body:{op:'restore',ts:version.ts}});assert.equal(missing.status,400);
+ const historyRow=fx.db.rows.get('h'+created.id.slice(0,31));assert.ok(historyRow);assert.deepEqual(historyRow.$permissions,[]);const quota=JSON.parse(fx.db.rows.get(roomQuotaRowId(created.id)).payload);assert.equal(quota.count,4,'restore and board updates share the bounded receipt ledger');
+});
+
+test('history restore receipt quota rejection leaves the board and revision unchanged',async()=>{
+ const fx=fixture(),created=await createShare(fx,'room');await fx.call({method:'POST',path:`/hist/${created.id}`,body:{op:'save'}});const versions=(await fx.call({method:'POST',path:`/hist/${created.id}`,body:{op:'list'}})).body.versions;
+ const quotaRow=fx.db.rows.get(roomQuotaRowId(created.id)),quota=JSON.parse(quotaRow.payload);quota.count=ROOM_OP_RECEIPT_LIMIT;quota.receiptIds=Array.from({length:ROOM_OP_RECEIPT_LIMIT},(_,i)=>'o'+i.toString(16).padStart(31,'0'));quotaRow.payload=JSON.stringify(quota);
+ const before=JSON.parse(fx.db.rows.get(created.id).payload),result=await fx.call({method:'POST',path:`/hist/${created.id}`,body:{op:'restore',ts:versions[0].ts,restoreId:'a'.repeat(32)}});
+ assert.equal(result.status,409);assert.equal(result.body.error,'room_receipt_limit');assert.deepEqual(JSON.parse(fx.db.rows.get(created.id).payload),before);assert.equal(fx.db.rows.has('h'+created.id.slice(0,31)),true);assert.equal(fx.db.rows.has(quota.receiptIds[0]),false,'no receipt is silently pruned or fabricated');
+});
+
+test('history restore duplicate ACK survives the receipt cap while new restore IDs are rejected',async()=>{
+ const fx=fixture(),created=await createShare(fx,'room');await fx.call({method:'POST',path:`/hist/${created.id}`,body:{op:'save'}});const version=(await fx.call({method:'POST',path:`/hist/${created.id}`,body:{op:'list'}})).body.versions[0],request={method:'POST',path:`/hist/${created.id}`,body:{op:'restore',ts:version.ts,restoreId:'c'.repeat(32)}};
+ const first=await fx.call(request);assert.equal(first.status,200);const receiptId=[...fx.db.rows].find(([,row])=>JSON.parse(row.payload).kind==='history-restore-receipt')[0],quotaRow=fx.db.rows.get(roomQuotaRowId(created.id)),quota=JSON.parse(quotaRow.payload),ids=Array.from({length:ROOM_OP_RECEIPT_LIMIT},(_,i)=>'o'+(i+1000).toString(16).padStart(31,'0'));ids[0]=receiptId;quota.count=ROOM_OP_RECEIPT_LIMIT;quota.receiptIds=ids;quotaRow.payload=JSON.stringify(quota);
+ const before=JSON.parse(fx.db.rows.get(created.id).payload),duplicate=await fx.call(request);assert.equal(duplicate.status,200);assert.equal(duplicate.body.duplicate,true);assert.equal(duplicate.body.ack,request.body.restoreId);assert.equal(duplicate.body.rev,before.rev,'a prior receipt retry returns the current revision without rewinding');assert.deepEqual(JSON.parse(fx.db.rows.get(created.id).payload),before);
+ const rejected=await fx.call({...request,body:{...request.body,restoreId:'d'.repeat(32)}});assert.equal(rejected.status,409);assert.equal(rejected.body.error,'room_receipt_limit');assert.deepEqual(JSON.parse(fx.db.rows.get(created.id).payload),before,'a new restore does not mutate a full room');
 });
 
 test('owner deletion is token-protected and removes every indexed operation receipt',async()=>{
  const fx=fixture(),created=(await fx.call({method:'POST',path:'/create',body:{kind:'room',board:board(),requestId:'e'.repeat(32)}})).body;
  await fx.call({method:'POST',path:`/live/${created.id}`,body:{cid:'client01'}});
  await fx.call({method:'POST',path:`/hist/${created.id}`,body:{op:'save'}});
- await update(fx,created.id,{opId:'d'.repeat(32)});const opReceipt=[...fx.db.rows].find(([rowId,row])=>rowId.startsWith('o')&&JSON.parse(row.payload).roomId===created.id)?.[0];assert.ok(opReceipt);
+ await update(fx,created.id,{opId:'d'.repeat(32)});const version=(await fx.call({method:'POST',path:`/hist/${created.id}`,body:{op:'list'}})).body.versions[0];await fx.call({method:'POST',path:`/hist/${created.id}`,body:{op:'restore',ts:version.ts,restoreId:'b'.repeat(32)}});const opReceipt=[...fx.db.rows].find(([rowId,row])=>rowId.startsWith('o')&&JSON.parse(row.payload).kind==='room-op-receipt'&&JSON.parse(row.payload).roomId===created.id)?.[0],restoreReceipt=[...fx.db.rows].find(([,row])=>JSON.parse(row.payload).kind==='history-restore-receipt')?.[0];assert.ok(opReceipt);assert.ok(restoreReceipt);
  const root=JSON.parse(fx.db.rows.get(created.id).payload),receiptId=root.createReceiptId;
  const denied=await fx.call({method:'DELETE',path:`/owner/${created.id}`,body:{owner:'wrong'}});assert.equal(denied.status,403);assert.ok(fx.db.rows.has(created.id));
- const removed=await fx.call({method:'DELETE',path:`/owner/${created.id}`,body:{owner:created.owner}});assert.deepEqual(removed.body,{ok:true});assert.equal(fx.db.rows.has(created.id),false);assert.equal(fx.db.rows.has('p'+created.id.slice(0,31)),false);assert.equal(fx.db.rows.has('h'+created.id.slice(0,31)),false);assert.equal(fx.db.rows.has(roomQuotaRowId(created.id)),false);assert.equal(fx.db.rows.has(receiptId),false);assert.equal(fx.db.rows.has(opReceipt),false,'operation receipts are removed atomically with the deleted room');
+ const removed=await fx.call({method:'DELETE',path:`/owner/${created.id}`,body:{owner:created.owner}});assert.deepEqual(removed.body,{ok:true});assert.equal(fx.db.rows.has(created.id),false);assert.equal(fx.db.rows.has('p'+created.id.slice(0,31)),false);assert.equal(fx.db.rows.has('h'+created.id.slice(0,31)),false);assert.equal(fx.db.rows.has(roomQuotaRowId(created.id)),false);assert.equal(fx.db.rows.has(receiptId),false);assert.equal(fx.db.rows.has(opReceipt),false,'operation receipts are removed atomically with the deleted room');assert.equal(fx.db.rows.has(restoreReceipt),false,'history restore receipts are removed atomically with the deleted room');
 });
 
 test('owner deletion removes receipt IDs in bounded batches and rolls back on an incomplete ledger',async()=>{
