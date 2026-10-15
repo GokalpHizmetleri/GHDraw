@@ -7,6 +7,8 @@ const html=readFileSync(new URL('../index.html',import.meta.url),'utf8');
 const fontsStart=html.indexOf('const FONTS='),fontsEnd=html.indexOf('\n',fontsStart);
 assert.ok(fontsStart>=0&&fontsEnd>fontsStart,'missing font allowlist');
 const fontsSource=html.slice(fontsStart,fontsEnd);
+const serLine=html.split('\n').find(line=>line.startsWith('const ser='));
+assert.ok(serLine,'missing element serializer');
 function extract(name,next){
   const start=html.indexOf(`function ${name}(`);
   assert.notEqual(start,-1,`missing ${name}`);
@@ -20,7 +22,7 @@ assert.ok(loadStart>=0&&loadEnd>loadStart,'missing load function');
 const loadSource=html.slice(loadStart,loadEnd);
 const source=[
   fontsSource,
-  extract('cloudJoinCanContinue','cloudSelectRejoinBoard'),
+  extract('validCloudElement','cloudSelectRejoinBoard'),
   extract('cloudSelectRejoinBoard','cloudDiff'),
   extract('localBoardRecord','save'),
   extract('isBoardObject','validBoardCamera'),
@@ -29,33 +31,40 @@ const source=[
   extract('validBoardDefaults','normalizeBoardElement'),
   extract('normalizeBoardElement','normalizeBoardDefaults'),
   extract('normalizeBoardDefaults','parseLocalBoardRecord'),
-  extract('parseLocalBoardRecord','localBoardBackupKeys'),
+  extract('parseLocalBoardRecord','normalizeCloudRoomBoard'),
+  extract('normalizeCloudRoomBoard','localBoardBackupLimits'),
+  extract('localBoardBackupLimits','localBoardBackupKeys'),
   extract('dash','roughPass'),
   loadSource,
-  extract('localBoardBackupKeys','writeLocalBoardBackup'),
+  extract('localBoardBackupKeys','localBoardBackupUsage'),
+  extract('localBoardBackupUsage','writeLocalBoardBackup'),
   extract('writeLocalBoardBackup','localBoardBackupEntries'),
   extract('localBoardBackupEntries','hasLocalBoardBackups'),
-  extract('hasLocalBoardBackups','preserveLocalBoardBeforeCloudJoin'),
+  extract('hasLocalBoardBackups','deleteLocalBoardBackup'),
+  extract('deleteLocalBoardBackup','preserveLocalBoardBeforeCloudJoin'),
   extract('preserveLocalBoardBeforeCloudJoin','restoreLocalBoardRecord'),
   extract('restoreLocalBoardRecord','localBoardRoomId'),
+  html.slice(html.indexOf('function restoreCloudSnapshot('),html.indexOf('\nasync function cloudRequest(',html.indexOf('function restoreCloudSnapshot('))),
   extract('cloudDiff','cloudApplyChanges'),
   extract('cloudApplyChanges','cloudRebase'),
   extract('cloudRebase','cloudMerge'),
   extract('cloudProtocolCompatible','blockCloudProtocol'),
-  'globalThis.api={cloudJoinCanContinue,localBoardRecord,parseLocalBoardRecord,localBoardBackupKeys,writeLocalBoardBackup,localBoardBackupEntries,hasLocalBoardBackups,preserveLocalBoardBeforeCloudJoin,restoreLocalBoardRecord,load,dash,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudApplyChanges,cloudRebase};'
+  serLine,
+  'globalThis.api={validCloudChange,cloudCheckpointCanResume,cloudJoinCanContinue,localBoardRecord,parseLocalBoardRecord,localBoardBackupLimits,localBoardBackupUsage,localBoardBackupKeys,writeLocalBoardBackup,localBoardBackupEntries,hasLocalBoardBackups,deleteLocalBoardBackup,preserveLocalBoardBeforeCloudJoin,restoreLocalBoardRecord,restoreCloudSnapshot,load,dash,clampBoardCamera,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudApplyChanges,cloudRebase,ser};'
 ].join('\n');
 const storage=new Map();
-const mockLocalStorage={getItem:key=>storage.has(key)?storage.get(key):null,setItem:(key,value)=>storage.set(key,String(value)),key:index=>[...storage.keys()][index]??null,get length(){return storage.size}};
-const context={structuredClone,localStorage:mockLocalStorage,els:[],cam:{x:0,y:0,z:1},defaults:{},grid:false,dark:false,pi:0,pages:[{id:'p1',name:'Board',els:[],cam:{x:0,y:0,z:1}}],cloudRoom:null,collabOn:false,editing:null,measure:()=>{},uid:()=>'recovery-page'};
+const mockLocalStorage={getItem:key=>storage.has(key)?storage.get(key):null,setItem:(key,value)=>storage.set(key,String(value)),removeItem:key=>storage.delete(key),key:index=>[...storage.keys()][index]??null,get length(){return storage.size}};
+const context={structuredClone,localStorage:mockLocalStorage,els:[],cam:{x:0,y:0,z:1},defaults:{},grid:false,dark:false,pi:0,pages:[{id:'p1',name:'Board',els:[],cam:{x:0,y:0,z:1}}],cloudRoom:null,collabOn:false,editing:null,measure:()=>{},uid:()=>'recovery-page',sel:new Set(),hist:[],hidx:0,document:{body:{classList:{toggle(){}}}},renderCalls:0,saveCalls:0};
+context.snap=()=>JSON.stringify(context.els);context.syncUI=()=>{};context.render=()=>{context.renderCalls++};context.save=()=>{context.saveCalls++};
 context.syncPage=()=>{const page=context.pages[context.pi];if(page){page.els=context.els;page.cam=context.cam}};
 context.finishEdit=()=>{context.editing=null};context.cloudEnd=()=>{context.cloudRoom=null;context.collabOn=false};
 vm.runInNewContext(source,context);
-const {cloudJoinCanContinue,localBoardRecord,parseLocalBoardRecord,localBoardBackupKeys,writeLocalBoardBackup,localBoardBackupEntries,hasLocalBoardBackups,preserveLocalBoardBeforeCloudJoin,restoreLocalBoardRecord,load,dash,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudApplyChanges,cloudRebase}=context.api;
+const {validCloudChange,cloudCheckpointCanResume,cloudJoinCanContinue,localBoardRecord,parseLocalBoardRecord,localBoardBackupLimits,localBoardBackupUsage,localBoardBackupKeys,writeLocalBoardBackup,localBoardBackupEntries,hasLocalBoardBackups,deleteLocalBoardBackup,preserveLocalBoardBeforeCloudJoin,restoreLocalBoardRecord,restoreCloudSnapshot,load,dash,clampBoardCamera,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudApplyChanges,cloudRebase}=context.api;
 
 const base={v:2,d:0,p:[
   {id:'p1',n:'Board',e:[
-    {id:'shape-a',type:'rect',x:0,text:'base',th:[{id:'m1',t:'first'}]},
-    {id:'shape-b',type:'rect',x:4}
+    {id:'shape-a',type:'rect',x:0,y:0,w:10,h:10,seed:1,stroke:'#1e1e1e',bg:'transparent',fill:'hachure',sw:2,style:'solid',rough:1,round:true,opacity:100,text:'base',th:[{id:'m1',t:'first'}]},
+    {id:'shape-b',type:'rect',x:4,y:0,w:10,h:10,seed:2,stroke:'#1e1e1e',bg:'transparent',fill:'hachure',sw:2,style:'solid',rough:1,round:true,opacity:100}
   ]},
   {id:'p2',n:'Second',e:[]}
 ]};
@@ -139,6 +148,12 @@ test('validator rejects unsafe geometry and style while allowing UI-supported re
   const parse=(element,cam={x:0,y:0,z:1},defaults={})=>parseLocalBoardRecord(JSON.stringify({els:[element],cam,defaults,pi:0,pages:[{id:'safe-page',name:'Safe',els:[element],cam}]}));
   assert.equal(parse(recordElement('negative','rect',{w:-1,h:-1})),null,'negative shape dimensions are invalid');
   assert.equal(parse(recordElement('huge-coordinate','rect',{x:Number.MAX_VALUE})),null,'unbounded finite coordinates are invalid');
+  const largeElement=recordElement('legacy-large-world','rect',{x:2e6,y:-2e6}),largeCam={x:2e6,y:-2e6,z:1};
+  const largeRecord=JSON.stringify({els:[largeElement],cam:largeCam,defaults:{},grid:false,dark:false,pi:0,pages:[{id:'large-page',name:'Large world',els:[largeElement],cam:largeCam}]});
+  assert.ok(parseLocalBoardRecord(largeRecord),'valid coordinates beyond the old 1e6 limit remain reloadable');
+  storage.set('ghdraw:v2',largeRecord);context.pages=[{id:'before',name:'Before',els:[],cam:{x:0,y:0,z:1}}];context.els=[];context.pi=0;load();
+  assert.equal(context.els[0].x,2e6);assert.equal(context.cam.x,2e6);
+  assert.deepEqual(json(clampBoardCamera({x:1e12,y:-1e12,z:100})),{x:9e9,y:-9e9,z:8},'camera is clamped before rendering/saving so future boards remain within the accepted range');
   assert.equal(parse(recordElement('huge-text','text',{size:Number.MAX_VALUE})),null,'text size cannot overflow measurement');
   assert.equal(parse(recordElement('tiny-text','text',{size:Number.MIN_VALUE})),null,'text size cannot underflow measurement');
   assert.equal(parse(recordElement('huge-point','line',{pts:[[Number.MAX_VALUE,0],[1,1]]})),null,'line points are bounded');
@@ -194,6 +209,16 @@ test('validator rejects unsafe geometry and style while allowing UI-supported re
   assert.ok(parse(recordElement('valid-video','video',{src:'https://example.invalid/video.mp4',name:'Video'})),'video elements remain supported');
 });
 
+test('local backup retention is bounded and never silently deletes an existing recovery copy',()=>{
+  storage.clear();const limit=localBoardBackupLimits(),recordFor=id=>{const e=recordElement(id),cam={x:0,y:0,z:1};return JSON.stringify({els:[e],cam,defaults:{},grid:false,dark:false,pi:0,savedAt:Date.now(),pages:[{id:'page-'+id,name:'Local',els:[e],cam}]})};
+  for(let i=0;i<limit.count;i++){const key=i===0?'ghdraw:backup-before-collab':'ghdraw:backup-before-collab:archive-'+i;storage.set(key,recordFor('archive-'+i))}
+  const before=[...storage.entries()];assert.equal(writeLocalBoardBackup(recordFor('fifth-backup')),false,'full archive refuses another snapshot instead of evicting an older one');assert.deepEqual([...storage.entries()],before,'a failed backup never silently removes or overwrites stored recovery data');
+  storage.clear();const tooLargeText=recordElement('large-backup','text',{text:'x'.repeat(270000)}),largeCam={x:0,y:0,z:1},largeRecord=JSON.stringify({els:[tooLargeText],cam:largeCam,defaults:{},grid:false,dark:false,pi:0,pages:[{id:'large-page',name:'Large',els:[tooLargeText],cam:largeCam}]});assert.ok(parseLocalBoardRecord(largeRecord),'oversize fixture is otherwise valid');assert.ok(largeRecord.length>limit.entry);assert.equal(writeLocalBoardBackup(largeRecord),false,'an individual backup above the size cap is refused');
+  storage.clear();storage.set('unrelated-app-data','x'.repeat(limit.origin));assert.equal(writeLocalBoardBackup(recordFor('storage-headroom')),false,'a backup is refused before localStorage headroom is exhausted');
+  storage.clear();const key='ghdraw:backup-before-collab';storage.set(key,recordFor('delete-confirmation'));assert.equal(deleteLocalBoardBackup(key,false),false,'deletion requires explicit confirmation');assert.notEqual(storage.get(key),undefined);assert.equal(deleteLocalBoardBackup(key,true),true,'confirmed management can free storage');assert.equal(storage.has(key),false);
+  assert.match(html,/Manage local board backups/,'the menu exposes the explicit backup-management flow');assert.match(html,/permanently deleted/,'the UI warns before irreversible local backup deletion');
+});
+
 test('malformed backups stay untouched and cannot partially replace the live board',()=>{
   storage.clear();
   const malformed=JSON.stringify({els:[],pages:[{id:'p',name:'bad',els:[null],cam:{x:0,y:0,z:1}}],pi:0});
@@ -247,16 +272,37 @@ test('restoring a backup requires confirmation and keeps both the selected copy 
 });
 
 test('offline join without a room checkpoint exits before loading an IndexedDB snapshot',()=>{
+  const cached={id:'room-1',rev:0,base,inflight:null};
   assert.equal(cloudJoinCanContinue(false,null),false);
   assert.equal(cloudJoinCanContinue(false,{base:null}),false);
-  assert.equal(cloudJoinCanContinue(false,{base}),true);
+  assert.equal(cloudJoinCanContinue(false,cached),true);
+  assert.equal(cloudCheckpointCanResume({...cached,inflight:{opId:'a'.repeat(32),baseRev:0,changes:[{t:'mystery'}]}}),false,'unknown persisted changes cannot be replayed or sent');
   assert.equal(cloudJoinCanContinue(true,null),true);
 
   const start=html.indexOf('async function cloudJoin(id,host=false,createdHere=false){');
   const join=html.slice(start,html.indexOf("\naddEventListener('offline'",start));
-  const guard=join.indexOf('if(!cloudJoinCanContinue(navigator.onLine,cached))');
+  const guard=join.indexOf('if(!cloudJoinCanContinue(navigator.onLine,cachedReady?cached:null))');
   assert.ok(guard>=0&&guard<join.indexOf('cloudLocalSnapshot(id)'), 'checkpointless offline exit precedes snapshot loading');
   assert.ok(guard<join.indexOf('restoreCloudSnapshot({board:safeLocal},id)'), 'checkpointless offline exit precedes board mutation');
+});
+
+test('offline room snapshots reject null elements before render and remeasure legacy text metrics',()=>{
+  const malformed={v:2,d:0,p:[{id:'bad-page',n:'Bad',e:[null]}]},room={kind:'room',syncProtocol:'room-ops-v1',board:{p:base.p},rev:0};
+  const cached={id:'room-1',rev:0,base:malformed,inflight:null};
+  assert.equal(cloudJoinCanContinue(false,cached),false,'a malformed cached room board cannot authorize offline resume');
+  assert.equal(cloudCheckpointCanResume({...cached,base,inflight:{opId:'a'.repeat(32),baseRev:0,changes:[{t:'put',pid:'p1',e:null}]}}),false,'malformed durable outbox deltas cannot activate or rebase');
+  assert.equal(cloudProtocolCompatible({...room,board:malformed}),false,'malformed online room responses fail protocol validation');
+  assert.equal(cloudSelectRejoinBoard('room-1','room-1',malformed,malformed,malformed,null),null,'null items are rejected from every cached-board candidate');
+  context.pages=[{id:'kept-page',name:'Kept',els:[recordElement('keep')],cam:{x:0,y:0,z:1}}];context.els=context.pages[0].els;context.pi=0;context.cam={x:7,y:8,z:1};context.renderCalls=0;context.saveCalls=0;const previous=json({pages:context.pages,els:context.els,cam:context.cam});
+  assert.equal(restoreCloudSnapshot({board:malformed},'room-1'),false);assert.deepEqual(json({pages:context.pages,els:context.els,cam:context.cam}),previous,'invalid cached content cannot partially mutate the live board');assert.equal(context.renderCalls,0);assert.equal(context.saveCalls,0);
+  const oldText=recordElement('old-room-text','text',{text:'Offline label'});delete oldText.w;delete oldText.h;delete oldText.lw;context.measure=e=>{e.w=44;e.h=35;e.lw=[44]};
+  const oldBoard={v:2,d:0,p:[{id:'text-page',n:'Text',e:[oldText]}]};assert.equal(restoreCloudSnapshot({board:oldBoard},'room-1'),true,'legacy offline snapshot restores after text is remeasured');assert.equal(context.els[0].w,44);assert.equal(context.els[0].h,35);assert.deepEqual(json(context.els[0].lw),[44]);assert.equal(context.renderCalls,1);assert.equal(context.saveCalls,1);
+});
+
+test('local snapshots retain text geometry while network boards stay compact',()=>{
+  const text=recordElement('text-metrics','text',{text:'Metrics',w:40,h:35,lw:[40]});const room=JSON.parse(context.api.ser(text,true)),peer=JSON.parse(context.api.ser(text));
+  assert.deepEqual(json({w:room.w,h:room.h,lw:room.lw}),{w:40,h:35,lw:[40]});assert.equal('w' in peer,false);assert.equal('h' in peer,false);assert.equal('lw' in peer,false);
+  assert.match(html,/function cloudBoard\(includeTextMetrics=false\)/,'network board serialization defaults to the compact representation');assert.match(html,/function scheduleCloudSnapshot\(id\).*cloudBoard\(true\)/,'durable local snapshots include text geometry');assert.match(html,/saveCloudCheckpoint\(id,oldBase,oldRev,cloudRoom\.expires,candidate,durableCurrent\)/,'staged outbox snapshots preserve geometry before send');
 });
 
 test('rejoining a room never imports additions or deletions from another local board',()=>{
@@ -271,7 +317,7 @@ test('rejoining a room never imports additions or deletions from another local b
   assert.deepEqual(json(safe),json(base),'mismatched localStorage uses this room checkpoint instead');
   assert.deepEqual(json(cloudDiff(base,safe)),[],'private additions and deletions do not enter the room delta');
 
-  const roomSnapshot=structuredClone(base);roomSnapshot.p[0].e.push({id:'offline-room-shape',type:'ellipse',x:12});
+  const roomSnapshot=structuredClone(base);roomSnapshot.p[0].e.push(recordElement('offline-room-shape','ellipse',{x:12}));
   const resumed=cloudSelectRejoinBoard('room-1','other-room',privateBoard,roomSnapshot,base,null);
   assert.deepEqual(json(resumed),json(roomSnapshot),'room snapshot outranks unrelated global localStorage');
   assert.equal(cloudSelectRejoinBoard('room-1','room-1',roomSnapshot,null,base,null),roomSnapshot,'matching room marker preserves same-room local edits');
@@ -312,7 +358,7 @@ test('an outbox delta can reconstruct its sent snapshot and safely replay',()=>{
 
 test('offline checkpoint, operation id, acknowledgement, and revision retry paths are present',()=>{
   assert.match(html,/indexedDB\.open\('ghdraw-cloud-sync-v1',2\)/);
-  assert.match(html,/saveCloudCheckpoint\(id,oldBase,oldRev,cloudRoom\.expires,candidate,current\)/);
+  assert.match(html,/saveCloudCheckpoint\(id,oldBase,oldRev,cloudRoom\.expires,candidate,durableCurrent\)/);
   assert.match(html,/JSON\.stringify\(durable\.inflight\)!==JSON\.stringify\(candidate\)/);
   assert.match(html,/opId:op\.opId,baseRev:op\.baseRev/);
   assert.match(html,/d\.ack===op\.opId/);
@@ -321,9 +367,9 @@ test('offline checkpoint, operation id, acknowledgement, and revision retry path
   const backend=readFileSync(new URL('../backend/src/main.js',import.meta.url),'utf8');
   assert.match(backend,/syncProtocol:'room-ops-v1'/);
   assert.match(html,/cloudRoomId:roomIdHint\|\|cloudRoom\?\.id/);
-  assert.match(html,/cloudSelectRejoinBoard\(id,savedRoomId,current,snapshotBoard,cached\?\.base,null\)/);
+  assert.match(html,/cloudSelectRejoinBoard\(id,savedRoomId,current,snapshotBoard,cachedReady\?cached\.base:null,null\)/);
   assert.match(html,/addEventListener\('online'/);
-  assert.match(html,/if\(cached&&cached\.base&&cached\.inflight\).*await cloudSync\(\)/);
+  assert.match(html,/if\(cachedReady&&cached\.inflight\).*await cloudSync\(\)/);
 });
 
 test('mobile and tablet styles account for safe areas, touch size, and compact landscape',()=>{

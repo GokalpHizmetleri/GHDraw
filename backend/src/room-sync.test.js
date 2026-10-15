@@ -20,7 +20,7 @@ test('same operation retry is acknowledged without a second mutation or revision
   assert.equal(d.rev,1);
   assert.equal(d.board.p[0].e[0].th.length,2);
 
-  const retry=applyRoomUpdate(d,{...body,changes:[{t:'del',pid:'page-1',eid:'shape-1'}]});
+  const retry=applyRoomUpdate(d,{...body,changes:[{t:'del',pid:'page-1',eid:'shape-1'}]},{alreadyApplied:true});
   assert.equal(retry.duplicate,true);
   assert.equal(retry.ack,id);
   assert.equal(d.rev,1);
@@ -39,13 +39,21 @@ test('stale base revision rebases onto latest board and preserves other client e
   assert.deepEqual(d.board.p[0].e.find(e=>e.id==='shape-1').th.map(m=>m.id),['m1','m2']);
 });
 
-test('an old lost-ACK operation remains deduplicated after more than 256 later changes',()=>{
-  const d=room(),firstId='a'.repeat(32);
-  applyRoomUpdate(d,{opId:firstId,baseRev:0,changes:[{t:'rename',pid:'page-1',n:'first'}]});
-  for(let i=1;i<=300;i++)applyRoomUpdate(d,{opId:i.toString(16).padStart(32,'0'),baseRev:d.rev,changes:[{t:'rename',pid:'page-1',n:`latest-${i}`}]});
+test('the room row stays bounded while external receipts cover more than 256 later changes',()=>{
+  const d=room(),firstId='a'.repeat(32),receipts=new Set();
+  const apply=(opId,changes,baseRev=d.rev)=>{const result=applyRoomUpdate(d,{opId,baseRev,changes},{alreadyApplied:receipts.has(opId)});if(!result.duplicate&&changes.length)receipts.add(opId);return result};
+  apply(firstId,[{t:'rename',pid:'page-1',n:'first'}]);
+  for(let i=1;i<=300;i++)apply(i.toString(16).padStart(32,'0'),[{t:'rename',pid:'page-1',n:`latest-${i}` }]);
   const revision=d.rev,latest=d.board.p[0].n;
-  assert.equal(d.ops.length,301);
-  const retry=applyRoomUpdate(d,{opId:firstId,baseRev:0,changes:[{t:'rename',pid:'page-1',n:'stale-replay'}]});
+  assert.equal(d.ops.length,0,'new op ids do not inflate the serialized board row');
+  assert.equal(receipts.size,301,'each mutation has an external durable receipt');
+  const retry=apply(firstId,[{t:'rename',pid:'page-1',n:'stale-replay'}],0);
   assert.equal(retry.duplicate,true);assert.equal(retry.ack,firstId);assert.equal(retry.rebased,true);
   assert.equal(d.rev,revision);assert.equal(d.board.p[0].n,latest);
+});
+
+test('legacy operation ids already in the room row remain recognized',()=>{
+  const d=room();d.ops=[id];
+  const retry=applyRoomUpdate(d,{opId:id,baseRev:0,changes:[{t:'del',pid:'page-1',eid:'shape-1'}]});
+  assert.equal(retry.duplicate,true);assert.equal(retry.ack,id);assert.equal(d.rev,0);assert.equal(d.board.p[0].e.length,1);
 });

@@ -2,11 +2,11 @@
 export const validOpId = x => typeof x === 'string' && /^(?:[a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})$/.test(x);
 const msgKey = m => m.id || (m.ts + '|' + m.n + '|' + m.t);
 
-// Apply one serialized room update. The op id is recorded in the same board document
-// as its changes, so a retried request cannot apply twice after a lost response.
-export function applyRoomUpdate(d, b) {
+// Apply one serialized room update. The handler writes new operation receipts to
+// private expiring side rows in the same TablesDB transaction as the room row.
+export function applyRoomUpdate(d, b, {alreadyApplied = false} = {}) {
   const prevRev = Number.isSafeInteger(d.rev) ? d.rev : 0;
-  if (b.opId && Array.isArray(d.ops) && d.ops.includes(b.opId)) {
+  if (alreadyApplied || b.opId && Array.isArray(d.ops) && d.ops.includes(b.opId)) {
     return {duplicate: true, ack: b.opId, rebased: b.baseRev !== undefined && b.baseRev < prevRev, prevRev};
   }
 
@@ -38,11 +38,7 @@ export function applyRoomUpdate(d, b) {
   }
 
   d.rev = prevRev + (b.changes.length ? 1 : 0);
-  // Keep IDs for the room lifetime; the backend's 12 MiB row guard rejects overflow atomically.
-  // Empty operations do not mutate state, so they need no durable deduplication receipt.
-  if (b.opId && b.changes.length) {
-    d.ops = Array.isArray(d.ops) ? d.ops : [];
-    d.ops.push(b.opId);
-  }
+  // Preserve any legacy d.ops entries for backward compatibility, but new IDs are
+  // deliberately not appended here: the backend persists them in side rows.
   return {duplicate: false, ack: b.opId || null, rebased: b.baseRev !== undefined && b.baseRev < prevRev, prevRev};
 }

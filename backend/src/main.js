@@ -10,6 +10,7 @@ const validElement=e=>e&&validId(e.id)&&['rect','diamond','ellipse','arrow','lin
 // Appwrite projects expiry metadata as a narrow DateTime column so scans never download board payloads.
 const rowData=d=>({payload:JSON.stringify(d),expiresAt:new Date(d.expires).toISOString()});
 const createReceiptRowId=requestId=>'g'+createHash('sha256').update('ghdraw-create:'+requestId).digest('hex').slice(0,31);
+const roomOpReceiptRowId=(roomId,opId)=>'o'+createHash('sha256').update('ghdraw-room-op:'+roomId+':'+opId).digest('hex').slice(0,31);
 // Board history: one side row per room ('h'+id), same expiry as the room. Newest 20 versions, gzip+base64, 8 MB total.
 const HID=id=>'h'+id.slice(0,31),HMAX_N=20,HMAX_TOTAL=8e6,HMAX_ONE=3e6,HGAP=120000;
 const validPage=p=>p&&validId(p.id)&&typeof p.n==='string'&&p.n.length<=100&&Array.isArray(p.e)&&p.e.length<=10000&&p.e.every(validElement)&&new Set(p.e.map(e=>e.id)).size===p.e.length;
@@ -197,7 +198,7 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
      const d={kind:b.kind,expires,board:b.board,room:b.room||null,owner,...(receiptId?{createReceiptId:receiptId}:{}),...(b.kind==='room'?{rev:0,ops:[]}: {})};
      const stored=rowData(d);if(Buffer.byteLength(stored.payload)>MAX)return reply({error:'Board exceeds 12 MB'},413);
      let shareCount=0;
-     await forEachRows({select:['$id']},rows=>{for(const row of rows)if(typeof row.$id==='string'&&!/^[phkg]/.test(row.$id)&&!row.$id.startsWith('ai-'))shareCount++;return shareCount<150});
+     await forEachRows({select:['$id']},rows=>{for(const row of rows)if(typeof row.$id==='string'&&!/^[phkgo]/.test(row.$id)&&!row.$id.startsWith('ai-'))shareCount++;return shareCount<150});
      if(shareCount>=150)return reply({error:'Free storage is full; ask the project owner to remove old links.'},429);
      const tx=await db.createTransaction({ttl:60});
      try{
@@ -212,18 +213,22 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
     if(!/^[a-f0-9]{32}$/.test(id||''))throw {code:404};
     if(Buffer.byteLength(req.bodyText||'')>MAX)return reply({error:'Update exceeds 12 MB'},413);
     const b=req.bodyJson||{};if(!Array.isArray(b.changes)||b.changes.length>5000||!b.changes.every(validChange)||(b.opId!==undefined&&!validOpId(b.opId))||(b.baseRev!==undefined&&(!Number.isSafeInteger(b.baseRev)||b.baseRev<0)))return reply({error:'Invalid update'},400);
-    return await withLock(await getDb(),id,async()=>{for(let attempt=0;attempt<6;attempt++){
-     const tx=await (await getDb()).createTransaction({ttl:60});
+    const db=await getDb();
+    return await withLock(db,id,async()=>{for(let attempt=0;attempt<6;attempt++){
+     const tx=await db.createTransaction({ttl:60});
      try{
       const d=await read(id,tx.$id);if(d.kind!=='room')throw {code:404};
-      const op=applyRoomUpdate(d,b);
-      if(op.duplicate){await (await getDb()).updateTransaction({transactionId:tx.$id,rollback:true});const {owner,ops,createReceiptId,...publicData}=d;return reply({...publicData,syncProtocol:'room-ops-v1',ack:op.ack,duplicate:true,rebased:op.rebased})}
+      const opReceiptId=b.opId&&b.changes.length?roomOpReceiptRowId(id,b.opId):null;let alreadyApplied=false;
+      if(opReceiptId){try{const receipt=JSON.parse((await db.getRow({databaseId:DB,tableId:TABLE,rowId:opReceiptId,transactionId:tx.$id})).payload);if(receipt.kind!=='room-op-receipt'||receipt.roomId!==id||receipt.opId!==b.opId)throw {code:409};alreadyApplied=true}catch(e){if(e.code!==404)throw e}}
+      const op=applyRoomUpdate(d,b,{alreadyApplied});
+      if(op.duplicate){await db.updateTransaction({transactionId:tx.$id,rollback:true});const {owner,ops,createReceiptId,...publicData}=d;return reply({...publicData,syncProtocol:'room-ops-v1',ack:op.ack,duplicate:true,rebased:op.rebased})}
       if(!validBoard(d.board))throw {code:400};if(Buffer.byteLength(JSON.stringify(d))>MAX)throw {code:413};
-      await (await getDb()).updateRow({databaseId:DB,tableId:TABLE,rowId:id,data:rowData(d),transactionId:tx.$id});
-      await (await getDb()).updateTransaction({transactionId:tx.$id,commit:true});
-      if(b.changes.length)await histSnap(await getDb(),id,d.board,d.expires,false).catch(()=>{});
+      await db.updateRow({databaseId:DB,tableId:TABLE,rowId:id,data:rowData(d),transactionId:tx.$id});
+      if(opReceiptId){const receipt={kind:'room-op-receipt',roomId:id,opId:b.opId,expires:d.expires};await db.createRow({databaseId:DB,tableId:TABLE,rowId:opReceiptId,data:rowData(receipt),permissions:[],transactionId:tx.$id})}
+      await db.updateTransaction({transactionId:tx.$id,commit:true});
+      if(b.changes.length)await histSnap(db,id,d.board,d.expires,false).catch(()=>{});
       const {owner,ops,createReceiptId,...publicData}=d;return reply({...publicData,syncProtocol:'room-ops-v1',ack:op.ack,rebased:op.rebased});
-     }catch(e){await (await getDb()).updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});if(e.code!==409||attempt===5)throw e}
+     }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});if(e.code!==409||attempt===5)throw e}
     }});
    }
    if(req.method==='DELETE'&&path[0]==='owner'){

@@ -140,16 +140,30 @@ test('anonymous room creation and reads expose the sync protocol but never owner
 test('room operation ACKs, duplicate retries and stale-base rebase survive TablesDB transactions',async()=>{
  const fx=fixture(),created=await createShare(fx,'room');
  const first=await update(fx,created.id);assert.equal(first.status,200);assert.equal(first.body.ack,'11111111111111111111111111111111');assert.equal(first.body.rev,1);
+ const receiptEntry=[...fx.db.rows].find(([rowId,row])=>rowId.startsWith('o')&&JSON.parse(row.payload).opId==='11111111111111111111111111111111');assert.ok(receiptEntry,'an operation receipt is stored separately from the room board');assert.deepEqual(receiptEntry[1].$permissions,[]);assert.equal(JSON.parse(receiptEntry[1].payload).roomId,created.id);
  const retry=await update(fx,created.id);assert.equal(retry.status,200);assert.equal(retry.body.duplicate,true);assert.equal(retry.body.rev,1);
  const second=await update(fx,created.id,{opId:'22222222222222222222222222222222',baseRev:0,shapeId:'shape-3'});assert.equal(second.status,200);assert.equal(second.body.rebased,true);assert.equal(second.body.rev,2);
+ assert.deepEqual(JSON.parse(fx.db.rows.get(created.id).payload).ops,[],'new operation IDs never grow the room row');
  const room=await fx.call({method:'GET',path:`/room/${created.id}`});assert.deepEqual(room.body.board.p[0].e.map(e=>e.id),['shape-1','shape-2','shape-3']);
 });
 
-test('room update refuses an over-cap lifetime operation ledger without committing it',async()=>{
- const id='d'.repeat(32),data={kind:'room',expires:Date.now()+86400000,board:board(),room:null,owner:'owner-token',rev:0,ops:Array(380000).fill('0'.repeat(32))};
- const fx=fixture({seed:[[id,{$id:id,...rowData(data),$permissions:[]}]]}),before=fx.db.rows.get(id).payload;
- const response=await update(fx,id,{opId:'f'.repeat(32),shapeId:'new-shape'});
- assert.equal(response.status,413);assert.equal(fx.db.rows.get(id).payload,before);
+test('room remains writable and deletable after 300 changes; old lost-ACK retries stay deduplicated',async()=>{
+ const fx=fixture(),created=await createShare(fx,'room'),firstId='f'.repeat(32),first=await update(fx,created.id,{opId:firstId,shapeId:'shape-doomed'});assert.equal(first.status,200);
+ for(let i=1;i<=300;i++){
+  const opId=i.toString(16).padStart(32,'0'),response=await fx.call({method:'POST',path:`/room/${created.id}`,body:{opId,baseRev:i,changes:[{t:'rename',pid:'page-1',n:`Page-${i}`}]}});
+  assert.equal(response.status,200,`revision ${i+1} should remain writable`);
+ }
+ const root=JSON.parse(fx.db.rows.get(created.id).payload),receiptRows=[...fx.db.rows].filter(([rowId,row])=>rowId.startsWith('o')&&JSON.parse(row.payload).roomId===created.id);
+ assert.equal(root.rev,301);assert.deepEqual(root.ops,[]);assert.ok(Buffer.byteLength(fx.db.rows.get(created.id).payload)<100000,'room payload remains bounded independently of operation count');assert.equal(receiptRows.length,301);assert.ok(receiptRows.every(([,row])=>row.$permissions.length===0));
+ const retry=await update(fx,created.id,{opId:firstId,baseRev:0,shapeId:'should-not-reappear'});assert.equal(retry.status,200);assert.equal(retry.body.duplicate,true);assert.equal(retry.body.rev,301);
+ const deletion=await fx.call({method:'POST',path:`/room/${created.id}`,body:{opId:'e'.repeat(32),baseRev:301,changes:[{t:'del',pid:'page-1',eid:'shape-doomed'}]}});assert.equal(deletion.status,200);assert.equal(deletion.body.rev,302);
+ const final=await fx.call({method:'GET',path:`/room/${created.id}`});assert.ok(!final.body.board.p[0].e.some(e=>e.id==='shape-doomed'));
+});
+
+test('operation receipt rows expire with the room and are removed by scheduled cleanup',async()=>{
+ const id='o'+'1'.repeat(31),expires=Date.now()-1000,data={kind:'room-op-receipt',roomId:'2'.repeat(32),opId:'3'.repeat(32),expires};
+ const fx=fixture({seed:[[id,{$id:id,...rowData(data),$permissions:[]}]]});const result=await fx.call({method:'POST',path:'/ignored',headers:{'x-appwrite-trigger':'schedule'}});
+ assert.equal(result.status,200);assert.equal(result.body.deleted,1);assert.equal(fx.db.rows.has(id),false);
 });
 
 test('live presence and anonymous chat are stored in private side rows',async()=>{
@@ -169,13 +183,14 @@ test('history endpoint exports a version and restores it without losing revision
  const historyRow=fx.db.rows.get('h'+created.id.slice(0,31));assert.ok(historyRow);assert.deepEqual(historyRow.$permissions,[]);
 });
 
-test('owner deletion is token-protected and atomically removes main, presence, history and receipt rows',async()=>{
+test('owner deletion is token-protected; per-operation receipts remain private until room expiry',async()=>{
  const fx=fixture(),created=(await fx.call({method:'POST',path:'/create',body:{kind:'room',board:board(),requestId:'e'.repeat(32)}})).body;
  await fx.call({method:'POST',path:`/live/${created.id}`,body:{cid:'client01'}});
  await fx.call({method:'POST',path:`/hist/${created.id}`,body:{op:'save'}});
+ await update(fx,created.id,{opId:'d'.repeat(32)});const opReceipt=[...fx.db.rows].find(([rowId,row])=>rowId.startsWith('o')&&JSON.parse(row.payload).roomId===created.id)?.[0];assert.ok(opReceipt);
  const root=JSON.parse(fx.db.rows.get(created.id).payload),receiptId=root.createReceiptId;
  const denied=await fx.call({method:'DELETE',path:`/owner/${created.id}`,body:{owner:'wrong'}});assert.equal(denied.status,403);assert.ok(fx.db.rows.has(created.id));
- const removed=await fx.call({method:'DELETE',path:`/owner/${created.id}`,body:{owner:created.owner}});assert.deepEqual(removed.body,{ok:true});assert.equal(fx.db.rows.has(created.id),false);assert.equal(fx.db.rows.has('p'+created.id.slice(0,31)),false);assert.equal(fx.db.rows.has('h'+created.id.slice(0,31)),false);assert.equal(fx.db.rows.has(receiptId),false);
+ const removed=await fx.call({method:'DELETE',path:`/owner/${created.id}`,body:{owner:created.owner}});assert.deepEqual(removed.body,{ok:true});assert.equal(fx.db.rows.has(created.id),false);assert.equal(fx.db.rows.has('p'+created.id.slice(0,31)),false);assert.equal(fx.db.rows.has('h'+created.id.slice(0,31)),false);assert.equal(fx.db.rows.has(receiptId),false);assert.ok(fx.db.rows.has(opReceipt),'hashed private op receipt is not exposed or prematurely pruned; it expires automatically with the room');
 });
 
 test('expired share reads return 410 and remove the expired row',async()=>{
@@ -200,13 +215,13 @@ test('cleanup transaction preserves an AI quota row renewed after the expiry pag
 });
 
 test('creation cap counts private internal rows separately and remains at 150 under concurrent requests',async()=>{
- const seed=seededShares(149);for(const prefix of ['p','h','k','g']){const id=prefix+'a'.repeat(31),data={kind:'internal',expires:Date.now()+10000};seed.push([id,{$id:id,...rowData(data),$permissions:[]}])}
+ const seed=seededShares(149);for(const prefix of ['p','h','k','g','o']){const id=prefix+'a'.repeat(31),data={kind:'internal',expires:Date.now()+10000};seed.push([id,{$id:id,...rowData(data),$permissions:[]}])}
  for(const id of ['ai-global','ai-'+'b'.repeat(24)]){const data={kind:'ai-quota',expires:Date.now()+10000};seed.push([id,{$id:id,...rowData(data),$permissions:[]}])}
  const fx=fixture({seed});let active=0,maxActive=0;const list=fx.db.listRows.bind(fx.db);
  fx.db.listRows=async args=>{active++;maxActive=Math.max(maxActive,active);await new Promise(r=>setTimeout(r,5));try{return await list(args)}finally{active--}};
  const requests=['a'.repeat(32),'b'.repeat(32)].map(requestId=>fx.call({method:'POST',path:'/create',body:{kind:'view',board:board(),requestId}}));
  const responses=await Promise.all(requests);assert.deepEqual(responses.map(r=>r.status).sort(),[201,429]);assert.equal(maxActive,1);
- const links=[...fx.db.rows.keys()].filter(id=>/^[a-f0-9]{32}$/.test(id));assert.equal(links.length,150);assert.equal(fx.db.rows.size,157);
+ const links=[...fx.db.rows.keys()].filter(id=>/^[a-f0-9]{32}$/.test(id));assert.equal(links.length,150);assert.equal(fx.db.rows.size,158);
 });
 
 test('full share cap denies a create without adding an idempotency receipt',async()=>{
