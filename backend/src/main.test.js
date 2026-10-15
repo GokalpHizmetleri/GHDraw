@@ -6,7 +6,7 @@ import vm from 'node:vm';
 import {Client,Query,TablesDB} from 'node-appwrite';
 import {BOARD_COORD_LIMIT,BOARD_POINT_LIMIT,CLEANUP_PAGE_BUDGET,CLEANUP_ROW_BUDGET,CLEANUP_SPECIAL_ROW_BUDGET,CLEANUP_TIME_BUDGET_MS,bindTargetTable,createAppwriteDb,createHandler,LIVE_CHAT_MESSAGE_LIMIT,LIVE_CHAT_RECEIPT_LIMIT,LIVE_REQUEST_MAX_BYTES,LIVE_RESPONSE_MAX_BYTES,LIVE_ROOM_PEER_LIMIT,LIVE_ROOM_REQUESTS_PER_SECOND,LIVE_ROW_MAX_BYTES,ROOM_OP_RECEIPT_LIMIT,TABLE_ROW_METHODS} from './main.js';
 import BoardElementContract from '../shared/board-element-contract.js';
-import {APPWRITE_DATABASE_ID,APPWRITE_PROJECT_ID,PRODUCTION_TABLE_ID,resolveFunctionTableTarget,TEST_FUNCTION_ID,TEST_TABLE_ID} from './targets.js';
+import {APPWRITE_DATABASE_ID,APPWRITE_PROJECT_ID,PRODUCTION_FUNCTION_ID,PRODUCTION_TABLE_ID,resolveFunctionTableTarget,TEST_FUNCTION_ID,TEST_TABLE_ID} from './targets.js';
 
 const Q={limit:n=>`limit:${n}`,orderAsc:key=>`orderAsc:${key}`,cursorAfter:id=>`cursorAfter:${id}`,select:fields=>`select:${fields.join(',')}`,equal:(key,values)=>`equal:${key}:${JSON.stringify(Array.isArray(values)?values:[values])}`,lessThanEqual:(key,value)=>`lessThanEqual:${key}:${value}`};
 const DB=APPWRITE_DATABASE_ID,TABLE=TEST_TABLE_ID;
@@ -230,9 +230,40 @@ test('OPTIONS and health are available without database credentials or a DB conn
  const health=await fx.call({method:'GET',path:'/health'});assert.deepEqual(health.body,{ok:true});assert.equal(fx.factories,0);
 });
 
-test('mismatched Function table configuration fails before database construction or row access',async()=>{
- const fx=fixture({env:{...TEST_ENV,TABLE_ID:PRODUCTION_TABLE_ID}}),response=await fx.call({method:'POST',path:'/create',body:{kind:'view',board:board()}});
- assert.equal(response.status,500);assert.equal(response.body.error,'Service unavailable');assert.equal(fx.factories,0);assert.equal(fx.db.calls.length,0);
+test('unknown Function/project/database/table configurations fail before database construction or row access',async()=>{
+	 const invalidEnvironments=[
+	  {},
+	  {...TEST_ENV,APPWRITE_FUNCTION_ID:'unrecognized-function'},
+	  {...TEST_ENV,APPWRITE_FUNCTION_PROJECT_ID:'another-project'},
+	  {...TEST_ENV,DATABASE_ID:'another-database'},
+	  {...TEST_ENV,TABLE_ID:PRODUCTION_TABLE_ID},
+	  {...TEST_ENV,APPWRITE_FUNCTION_ID:PRODUCTION_FUNCTION_ID},
+	  {...TEST_ENV,APPWRITE_FUNCTION_ID:PRODUCTION_FUNCTION_ID,TABLE_ID:TEST_TABLE_ID},
+	 ];
+	 for(const env of invalidEnvironments){
+	  const fx=fixture({env}),response=await fx.call({method:'POST',path:'/create',body:{kind:'view',board:board()}});
+	  assert.equal(response.status,500,`configuration ${JSON.stringify(env)} fails closed`);
+	  assert.equal(response.body.error,'Service unavailable');
+	  assert.equal(fx.factories,0,'invalid configuration is rejected before constructing the DB client');
+	  assert.equal(fx.db.calls.length,0,'invalid configuration never reaches a row operation');
+	 }
+});
+
+test('handler binds test and production Function identities to their own table despite request-supplied targets',async()=>{
+	 const cases=[
+	  {env:TEST_ENV,tableId:TEST_TABLE_ID},
+	  {env:{...TEST_ENV,APPWRITE_FUNCTION_ID:PRODUCTION_FUNCTION_ID,TABLE_ID:PRODUCTION_TABLE_ID},tableId:PRODUCTION_TABLE_ID},
+	 ];
+	 for(const {env,tableId} of cases){
+	  const rowCalls=[],rowId='a'.repeat(32);let factories=0;
+	  const handler=createHandler({env,QueryApi:Q,dbFactory:()=>{factories++;return {getRow(args){rowCalls.push(args);throw err(404)}}}});
+	  const req={method:'GET',path:`/view/${rowId}`,bodyJson:{databaseId:'attacker-database',tableId:'boards'},bodyText:'{"databaseId":"attacker-database","tableId":"boards"}',headers:{}};
+	  const res={json:(body,status=200)=>({body,status}),text:(body,status=200)=>({body,status})};
+	  const response=await handler({req,res,error:()=>{}});
+	  assert.equal(response.status,404);
+	  assert.equal(factories,1);
+	  assert.deepEqual(rowCalls,[{rowId,transactionId:undefined,databaseId:APPWRITE_DATABASE_ID,tableId}],`Function ${env.APPWRITE_FUNCTION_ID} selects only its server-side allowlisted table`);
+	 }
 });
 
 test('anonymous share creation and view reads work through the Function while rows remain private',async()=>{
