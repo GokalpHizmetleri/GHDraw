@@ -305,6 +305,7 @@ let pages=[{id:'p1',name:'',els:[],cam:{x:0,y:0,z:1}}],pi=0,viewOnly=false;
 let defaults={stroke:'#1e1e1e',bg:'transparent',fill:'hachure',sw:2,style:'solid',rough:1,round:true,opacity:100,font:'Caveat',size:28,align:'left'};
 let hist=[],hidx=-1,clip=[],dpr=1,W=0,H=0,space=false;
 let drag=null,editing=null,erased=null,marquee=null;
+let canvasGestureEpoch=0,activeCanvasGesture=null,annotationModalState=null;
 const uid=()=>Math.random().toString(36).slice(2,10);
 function rngf(seed){let a=seed>>>0;return()=>{a=(a+0x6D2B79F5)|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
 const clone=o=>JSON.parse(JSON.stringify(o));
@@ -1255,9 +1256,9 @@ function cloudTransitionReplacementKey(id){return'ghdraw:cloudTransitionReplacem
 function cloudTransitionReplacement(id){try{const v=JSON.parse(localStorage.getItem(cloudTransitionReplacementKey(id))||'null');return v&&typeof v.roomId==='string'&&/^[\w-]{1,128}$/.test(v.roomId)&&Number.isFinite(v.until)&&v.until>Date.now()?v:null}catch(_){return null}}
 function saveCloudTransitionReplacement(oldId,newId,revision){try{if(!oldId||!newId||!Number.isSafeInteger(revision)||!cloudTransitionLease||cloudTransitionLease.id!==oldId)return false;const value={roomId:newId,revision,until:Date.now()+7*86400000};localStorage.setItem(cloudTransitionReplacementKey(oldId),JSON.stringify(value));const check=cloudTransitionReplacement(oldId);return check?.roomId===newId&&check.revision===revision}catch(_){return false}}
 let cloudTransitionFollowPending=false;
-async function followCloudTransitionReplacement(oldId){if(!oldId||!cloudRoom||cloudRoom.id!==oldId||cloudTransitionActive(oldId)||cloudTransitionFollowPending)return false;const record=cloudTransitionReplacement(oldId);if(!record)return false;cloudTransitionFollowPending=true;try{if(localStorage.getItem('ghdraw:cloudOwner:'+oldId)&&navigator.onLine){try{await cloudRequest('/room/'+oldId);localStorage.removeItem(cloudTransitionReplacementKey(oldId));return false}catch(e){if(e.status!==404&&e.status!==410)return false}}else if(localStorage.getItem('ghdraw:cloudOwner:'+oldId)&&!navigator.onLine)return false;clearInterval(cloudTimer);cloudTimer=0;liveStop();toast(L2('Bu oda başka bir sekmede yeni odaya taşındı; yeni oda bu sekmede açılıyor.','This room was moved to a new room in another tab; opening the new room here.'));await cloudJoin(record.roomId,false);return cloudRoom?.id===record.roomId}finally{cloudTransitionFollowPending=false}}
-function updateCloudTransitionShield(id=cloudRoom?.id){const shield=$('#transitionShield');if(!shield)return;clearTimeout(cloudTransitionExpiryTimer);const lease=readCloudTransitionLease(id),modal=$('#modal');if(modal){modal.inert=!!lease;if(lease)modal.setAttribute('aria-hidden','true');else modal.removeAttribute('aria-hidden')}if(!lease){shield.hidden=true;if(id&&cloudRoom?.id===id)followCloudTransitionReplacement(id);return}shield.hidden=false;const label=shield.querySelector('span');if(label)label.textContent=L2('Yeni oda geçişi sürüyor. Düzenlemeler geçici olarak duraklatıldı.','A room transition is in progress. Editing is paused temporarily.');cloudTransitionExpiryTimer=setTimeout(()=>updateCloudTransitionShield(id),Math.max(25,lease.until-Date.now()+25))}
-function cloudTransitionInputGuard(e){if(!cloudTransitionBlocksWrites())return;if(e.cancelable)e.preventDefault();e.stopImmediatePropagation()}
+async function followCloudTransitionReplacement(oldId){if(!oldId||!cloudRoom||cloudRoom.id!==oldId||cloudTransitionActive(oldId)||cloudTransitionFollowPending)return false;const record=cloudTransitionReplacement(oldId);if(!record)return false;cloudTransitionFollowPending=true;updateCloudTransitionShield(oldId,false);try{if(localStorage.getItem('ghdraw:cloudOwner:'+oldId)&&navigator.onLine){try{await cloudRequest('/room/'+oldId);localStorage.removeItem(cloudTransitionReplacementKey(oldId));return false}catch(e){if(e.status!==404&&e.status!==410)return false}}else if(localStorage.getItem('ghdraw:cloudOwner:'+oldId)&&!navigator.onLine)return false;clearInterval(cloudTimer);cloudTimer=0;liveStop();toast(L2('Bu oda başka bir sekmede yeni odaya taşındı; yeni oda bu sekmede açılıyor.','This room was moved to a new room in another tab; opening the new room here.'));await cloudJoin(record.roomId,false);const joined=cloudRoom?.id===record.roomId;if(joined)rebindAnnotationModalAfterHandoff(oldId,record.roomId);else preserveAnnotationModalForFailedHandoff(oldId,record.roomId);return joined}finally{cloudTransitionFollowPending=false;updateCloudTransitionShield(oldId,false)}}
+function updateCloudTransitionShield(id=cloudRoom?.id,follow=true){const shield=$('#transitionShield');if(!shield)return;clearTimeout(cloudTransitionExpiryTimer);const lease=readCloudTransitionLease(id),following=cloudTransitionFollowPending&&cloudRoom?.id===id,busy=!!lease||following,modal=$('#modal');if(busy){cancelActiveCanvasGesture();cancelPinchGesture(true);preserveAnnotationModalDraft()}if(modal){modal.inert=busy;if(busy)modal.setAttribute('aria-hidden','true');else modal.removeAttribute('aria-hidden')}if(!busy){shield.hidden=true;if(follow&&id&&cloudRoom?.id===id)followCloudTransitionReplacement(id);return}shield.hidden=false;const label=shield.querySelector('span');if(label)label.textContent=following?L2('Yeni pano yükleniyor. Taslaklar korunuyor.','Loading the replacement board. Drafts are preserved.'):L2('Yeni oda geçişi sürüyor. Düzenlemeler geçici olarak duraklatıldı.','A room transition is in progress. Editing is paused temporarily.');if(lease)cloudTransitionExpiryTimer=setTimeout(()=>updateCloudTransitionShield(id),Math.max(25,lease.until-Date.now()+25))}
+function cloudTransitionInputGuard(e){if(!cloudTransitionFollowPending&&!cloudTransitionBlocksWrites())return;if(e.cancelable)e.preventDefault();e.stopImmediatePropagation()}
 document.addEventListener('keydown',cloudTransitionInputGuard,true);document.addEventListener('beforeinput',cloudTransitionInputGuard,true);document.addEventListener('click',cloudTransitionInputGuard,true);document.addEventListener('pointerdown',cloudTransitionInputGuard,true);
 function beginCloudTransition(id){try{if(cloudTransitionActive(id))return false;const token=newCloudOpId(),key=cloudTransitionActiveKey(id),write=()=>{localStorage.setItem(key,JSON.stringify({token,until:Date.now()+30000}));return readCloudTransitionLease(id)?.token===token};if(!write())return false;cloudTransitionLease={id,token};clearInterval(cloudTransitionLeaseTimer);cloudTransitionLeaseTimer=setInterval(()=>{if(!cloudTransitionLease||cloudTransitionLease.id!==id||cloudTransitionLease.token!==token)return;const current=readCloudTransitionLease(id);if(!current||current.token!==token){endCloudTransition(id,token);return}write();updateCloudTransitionShield(id)},10000);updateCloudTransitionShield(id);return true}catch(_){return false}}
 function endCloudTransition(id,token){clearInterval(cloudTransitionLeaseTimer);cloudTransitionLeaseTimer=0;try{const current=JSON.parse(localStorage.getItem(cloudTransitionActiveKey(id))||'null');if(current?.token===token)localStorage.removeItem(cloudTransitionActiveKey(id))}catch(_){}if(cloudTransitionLease?.id===id&&cloudTransitionLease.token===token)cloudTransitionLease=null;updateCloudTransitionShield(id)}
@@ -1536,28 +1537,48 @@ function mkEl(type,p){
   else{e.pts=[[p.x,p.y],[p.x,p.y]];if(type==='pen'){e.rough=0;e.style='solid';e.pts=[[p.x,p.y]]}}
   return e;
 }
-cv.addEventListener('pointerdown',ev=>{
+function beginCanvasGesture(state,pointerId,snapshot){
+  const room=cloudRoom;
+  activeCanvasGesture={pointerId,epoch:canvasGestureEpoch,roomId:room?.id||null,generation:room?.generation??null,pageId:pages[pi]?.id||null,els:snapshot.els,cam:snapshot.cam,selection:snapshot.selection,marquee:snapshot.marquee};
+  drag={...state,pointerId,gestureEpoch:canvasGestureEpoch,roomId:room?.id||null,generation:room?.generation??null,pageId:pages[pi]?.id||null};
+}
+function canvasGestureIsCurrent(){
+  const g=activeCanvasGesture;if(!g||g.epoch!==canvasGestureEpoch)return false;
+  if(g.pageId!==pages[pi]?.id||g.roomId!==(cloudRoom?.id||null))return false;
+  if(g.roomId&&(g.generation!==cloudRoom?.generation||!cloudRoomGenerationCurrent(cloudRoom)))return false;
+  return !cloudTransitionBlocksWrites(g.roomId||undefined);
+}
+function cancelActiveCanvasGesture(){
+  const g=activeCanvasGesture;if(!g){drag=null;return false}
+  const sameBoard=g.pageId===pages[pi]?.id&&g.roomId===(cloudRoom?.id||null)&&(!g.roomId||g.generation===cloudRoom?.generation);
+  canvasGestureEpoch++;activeCanvasGesture=null;drag=null;erased=null;marquee=null;
+  if(sameBoard){els=clone(g.els);cam=clone(g.cam);if(pages[pi]){pages[pi].els=els;pages[pi].cam=cam}sel=new Set(g.selection);marquee=g.marquee?clone(g.marquee):null}
+  try{if(cv.hasPointerCapture?.(g.pointerId))cv.releasePointerCapture(g.pointerId)}catch(_){}
+  cv.style.cursor=cursorFor(tool);syncUI();render();return true;
+}
+function handleCanvasPointerDown(ev){
   if(cloudTransitionActive(cloudRoom?.id)){ev.preventDefault();return}
   cv.setPointerCapture(ev.pointerId);
   if(editing)ed.blur();
   const sx=ev.clientX,sy=ev.clientY,p=toW(sx,sy);
+  const gestureSnapshot={els:clone(els),cam:clone(cam),selection:[...sel],marquee:marquee?clone(marquee):null};
   $('#menu').classList.remove('open');if(fontOpen){fontOpen=false;buildProps()}
-  if(ev.button===1||space||tool==='hand'){drag={kind:'pan',sx,sy,cx:cam.x,cy:cam.y};cv.style.cursor='grabbing';return}
+  if(ev.button===1||space||tool==='hand'){beginCanvasGesture({kind:'pan',sx,sy,cx:cam.x,cy:cam.y},ev.pointerId,gestureSnapshot);cv.style.cursor='grabbing';return}
   if(ev.button!==0)return;
   if(tool==='select'){
     const ep=hitEndpoint(p);
-    if(ep){drag={kind:'endpt',el:ep.el,i:ep.i,moved:false};return}
+    if(ep){beginCanvasGesture({kind:'endpt',el:ep.el,i:ep.i,moved:false},ev.pointerId,gestureSnapshot);return}
     const h=hitHandle(p);
-    if(h){detachFree();drag={kind:'resize',h:h.h,b:h.b,orig:els.filter(e=>sel.has(e.id)).map(clone)};return}
+    if(h){detachFree();beginCanvasGesture({kind:'resize',h:h.h,b:h.b,orig:els.filter(e=>sel.has(e.id)).map(clone)},ev.pointerId,gestureSnapshot);return}
     const e=topAt(p.x,p.y);
     if(e){
       const mem=e.g?els.filter(x=>x.g===e.g).map(x=>x.id):[e.id];
       if(ev.shiftKey){if(sel.has(e.id))mem.forEach(i=>sel.delete(i));else mem.forEach(i=>sel.add(i))}
       else if(!sel.has(e.id))sel=new Set(mem);
-      drag={kind:'move',sx:p.x,sy:p.y,moved:false,orig:els.filter(x=>sel.has(x.id)).map(clone)};syncUI();render();return;
+      beginCanvasGesture({kind:'move',sx:p.x,sy:p.y,moved:false,orig:els.filter(x=>sel.has(x.id)).map(clone)},ev.pointerId,gestureSnapshot);syncUI();render();return;
     }
     if(!ev.shiftKey)sel=new Set();
-    drag={kind:'marquee',x0:p.x,y0:p.y,base:new Set(sel)};syncUI();render();return;
+    beginCanvasGesture({kind:'marquee',x0:p.x,y0:p.y,base:new Set(sel)},ev.pointerId,gestureSnapshot);syncUI();render();return;
   }
   if(tool==='text'){
     ev.preventDefault();
@@ -1566,20 +1587,23 @@ cv.addEventListener('pointerdown',ev=>{
     return;
   }
   if(tool==='note'||tool==='comment'){ev.preventDefault();placeAnno(tool,p);return}
-  if(tool==='eraser'){erased=new Set();drag={kind:'erase'};eraseAt(p);return}
+  if(tool==='eraser'){erased=new Set();beginCanvasGesture({kind:'erase'},ev.pointerId,gestureSnapshot);eraseAt(p);return}
   const ne=mkEl(tool,p);if(tool==='pen'&&ev.pointerType==='pen'){ne.pr=true;ne.pts=[[p.x,p.y,ev.pressure||.5]]}
-  drag={kind:'draw',el:ne,x0:p.x,y0:p.y};sel=new Set();syncUI();render();
-});
+  beginCanvasGesture({kind:'draw',el:ne,x0:p.x,y0:p.y},ev.pointerId,gestureSnapshot);sel=new Set();syncUI();render();
+}
+cv.addEventListener('pointerdown',handleCanvasPointerDown);
 function eraseAt(p){
   for(let i=els.length-1;i>=0;i--){const e=els[i];if(!erased.has(e.id)&&hit(e,p.x,p.y)){erased.add(e.id);e.__bak=e.opacity;e.opacity=25}}
   render();
 }
-cv.addEventListener('pointermove',ev=>{
+function handleCanvasPointerMove(ev){
   const sx=ev.clientX,sy=ev.clientY,p=toW(sx,sy);
   if(!drag){
     if(tool==='select'&&!editing){const h=hitHandle(p);cv.style.cursor=h?CUR[h.h]:topAt(p.x,p.y)?'move':'default'}
     return;
   }
+  if(activeCanvasGesture&&ev.pointerId!==activeCanvasGesture.pointerId)return;
+  if(!canvasGestureIsCurrent()){cancelActiveCanvasGesture();return}
   if(drag.kind==='pan'){cam.x=drag.cx+(sx-drag.sx);cam.y=drag.cy+(sy-drag.sy);render();return}
   if(drag.kind==='erase'){eraseAt(p);return}
   if(drag.kind==='endpt'){const e=drag.el;drag.moved=true;e.pts=e.pts.map((v,i)=>i===drag.i?[p.x,p.y]:v);delete e['b'+drag.i];const tg=bindAt(p,e);drag.hover=tg&&tg.id!==e['b'+(1-drag.i)]?tg.id:null;render();return}
@@ -1610,7 +1634,8 @@ cv.addEventListener('pointermove',ev=>{
     const gs=new Set(els.filter(e=>sel.has(e.id)&&e.g).map(e=>e.g));if(gs.size)for(const e of els)if(gs.has(e.g))sel.add(e.id);
     render();
   }
-});
+}
+cv.addEventListener('pointermove',handleCanvasPointerMove);
 function doResize(p,keep){
   const{h,b,orig}=drag;let l=b.x,r=b.x+b.w,tp=b.y,bt=b.y+b.h;
   const single=orig.length===1&&orig[0].type==='text';
@@ -1631,8 +1656,9 @@ function doResize(p,keep){
     }else{const x1=mx(o.x),x2=mx(o.x+o.w),y1=my(o.y),y2=my(o.y+o.h);e.x=Math.min(x1,x2);e.y=Math.min(y1,y2);e.w=Math.abs(x2-x1);e.h=Math.abs(y2-y1)}
   }
 }
-function endDrag(){
-  if(!drag)return;const d=drag;drag=null;marquee=null;
+function endDrag(ev){
+  if(!drag)return;if(activeCanvasGesture&&ev?.pointerId!==activeCanvasGesture.pointerId)return;if(!canvasGestureIsCurrent()){cancelActiveCanvasGesture();return}
+  const d=drag;drag=null;activeCanvasGesture=null;canvasGestureEpoch++;marquee=null;
   cv.style.cursor=cursorFor(tool);
   if(d.kind==='pan'){save();render();return}
   if(d.kind==='erase'){
@@ -1651,7 +1677,7 @@ function endDrag(){
   if(d.kind==='resize'){commit();render();return}
   if(d.kind==='marquee'){syncUI();render()}
 }
-cv.addEventListener('pointerup',endDrag);cv.addEventListener('pointercancel',endDrag);
+cv.addEventListener('pointerup',endDrag);cv.addEventListener('pointercancel',cancelActiveCanvasGesture);
 cv.addEventListener('dblclick',ev=>{
   if(tool!=='select')return;const p=toW(ev.clientX,ev.clientY),e=topAt(p.x,p.y);
   if(e&&e.type==='text'){sel=new Set([e.id]);startEdit(e,false)}
@@ -2094,7 +2120,14 @@ $('#collabBtn').onclick=openCollab;
 $('#modal').addEventListener('click',e=>{if(e.target.id==='modal')collabModal=false});
 
 /* ---- touch: pinch zoom, double tap, palm rejection ---- */
-const tp=new Map();let pinch=null,penSeen=0,lastTap={t:0,x:0,y:0};
+const tp=new Map();let pinch=null,pinchSnapshot=null,penSeen=0,lastTap={t:0,x:0,y:0};
+function pinchGestureIsCurrent(){const g=pinchSnapshot;if(!pinch||!g||g.pageId!==pages[pi]?.id||g.roomId!==(cloudRoom?.id||null))return false;if(g.roomId&&(g.generation!==cloudRoom?.generation||!cloudRoomGenerationCurrent(cloudRoom)))return false;return !cloudTransitionFollowPending&&!cloudTransitionBlocksWrites(g.roomId||undefined)}
+function cancelPinchGesture(clearTouches=false){
+  const g=pinchSnapshot;if(!pinch&&!g){if(clearTouches)tp.clear();return false}
+  const sameBoard=g&&g.pageId===pages[pi]?.id&&g.roomId===(cloudRoom?.id||null)&&(!g.roomId||g.generation===cloudRoom?.generation);pinch=null;pinchSnapshot=null;
+  if(clearTouches){for(const id of g?.pointerIds||tp.keys())try{if(cv.hasPointerCapture?.(id))cv.releasePointerCapture(id)}catch(_){}tp.clear()}
+  if(sameBoard){cam=clone(g.cam);if(pages[pi])pages[pi].cam=cam}cv.style.cursor=cursorFor(tool);syncUI();render();return true;
+}
 function dblAt(sx,sy){
   const p=toW(sx,sy),e=topAt(p.x,p.y);
   if(e&&e.type==='text'){sel=new Set([e.id]);startEdit(e,false)}else if(e&&e.note)editNote(e)
@@ -2104,9 +2137,9 @@ cv.addEventListener('pointerdown',ev=>{
   if(ev.pointerType!=='touch')return;
   tp.set(ev.pointerId,{x:ev.clientX,y:ev.clientY});
   if(tp.size>=2){
-    if(drag){if(drag.kind==='erase'){els.forEach(e=>{if('__bak' in e){e.opacity=e.__bak;delete e.__bak}});erased=null}drag=null;marquee=null}
+    if(drag)cancelActiveCanvasGesture();
     const a=[...tp.values()],d=Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y)||1,cx=(a[0].x+a[1].x)/2,cy=(a[0].y+a[1].y)/2;
-    pinch={d0:d,z0:cam.z,w:toW(cx,cy)};render();
+    const room=cloudRoom;pinchSnapshot={roomId:room?.id||null,generation:room?.generation??null,pageId:pages[pi]?.id||null,cam:clone(cam),pointerIds:[...tp.keys()]};pinch={d0:d,z0:cam.z,w:toW(cx,cy)};render();
     ev.stopImmediatePropagation();return;
   }
   const n=Date.now();
@@ -2114,20 +2147,23 @@ cv.addEventListener('pointerdown',ev=>{
   lastTap={t:n,x:ev.clientX,y:ev.clientY};
   if(n-penSeen<4000&&!['hand','select'].includes(tool)){
     $('#menu').classList.remove('open');
-    drag={kind:'pan',sx:ev.clientX,sy:ev.clientY,cx:cam.x,cy:cam.y};ev.stopImmediatePropagation();
+    const snapshot={els:clone(els),cam:clone(cam),selection:[...sel],marquee:marquee?clone(marquee):null};try{cv.setPointerCapture(ev.pointerId)}catch(_){}beginCanvasGesture({kind:'pan',sx:ev.clientX,sy:ev.clientY,cx:cam.x,cy:cam.y},ev.pointerId,snapshot);ev.stopImmediatePropagation();
   }
 },true);
-cv.addEventListener('pointermove',ev=>{
+function handleTouchPointerMove(ev){
   if(ev.pointerType!=='touch'||!tp.has(ev.pointerId))return;
   tp.set(ev.pointerId,{x:ev.clientX,y:ev.clientY});
   if(pinch&&tp.size>=2){
+    if(!pinchGestureIsCurrent()){cancelPinchGesture(true);ev.stopImmediatePropagation();return}
     const a=[...tp.values()],d=Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y)||1,cx=(a[0].x+a[1].x)/2,cy=(a[0].y+a[1].y)/2;
     const z=Math.max(.1,Math.min(8,pinch.z0*d/pinch.d0));cam.z=z;cam.x=cx-pinch.w.x*z;cam.y=cy-pinch.w.y*z;
     if(editing)applyEditorStyle();render();ev.stopImmediatePropagation();
   }
-},true);
-const tpEnd=ev=>{if(ev.pointerType!=='touch')return;tp.delete(ev.pointerId);if(tp.size<2&&pinch){pinch=null;save();ev.stopImmediatePropagation()}};
-cv.addEventListener('pointerup',tpEnd,true);cv.addEventListener('pointercancel',tpEnd,true);
+}
+cv.addEventListener('pointermove',handleTouchPointerMove,true);
+function handleTouchPointerUp(ev){if(ev.pointerType!=='touch'||!tp.has(ev.pointerId))return;tp.delete(ev.pointerId);if(tp.size<2&&pinch){if(!pinchGestureIsCurrent()){cancelPinchGesture(true);ev.stopImmediatePropagation();return}pinch=null;pinchSnapshot=null;save();ev.stopImmediatePropagation()}}
+function handleTouchPointerCancel(ev){if(ev.pointerType!=='touch')return;tp.delete(ev.pointerId);if(pinch){cancelPinchGesture(true);ev.stopImmediatePropagation()}}
+cv.addEventListener('pointerup',handleTouchPointerUp,true);cv.addEventListener('pointercancel',handleTouchPointerCancel,true);
 cv.addEventListener('pointermove',ev=>{if(collabOn)sendCursor(toW(ev.clientX,ev.clientY))});
 
 /* ---- ordered media scene ---- */
@@ -2159,7 +2195,7 @@ function historyRestoreBlocksInput(event){if(!historyRestoreInProgress)return fa
 function historyRestoreCloseBlocked(force=false){return historyRestoreInProgress&&!force}
 document.addEventListener('pointerdown',historyRestoreBlocksInput,true);
 document.addEventListener('keydown',historyRestoreBlocksInput,true);
-function closeModal(force=false){if(historyRestoreCloseBlocked(force))return false;$('#modal').classList.remove('open');collabModal=false;return true}
+function closeModal(force=false){if(historyRestoreCloseBlocked(force))return false;$('#modal').classList.remove('open');collabModal=false;annotationModalState=null;return true}
 $('#modalX').onclick=()=>closeModal();
 function openMedia(){
  collabModal=false;$('#modal').classList.add('open');const b=$('#modalBox');b.innerHTML='';
@@ -2334,32 +2370,59 @@ function drawPin(c,e){
   c.save();if(e.done)c.globalAlpha*=.5;c.fillStyle='#fff';c.textAlign='center';c.textBaseline='middle';c.font=`700 ${Math.max(10,r*.95)}px Nunito,system-ui,sans-serif`;
   c.fillText(e.done?'✓':(n?String(n):'+'),cx,cy+1);c.restore();
 }
-function editNote(e){
-  collabModal=false;const b=$('#modalBox');b.innerHTML='';
+function beginAnnotationModal(field,e){const page=pages[pi];annotationModalState={field,roomId:cloudRoom?.id||'',boardId:page?.id||'',elementId:e.id,draft:field==='note'?{text:e.txt||'',bg:e.bg,stroke:e.stroke}:{text:''},missing:false}}
+function preserveAnnotationModalDraft(){const state=annotationModalState,box=$('#modalBox');if(!state||!box)return;const ta=box.querySelector('textarea');if(ta)state.draft.text=ta.value}
+function showAnnotationModalMissing(){const box=$('#modalBox');if(!box)return;let status=box.querySelector('.annotationUnavailable');if(!status){status=mk('p','cn');status.className='cn annotationUnavailable';status.setAttribute('role','status');box.insertBefore(status,box.firstChild)}status.textContent=L2('Bu öğe yeni panoda bulunamadı. Taslağın bu pencerede korundu; metni kopyalayıp saklayabilirsin.','This item is no longer on this board. Your draft remains in this window; copy it to keep it.')}
+function clearAnnotationModalMissing(){const box=$('#modalBox'),status=box?.querySelector('.annotationUnavailable');if(status)status.remove()}
+function annotationModalTarget(field=annotationModalState?.field){
+  const state=annotationModalState;if(!state||state.field!==field||cloudTransitionFollowPending||cloudTransitionBlocksWrites())return null;
+  if(state.roomId!==(cloudRoom?.id||'')){state.missing=true;showAnnotationModalMissing();return null}
+  const pageIndex=pages.findIndex(page=>page.id===state.boardId),page=pages[pageIndex],element=page?.els.find(item=>item.id===state.elementId);
+  if(!element||field==='note'&&!element.note||field==='comment'&&!element.cm){state.missing=true;showAnnotationModalMissing();return null}
+  state.missing=false;clearAnnotationModalMissing();
+  if(pageIndex!==pi){syncPage();if(pages[pi]){pages[pi].hist=hist;pages[pi].hidx=hidx}pi=pageIndex;els=page.els;cam=page.cam||{x:0,y:0,z:1};hist=page.hist||[snap()];hidx=page.hist?page.hidx:0;page.hist=hist;sel=new Set();drag=null;marquee=null;buildPages();syncUI();render()}
+  return element;
+}
+function rebindAnnotationModalAfterHandoff(oldRoomId,newRoomId){
+  const state=annotationModalState;if(!state||state.roomId!==oldRoomId)return false;preserveAnnotationModalDraft();state.roomId=newRoomId;
+  const page=pages.find(item=>item.id===state.boardId),element=page?.els.find(item=>item.id===state.elementId);
+  if(!element||state.field==='note'&&!element.note||state.field==='comment'&&!element.cm){state.missing=true;showAnnotationModalMissing();return false}
+  state.missing=false;if(state.field==='note')editNote(element,true);else openThread(element,true);return true;
+}
+function preserveAnnotationModalForFailedHandoff(oldRoomId,newRoomId){const state=annotationModalState;if(!state||state.roomId!==oldRoomId)return false;preserveAnnotationModalDraft();state.roomId=newRoomId;state.missing=true;showAnnotationModalMissing();return true}
+function restoreAnnotationElement(element,backup){for(const key of Object.keys(element))delete element[key];Object.assign(element,backup)}
+function saveAnnotationNoteDraft(){const state=annotationModalState;if(!state||state.field!=='note')return false;const element=annotationModalTarget('note');if(!element)return false;const backup=clone(element);element.txt=String(state.draft.text||'');element.bg=state.draft.bg||element.bg;element.stroke=state.draft.stroke||element.stroke;if(!element.au)element.au=myName;if(!commit()){restoreAnnotationElement(element,backup);return false}render();closeModal();return true}
+function sendAnnotationCommentDraft(){const state=annotationModalState;if(!state||state.field!=='comment')return false;preserveAnnotationModalDraft();const element=annotationModalTarget('comment');if(!element)return false;const text=String(state.draft.text||'').trim();if(!text)return false;if(!cloudCanAppendComment(element)){toast(L2('Bu başlık 10.000 yorum sınırına ulaştı. Yeni yorum eklenemez.','This thread has reached its 10,000-comment limit. No new comment can be added.'));return false}const previous=element.th;element.th=(previous||[]).concat([{id:uid(),n:myName,c:myColor,t:text,ts:Date.now()}]);if(!commit()){element.th=previous;return false}state.draft.text='';render();openThread(element,true);return true}
+function toggleAnnotationCommentResolved(){const state=annotationModalState;if(!state||state.field!=='comment')return false;const element=annotationModalTarget('comment');if(!element)return false;const backup=clone(element);element.done=!element.done;element.bg=element.done?'#868e96':'#6965db';if(!commit()){restoreAnnotationElement(element,backup);return false}render();closeModal();return true}
+function deleteAnnotationModalItem(){const state=annotationModalState;if(!state||!['note','comment'].includes(state.field))return false;const element=annotationModalTarget(state.field);if(!element)return false;const page=pages[pi],oldEls=els,oldSelection=sel;els=els.filter(item=>item.id!==element.id);page.els=els;sel=new Set();if(!commit()){els=oldEls;page.els=oldEls;sel=oldSelection;return false}syncUI();render();closeModal();return true}
+function editNote(e,preserve=false){
+  if(!preserve||!annotationModalState||annotationModalState.field!=='note')beginAnnotationModal('note',e);
+  collabModal=false;const state=annotationModalState,b=$('#modalBox');b.innerHTML='';
   const h=mk('h3');h.textContent=L2('Yapışkan not','Sticky note');b.appendChild(h);
-  const ta=document.createElement('textarea');ta.id='noteTxt';ta.maxLength=600;ta.value=e.txt||'';ta.rows=5;ta.style.cssText='width:100%;resize:vertical;font:inherit;font-size:16px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);user-select:text;-webkit-user-select:text';b.appendChild(ta);
+  const ta=document.createElement('textarea');ta.id='noteTxt';ta.maxLength=600;ta.value=state.draft.text||'';ta.rows=5;ta.style.cssText='width:100%;resize:vertical;font:inherit;font-size:16px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);user-select:text;-webkit-user-select:text';ta.addEventListener('input',()=>{if(annotationModalState===state)state.draft.text=ta.value});b.appendChild(ta);
   const cr=mk('div','cact');cr.style.margin='8px 0';
-  for(const[bg,st]of NOTE_COLORS){const x=document.createElement('button');x.style.cssText=`width:34px;height:34px;border-radius:50%;background:${bg};border:2px solid ${e.bg===bg?'#6965db':st}`;x.setAttribute('aria-label',bg);x.onclick=()=>{if(cloudTransitionBlocksWrites())return;e.bg=bg;e.stroke=st;[...cr.children].forEach(y=>y.style.borderColor=y===x?'#6965db':y.dataset.st);render()};x.dataset.st=st;cr.appendChild(x)}
+  for(const[bg,st]of NOTE_COLORS){const x=document.createElement('button');x.style.cssText=`width:34px;height:34px;border-radius:50%;background:${bg};border:2px solid ${state.draft.bg===bg?'#6965db':st}`;x.setAttribute('aria-label',bg);x.onclick=()=>{if(cloudTransitionFollowPending||cloudTransitionBlocksWrites())return;state.draft.bg=bg;state.draft.stroke=st;[...cr.children].forEach(y=>y.style.borderColor=y===x?'#6965db':y.dataset.st)};x.dataset.st=st;cr.appendChild(x)}
   b.appendChild(cr);
   const act=mk('div','cact');
-  const ok=mk('button','pbtn');ok.textContent=L2('Tamam','Done');ok.onclick=()=>{if(cloudTransitionBlocksWrites())return;e.txt=ta.value;if(!e.au)e.au=myName;commit();render();closeModal()};
-  const del=mk('button','sbtn');del.textContent=L2('Notu sil','Delete note');del.onclick=()=>{if(cloudTransitionBlocksWrites())return;els=els.filter(x=>x.id!==e.id);sel=new Set();commit();syncUI();render();closeModal()};
+  const ok=mk('button','pbtn');ok.textContent=L2('Tamam','Done');ok.onclick=()=>{preserveAnnotationModalDraft();saveAnnotationNoteDraft()};
+  const del=mk('button','sbtn');del.textContent=L2('Notu sil','Delete note');del.onclick=deleteAnnotationModalItem;
   act.appendChild(ok);act.appendChild(del);b.appendChild(act);
   $('#modal').classList.add('open');setTimeout(()=>ta.focus(),50);
 }
-function openThread(e){
-  collabModal=false;const b=$('#modalBox');b.innerHTML='';
+function openThread(e,preserve=false){
+  if(!preserve||!annotationModalState||annotationModalState.field!=='comment')beginAnnotationModal('comment',e);
+  collabModal=false;const state=annotationModalState,b=$('#modalBox');b.innerHTML='';
   const h=mk('h3');h.textContent=L2('Yorum','Comment')+(e.done?L2(' (çözüldü)',' (resolved)'):'');b.appendChild(h);
   const list=mk('div','thl');
   if(!(e.th||[]).length){const p=mk('p','cn');p.textContent=L2('Henüz mesaj yok. İlk yorumu yaz.','No messages yet. Write the first comment.');list.appendChild(p)}
   for(const m of e.th||[]){const row=mk('div','thm');const hd=mk('div','thh');const nm=mk('b');nm.textContent=m.n||'?';nm.style.color=m.c||'inherit';const tm=mk('small');tm.textContent=' '+new Date(m.ts).toLocaleString();hd.appendChild(nm);hd.appendChild(tm);const tx=mk('p');tx.textContent=m.t;row.appendChild(hd);row.appendChild(tx);list.appendChild(row)}
   b.appendChild(list);
-  const ta=document.createElement('textarea');ta.rows=2;ta.maxLength=500;ta.placeholder=L2('Yorum yaz...','Write a comment...');ta.style.cssText='width:100%;resize:vertical;font:inherit;font-size:16px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);user-select:text;-webkit-user-select:text';b.appendChild(ta);
+  const ta=document.createElement('textarea');ta.rows=2;ta.maxLength=500;ta.value=state.draft.text||'';ta.placeholder=L2('Yorum yaz...','Write a comment...');ta.style.cssText='width:100%;resize:vertical;font:inherit;font-size:16px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);user-select:text;-webkit-user-select:text';ta.addEventListener('input',()=>{if(annotationModalState===state)state.draft.text=ta.value});b.appendChild(ta);
   const act=mk('div','cact');act.style.marginTop='8px';
   if(!cloudCanAppendComment(e)){const limit=mk('p','cn');limit.textContent=L2('Bu başlık 10.000 yorum sınırına ulaştı. Yeni yorum eklenemez.','This thread has reached its 10,000-comment limit. No new comment can be added.');b.appendChild(limit)}
-  const send=mk('button','pbtn');send.textContent=L2('Gönder','Send');send.onclick=()=>{if(cloudTransitionBlocksWrites())return;const t=ta.value.trim();if(!t)return;if(!cloudCanAppendComment(e)){toast(L2('Bu başlık 10.000 yorum sınırına ulaştı. Yeni yorum eklenemez.','This thread has reached its 10,000-comment limit. No new comment can be added.'));return}const comments=e.th||[];e.th=comments.concat([{id:uid(),n:myName,c:myColor,t,ts:Date.now()}]);commit();render();openThread(e)};
-  const rs=mk('button','sbtn');rs.textContent=e.done?L2('Yeniden aç','Reopen'):L2('Çözüldü','Resolve');rs.onclick=()=>{if(cloudTransitionBlocksWrites())return;e.done=!e.done;e.bg=e.done?'#868e96':'#6965db';commit();render();closeModal()};
-  const del=mk('button','sbtn');del.textContent=L2('Sil','Delete');del.onclick=()=>{if(cloudTransitionBlocksWrites())return;els=els.filter(x=>x.id!==e.id);sel=new Set();commit();syncUI();render();closeModal()};
+  const send=mk('button','pbtn');send.textContent=L2('Gönder','Send');send.onclick=sendAnnotationCommentDraft;
+  const rs=mk('button','sbtn');rs.textContent=e.done?L2('Yeniden aç','Reopen'):L2('Çözüldü','Resolve');rs.onclick=toggleAnnotationCommentResolved;
+  const del=mk('button','sbtn');del.textContent=L2('Sil','Delete');del.onclick=deleteAnnotationModalItem;
   act.appendChild(send);act.appendChild(rs);act.appendChild(del);b.appendChild(act);
   $('#modal').classList.add('open');setTimeout(()=>ta.focus(),50);
 }
