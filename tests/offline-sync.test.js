@@ -50,7 +50,7 @@ const source=[
   extract('cloudRebase','cloudMerge'),
   extract('cloudProtocolCompatible','blockCloudProtocol'),
   serLine,
-  'globalThis.api={validCloudChange,cloudCheckpointUnsafeKey,cloudCheckpointIsUnsafe,markCloudCheckpointUnsafe,clearCloudCheckpointUnsafe,cloudCheckpointCanResume,cloudJoinCanContinue,localBoardRecord,parseLocalBoardRecord,localBoardBackupLimits,localBoardBackupUsage,localBoardBackupKeys,writeLocalBoardBackup,localBoardBackupEntries,hasLocalBoardBackups,deleteLocalBoardBackup,preserveLocalBoardBeforeCloudJoin,restoreLocalBoardRecord,restoreCloudSnapshot,load,dash,clampBoardCamera,recoverBoardCamera,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudBoardHasUncheckpointedChanges,cloudApplyChanges,cloudRebase,ser};'
+  'globalThis.api={validCloudChange,cloudCheckpointUnsafeKey,validCloudRestoreId,cloudCheckpointUnsafeMarker,cloudCheckpointIsUnsafe,cloudCheckpointMarkerMatches,markCloudCheckpointUnsafe,clearCloudCheckpointUnsafe,cloudCheckpointCanResume,cloudJoinCanContinue,localBoardRecord,parseLocalBoardRecord,localBoardBackupLimits,localBoardBackupUsage,localBoardBackupKeys,writeLocalBoardBackup,localBoardBackupEntries,hasLocalBoardBackups,deleteLocalBoardBackup,preserveLocalBoardBeforeCloudJoin,restoreLocalBoardRecord,restoreCloudSnapshot,load,dash,clampBoardCamera,recoverBoardCamera,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudBoardHasUncheckpointedChanges,cloudApplyChanges,cloudRebase,ser};'
 ].join('\n');
 const storage=new Map();
 const mockLocalStorage={getItem:key=>storage.has(key)?storage.get(key):null,setItem:(key,value)=>storage.set(key,String(value)),removeItem:key=>storage.delete(key),key:index=>[...storage.keys()][index]??null,get length(){return storage.size}};
@@ -292,6 +292,7 @@ test('offline join without a room checkpoint exits before loading an IndexedDB s
 });
 
 test('online cloudJoin preserves and refuses to overwrite any unvalidated persisted outbox',async()=>{
+  storage.clear();
   const sourceStart=html.indexOf('async function cloudJoin(id,host=false,createdHere=false){'),sourceEnd=html.indexOf("\naddEventListener('offline'",sourceStart),joinSource=html.slice(sourceStart,sourceEnd);
   assert.ok(sourceStart>=0&&sourceEnd>sourceStart,'missing cloudJoin source');
   const cases=[
@@ -300,7 +301,7 @@ test('online cloudJoin preserves and refuses to overwrite any unvalidated persis
   ];
   for(const cached of cases){
     const events=[],calls={room:0,checkpointRead:0,checkpointWrite:0};
-    const ctx={cloudProtocolBlocked:false,cloudReceiptQuotaBlocked:false,cloudProtocolVerified:false,preserveLocalBoardBeforeCloudJoin:()=>true,buildMenu:()=>{},cloudCheckpoint:async()=>{calls.checkpointRead++;return cached},cloudCheckpointIsUnsafe:()=>false,cloudCheckpointCanResume,setSyncBadge:state=>events.push('badge:'+state),toast:message=>events.push('toast:'+message),L2:tr=>tr,cloudRequest:async()=>{calls.room++;return{}},saveCloudCheckpoint:async()=>{calls.checkpointWrite++;return true}};
+    const ctx={cloudProtocolBlocked:false,cloudReceiptQuotaBlocked:false,cloudProtocolVerified:false,preserveLocalBoardBeforeCloudJoin:()=>true,buildMenu:()=>{},cloudCheckpoint:async()=>{calls.checkpointRead++;return cached},cloudCheckpointUnsafeMarker:context.api.cloudCheckpointUnsafeMarker,cloudCheckpointMarkerMatches:context.api.cloudCheckpointMarkerMatches,clearCloudCheckpointUnsafe:context.api.clearCloudCheckpointUnsafe,cloudCheckpointCanResume,setSyncBadge:state=>events.push('badge:'+state),toast:message=>events.push('toast:'+message),L2:tr=>tr,cloudRequest:async()=>{calls.room++;return{}},saveCloudCheckpoint:async()=>{calls.checkpointWrite++;return true}};
     vm.runInNewContext(joinSource+';globalThis.runCloudJoin=cloudJoin;',ctx);
     const before=json(cached.inflight);await ctx.runCloudJoin('room-1');
     assert.equal(calls.checkpointRead,1);assert.equal(calls.room,0,'a bad durable outbox never reaches the network');assert.equal(calls.checkpointWrite,0,'cloudJoin cannot replace the rejected outbox with an empty checkpoint');assert.deepEqual(json(cached.inflight),before,'the original outbox remains untouched');assert.ok(events.includes('badge:storage'));assert.ok(events.some(event=>event.startsWith('toast:')&&event.includes('outbox korunuyor')));
@@ -426,7 +427,7 @@ test('share creation retries reuse the same cryptographic request ID',async()=>{
 
 function cloudSyncHarness(overrides={}){
  const calls=[],events=[],current=structuredClone(local),changes=[{t:'put',pid:'p1',e:{id:'shape-a',type:'rect',x:11}}],room={kind:'room',syncProtocol:'room-ops-v1',board:structuredClone(base),rev:0,expires:Date.now()+60000};
- const context={structuredClone,cloudProtocolBlocked:false,cloudReceiptQuotaBlocked:false,cloudProtocolVerified:false,cloudRoom:{id:'sync-room',expires:0},cloudBase:structuredClone(base),cloudRev:0,cloudInflight:null,cloudBusy:false,cloudPending:false,document:{hidden:false},navigator:{onLine:true},drag:false,editing:null,
+ const context={structuredClone,cloudProtocolBlocked:false,cloudReceiptQuotaBlocked:false,cloudProtocolVerified:false,cloudRoom:{id:'sync-room',expires:0},cloudBase:structuredClone(base),cloudRev:0,cloudInflight:null,cloudBusy:false,cloudPending:false,document:{hidden:false},navigator:{onLine:true},drag:false,editing:null,cloudCheckpointIsUnsafe:()=>false,
   cloudBoard:()=>structuredClone(current),cloudDiff:()=>structuredClone(changes),cloudApplyChanges:board=>structuredClone(board),newCloudOpId:()=>'durable-operation-1',cloudCheckpoint:async()=>null,cloudLocalSnapshot:async()=>null,saveCloudCheckpoint:async()=>true,
   cloudRequest:async(path,body)=>{events.push(body?'post':'probe');calls.push({path,body});return body?{...room,rev:1,ack:body.opId}:{...room}},cloudProtocolCompatible:(d,op=null)=>!!d&&d.kind==='room'&&d.syncProtocol==='room-ops-v1'&&Number.isSafeInteger(d.rev)&&(!op||d.ack===op.opId),
   blockCloudProtocol:()=>{throw new Error('unexpected protocol block')},cloudMerge:()=>{},setSyncBadge:state=>events.push('badge:'+state),L2:(_tr,en)=>en,toast:message=>events.push('toast:'+message),$:()=>({title:''}),clearInterval:()=>{},clearCloudCheckpointUnsafe:()=>events.push('checkpoint-marker-cleared'),liveStop:()=>{},cloudTimer:0};
@@ -478,24 +479,54 @@ test('receipt quota rejection keeps the durable outbox and pauses automatic retr
   await h.run();assert.equal(posts,1,'a quota-blocked room does not automatically retry and burn reads');
 });
 
+test('cloudSync pauses before any send while a restore safety marker remains unresolved',async()=>{
+  const h=cloudSyncHarness({cloudCheckpointIsUnsafe:()=>true});await h.run();assert.equal(h.calls.length,0,'an unresolved restore marker blocks the probe and every operation POST');assert.equal(h.context.cloudPending,true);assert.ok(h.events.includes('badge:storage'));
+});
+
 function cloudHistoryRestoreHarness({inflight=null}={}){
   let current=structuredClone(base);const saved=[],events=[],restored=structuredClone(base);restored.p[0].e[0].x=1;const response={kind:'room',syncProtocol:'room-ops-v1',board:restored,rev:8,expires:Date.now()+60000};
-  const hctx={structuredClone,localStorage:mockLocalStorage,cloudRoom:{id:'history-room',expires:Date.now()+60000},cloudBusy:false,cloudInflight:inflight?structuredClone(inflight):null,cloudBase:structuredClone(base),cloudRev:7,cloudPending:!!inflight,confirm:()=>true,L2:(_tr,en)=>en,markCloudCheckpointUnsafe:context.api.markCloudCheckpointUnsafe,clearCloudCheckpointUnsafe:context.api.clearCloudCheckpointUnsafe,cloudRequest:async()=>response,cloudBoard:()=>structuredClone(current),cloudMerge:(d,sent)=>{events.push({kind:'merge',sent:structuredClone(sent)});hctx.cloudBase=structuredClone(d.board);hctx.cloudRev=d.rev;current=structuredClone(d.board);hctx.cloudPending=false},saveCloudCheckpoint:async(id,board,rev,expires,op,local)=>{saved.push({id,base:structuredClone(board),rev,expires,inflight:op&&structuredClone(op),local:structuredClone(local)});return true},hist:[],hidx:0,snap:()=>JSON.stringify(current),syncUI:()=>events.push({kind:'sync-ui'}),closeModal:()=>events.push({kind:'closed'}),toast:message=>events.push({kind:'toast',message}),setSyncBadge:state=>events.push({kind:'badge',state})};
+  const hctx={structuredClone,localStorage:mockLocalStorage,cloudRoom:{id:'history-room',expires:Date.now()+60000},cloudBusy:false,cloudInflight:inflight?structuredClone(inflight):null,cloudBase:structuredClone(base),cloudRev:7,cloudPending:!!inflight,confirm:()=>true,L2:(_tr,en)=>en,newCloudOpId:()=>'ef'.repeat(16),markCloudCheckpointUnsafe:context.api.markCloudCheckpointUnsafe,clearCloudCheckpointUnsafe:context.api.clearCloudCheckpointUnsafe,cloudRequest:async()=>response,cloudBoard:()=>structuredClone(current),cloudMerge:(d,sent)=>{events.push({kind:'merge',sent:structuredClone(sent)});hctx.cloudBase=structuredClone(d.board);hctx.cloudRev=d.rev;current=structuredClone(d.board);hctx.cloudPending=false},saveCloudCheckpoint:async(id,board,rev,expires,op,local,restoreId)=>{saved.push({id,base:structuredClone(board),rev,expires,inflight:op&&structuredClone(op),local:structuredClone(local),restoreId});return true},clearInterval:()=>events.push('timer-cleared'),cloudTimer:1,liveStop:()=>events.push('live-stopped'),hist:[],hidx:0,snap:()=>JSON.stringify(current),syncUI:()=>events.push({kind:'sync-ui'}),closeModal:()=>events.push({kind:'closed'}),toast:message=>events.push({kind:'toast',message}),setSyncBadge:state=>events.push({kind:'badge',state})};
   const start=html.indexOf('async function histRestoreCloud(ts){'),end=html.indexOf("\ndocument.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')histSnap(false,true)})",start);assert.ok(start>=0&&end>start,'missing cloud history restore');
   vm.runInNewContext(html.slice(start,end)+';globalThis.runHistoryRestore=histRestoreCloud;',hctx);return{hctx,saved,events,restored,response,run:hctx.runHistoryRestore,current:()=>structuredClone(current)};
 }
 
+function cloudJoinRecoveryHarness(cached){
+  const calls={room:0,checkpointWrite:0,sync:0,history:0},events=[],response={kind:'room',syncProtocol:'room-ops-v1',board:structuredClone(cached.base),rev:cached.rev,expires:cached.expires||Date.now()+60000};
+  const hctx={structuredClone,cloudProtocolBlocked:false,cloudReceiptQuotaBlocked:false,cloudProtocolVerified:false,preserveLocalBoardBeforeCloudJoin:()=>true,buildMenu:()=>{},cloudCheckpoint:async()=>cached,cloudCheckpointUnsafeMarker:context.api.cloudCheckpointUnsafeMarker,cloudCheckpointMarkerMatches:context.api.cloudCheckpointMarkerMatches,clearCloudCheckpointUnsafe:context.api.clearCloudCheckpointUnsafe,cloudCheckpointCanResume,cloudJoinCanContinue,cloudLocalSnapshot:async()=>null,localBoardSavedAt:()=>0,localBoardRoomId:()=>cached.id,cloudBoard:()=>structuredClone(cached.base),cloudSelectRejoinBoard:()=>null,restoreCloudSnapshot:()=>events.push('restore-remote'),navigator:{onLine:true},cloudRequest:async()=>{calls.room++;return response},cloudProtocolCompatible:()=>true,cloudRoom:null,cloudBase:null,cloudRev:0,cloudInflight:null,cloudPending:true,cloudBusy:false,saveCloudCheckpoint:async()=>{calls.checkpointWrite++;return true},cloudSync:async()=>{calls.sync++},setSyncBadge:state=>events.push('badge:'+state),toast:message=>events.push('toast:'+message),L2:tr=>tr,collabOn:false,isHost:false,roomId:null,conns:[],peersN:0,hostConn:null,cloudTimer:0,history:{replaceState:()=>calls.history++},location:{href:'https://ghdraw.test/#collab='+cached.id},setStatus:()=>{},clearInterval:()=>{},setInterval:()=>1,liveStart:()=>{}};
+  const start=html.indexOf('async function cloudJoin(id,host=false,createdHere=false){'),end=html.indexOf("\naddEventListener('offline'",start);assert.ok(start>=0&&end>start,'missing cloudJoin');vm.runInNewContext(html.slice(start,end)+';globalThis.runCloudJoin=cloudJoin;',hctx);return{hctx,calls,events,run:hctx.runCloudJoin};
+}
+
 test('cloud history restore checkpoints its new base/revision before a reload can rebase over peer changes',async()=>{
   storage.clear();const h=cloudHistoryRestoreHarness();await h.run(123);
-  assert.equal(h.saved.length,1);assert.equal(h.saved[0].id,'history-room');assert.equal(h.saved[0].rev,8);assert.deepEqual(json(h.saved[0].base),json(h.restored));assert.deepEqual(json(h.saved[0].local),json(h.restored));assert.equal(h.saved[0].inflight,null);assert.equal(context.api.cloudCheckpointIsUnsafe('history-room'),false,'a durably saved restore clears the fail-closed marker');
+  assert.equal(h.saved.length,1);assert.equal(h.saved[0].id,'history-room');assert.equal(h.saved[0].rev,8);assert.deepEqual(json(h.saved[0].base),json(h.restored));assert.deepEqual(json(h.saved[0].local),json(h.restored));assert.equal(h.saved[0].inflight,null);assert.equal(context.api.validCloudRestoreId(h.saved[0].restoreId),true);assert.equal(context.api.cloudCheckpointIsUnsafe('history-room'),false,'a durably saved restore clears the fail-closed marker');
   const peer=structuredClone(h.restored);peer.p[0].e[0].x=2;
   const stale=cloudRebase(peer,base,h.restored),safe=cloudRebase(peer,h.saved[0].base,h.restored);
   assert.equal(stale.board.p[0].e[0].x,1,'the old checkpoint reproduces the reported collaborator overwrite');assert.equal(safe.board.p[0].e[0].x,2,'the persisted restore checkpoint preserves the collaborator’s newer edit');
 });
 
 test('cloud history restore preserves an in-flight outbox and marks its prior revision as detached',async()=>{
-  storage.clear();const op={opId:'ab'.repeat(16),baseRev:7,changes:[{t:'put',pid:'p1',e:recordElement('pending-shape','ellipse')}]},h=cloudHistoryRestoreHarness({inflight:op});await h.run(123);const cached={id:'history-room',base:h.saved[0].base,rev:h.saved[0].rev,expires:h.saved[0].expires,inflight:h.saved[0].inflight};
+  storage.clear();const op={opId:'ab'.repeat(16),baseRev:7,changes:[{t:'put',pid:'p1',e:recordElement('pending-shape','ellipse')}]},h=cloudHistoryRestoreHarness({inflight:op});await h.run(123);const cached={id:'history-room',base:h.saved[0].base,rev:h.saved[0].rev,expires:h.saved[0].expires,inflight:h.saved[0].inflight,restoreId:h.saved[0].restoreId};
   assert.equal(h.saved.length,1);assert.equal(cached.inflight.opId,op.opId);assert.equal(cached.inflight.baseRev,op.baseRev);assert.deepEqual(json(cached.inflight.changes),json(op.changes));assert.equal(cached.inflight.restoreDetached,true);assert.equal(cloudCheckpointCanResume(cached),true,'the preserved outbox remains safely resumable after the restore revision advances');assert.equal(h.hctx.cloudInflight.opId,op.opId);assert.equal(h.hctx.cloudPending,true);
+});
+
+test('history restore explicitly pauses when marker removal fails after checkpoint persistence',async()=>{
+  storage.clear();const op={opId:'ab'.repeat(16),baseRev:7,changes:[{t:'put',pid:'p1',e:recordElement('pending-clear-failure','ellipse')}]},remove=mockLocalStorage.removeItem,h=cloudHistoryRestoreHarness({inflight:op});mockLocalStorage.removeItem=()=>{throw new Error('storage denied')};
+  try{await h.run(123)}finally{mockLocalStorage.removeItem=remove}
+  const cached={id:'history-room',base:h.saved[0].base,rev:h.saved[0].rev,expires:h.saved[0].expires,inflight:h.saved[0].inflight,restoreId:h.saved[0].restoreId};
+  assert.equal(h.saved.length,1);assert.equal(cloudCheckpointCanResume(cached),true);assert.equal(context.api.cloudCheckpointIsUnsafe('history-room'),true,'a failed clear leaves the marker available for crash recovery');assert.ok(h.events.includes('timer-cleared'));assert.ok(h.events.includes('live-stopped'));assert.ok(h.events.some(event=>event.kind==='badge'&&event.state==='storage'));assert.ok(h.events.some(event=>event.kind==='toast'&&event.message.includes('safety marker could not be cleared')),JSON.stringify(h.events));
+});
+
+test('crash after durable restore checkpoint recovers a matching marker and non-empty outbox',async()=>{
+  storage.clear();const token='ab'.repeat(16),op={opId:'cd'.repeat(16),baseRev:7,restoreDetached:true,changes:[{t:'put',pid:'p1',e:recordElement('crash-recovered-outbox','ellipse')}]},cached={id:'history-room',base:structuredClone(base),rev:8,expires:Date.now()+60000,inflight:op,restoreId:token};assert.equal(context.api.markCloudCheckpointUnsafe(cached.id,token),true);assert.equal(cloudCheckpointCanResume(cached),true);
+  const remove=mockLocalStorage.removeItem;mockLocalStorage.removeItem=()=>{throw new Error('storage denied')};const blocked=cloudJoinRecoveryHarness(cached);
+  try{await blocked.run(cached.id)}finally{mockLocalStorage.removeItem=remove}
+  assert.equal(blocked.calls.room,0,'failed marker deletion must stop before the online room request');assert.equal(blocked.calls.checkpointWrite,0);assert.equal(context.api.cloudCheckpointMarkerMatches(context.api.cloudCheckpointUnsafeMarker(cached.id),cached.id,cached),true);assert.ok(blocked.events.some(event=>event.startsWith('toast:')&&event.includes('silinemedi')),JSON.stringify(blocked.events));
+  const recovered=cloudJoinRecoveryHarness(cached);await recovered.run(cached.id);assert.equal(context.api.cloudCheckpointIsUnsafe(cached.id),false,'the next attempt clears the marker only after it validates against the durable checkpoint');assert.equal(recovered.calls.room,1,'the valid checkpoint can rejoin after the crash window');assert.equal(recovered.calls.checkpointWrite,1);assert.equal(recovered.calls.sync,1);assert.equal(recovered.hctx.cloudInflight.opId,op.opId,'the non-empty durable outbox is retained through recovery');
+});
+
+test('an unmatched marker or malformed restore token never authorizes a cached outbox',async()=>{
+  storage.clear();const token='ef'.repeat(16),cached={id:'history-room',base:structuredClone(base),rev:8,inflight:{opId:'12'.repeat(16),baseRev:8,changes:[{t:'put',pid:'p1',e:recordElement('unmatched-marker','ellipse')}]},restoreId:'34'.repeat(16)};assert.equal(context.api.markCloudCheckpointUnsafe(cached.id,token),true);assert.equal(cloudCheckpointCanResume({...cached,restoreId:'bad'}),false);
+  const h=cloudJoinRecoveryHarness(cached);await h.run(cached.id);assert.equal(h.calls.room,0);assert.equal(h.calls.checkpointWrite,0);assert.equal(context.api.cloudCheckpointIsUnsafe(cached.id),true);assert.ok(h.events.some(event=>event.startsWith('toast:')&&event.includes('eşleşmiyor')),JSON.stringify(h.events));
 });
 
 test('detached history-restore outbox retries its original opId without deriving a stale sent board',async()=>{
