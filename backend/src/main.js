@@ -4,7 +4,7 @@ import {gzipSync,gunzipSync} from 'node:zlib';
 import {handleAI} from './ai.js';
 import {applyRoomUpdate,validOpId} from './room-sync.js';
 const DB='ghdraw',TABLE='boards',MAX=12*1024*1024,PAGE_SIZE=100,CREATE_LOCK_SEED='00000000000000000000000000000000',LOCK_LEASE_MS=60000;
-export const ROOM_OP_RECEIPT_LIMIT=10_000;
+export const ROOM_OP_RECEIPT_LIMIT=9_400;
 const validId=x=>typeof x==='string'&&x.length>0&&x.length<=128;
 const validThread=th=>th===undefined||Array.isArray(th)&&th.length<=300&&th.every(m=>m&&typeof m.t==='string'&&m.t.length<=500);
 const validElement=e=>e&&validId(e.id)&&['rect','diamond','ellipse','arrow','line','pen','text','image','video','frame','poly'].includes(e.type)&&validThread(e.th);
@@ -205,7 +205,7 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
      const tx=await db.createTransaction({ttl:60});
      try{
       await db.createRow({databaseId:DB,tableId:TABLE,rowId:id,data:stored,permissions:[],transactionId:tx.$id});
-      if(b.kind==='room'){const quota={kind:'room-op-quota',roomId:id,count:0,expires};await db.createRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id),data:rowData(quota),permissions:[],transactionId:tx.$id})}
+      if(b.kind==='room'){const quota={kind:'room-op-quota',roomId:id,count:0,receiptIds:[],expires};await db.createRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id),data:rowData(quota),permissions:[],transactionId:tx.$id})}
       if(receiptId){const receipt={kind:'create-receipt',id,owner,expires,requestHash};await db.createRow({databaseId:DB,tableId:TABLE,rowId:receiptId,data:rowData(receipt),permissions:[],transactionId:tx.$id})}
       await db.updateTransaction({transactionId:tx.$id,commit:true});
      }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});throw e}
@@ -215,24 +215,26 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
    if(req.method==='POST'&&path[0]==='room'){
     if(!/^[a-f0-9]{32}$/.test(id||''))throw {code:404};
     if(Buffer.byteLength(req.bodyText||'')>MAX)return reply({error:'Update exceeds 12 MB'},413);
-    const b=req.bodyJson||{};if(!Array.isArray(b.changes)||b.changes.length>5000||!b.changes.every(validChange)||(b.opId!==undefined&&!validOpId(b.opId))||(b.baseRev!==undefined&&(!Number.isSafeInteger(b.baseRev)||b.baseRev<0)))return reply({error:'Invalid update'},400);
+    const b=req.bodyJson||{};if(!Array.isArray(b.changes)||b.changes.length>5000||!b.changes.every(validChange)||(b.changes.length>0&&!validOpId(b.opId))||(b.opId!==undefined&&!validOpId(b.opId))||(b.baseRev!==undefined&&(!Number.isSafeInteger(b.baseRev)||b.baseRev<0)))return reply({error:'Invalid update; a valid opId is required for changes'},400);
     const db=await getDb();
     return await withLock(db,id,async()=>{for(let attempt=0;attempt<6;attempt++){
      const tx=await db.createTransaction({ttl:60});
      try{
       const d=await read(id,tx.$id);if(d.kind!=='room')throw {code:404};
       const opReceiptId=b.opId&&b.changes.length?roomOpReceiptRowId(id,b.opId):null;let alreadyApplied=false,quota=null;
-      if(opReceiptId){try{const receipt=JSON.parse((await db.getRow({databaseId:DB,tableId:TABLE,rowId:opReceiptId,transactionId:tx.$id})).payload);if(receipt.kind!=='room-op-receipt'||receipt.roomId!==id||receipt.opId!==b.opId)throw {code:409};alreadyApplied=true}catch(e){if(e.code!==404)throw e}}
+      if(opReceiptId){try{const receipt=JSON.parse((await db.getRow({databaseId:DB,tableId:TABLE,rowId:opReceiptId,transactionId:tx.$id})).payload);if(receipt.kind!=='room-op-receipt'||receipt.roomId!==id||receipt.opId!==b.opId)throw {code:409};alreadyApplied=true}catch(e){if(e.code!==404)throw e}if(!alreadyApplied&&Array.isArray(d.ops)&&d.ops.includes(b.opId))alreadyApplied=true}
       if(opReceiptId&&!alreadyApplied){
        try{quota=JSON.parse((await db.getRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id),transactionId:tx.$id})).payload)}catch(e){if(e.code!==404)throw e;await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_limit',message:'This room has no safe receipt counter. Create a new room to continue.'},409)}
-       if(quota.kind!=='room-op-quota'||quota.roomId!==id||!Number.isSafeInteger(quota.count)||quota.count<0){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_limit',message:'This room has no safe receipt counter. Create a new room to continue.'},409)}
-       if(quota.count>=ROOM_OP_RECEIPT_LIMIT){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_limit',message:'This room reached its 10,000-operation receipt limit. Create a new room to continue; existing receipts are retained for safe retries.'},409)}
+       if(!Array.isArray(quota.receiptIds)&&quota.count===0)quota.receiptIds=[];
+       if(quota.kind!=='room-op-quota'||quota.roomId!==id||!Number.isSafeInteger(quota.count)||quota.count<0||!Array.isArray(quota.receiptIds)||quota.receiptIds.length!==quota.count){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_limit',message:'This room has no complete safe receipt ledger. Create a new room to continue.'},409)}
+       if(quota.count>=ROOM_OP_RECEIPT_LIMIT){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_limit',message:'This room reached its 9,400-operation receipt limit. Create a new room to continue; existing receipts are retained for safe retries.'},409)}
+       quota={...quota,count:quota.count+1,receiptIds:[...quota.receiptIds,opReceiptId]};
       }
       const op=applyRoomUpdate(d,b,{alreadyApplied});
       if(op.duplicate){await db.updateTransaction({transactionId:tx.$id,rollback:true});const {owner,ops,createReceiptId,...publicData}=d;return reply({...publicData,syncProtocol:'room-ops-v1',ack:op.ack,duplicate:true,rebased:op.rebased})}
       if(!validBoard(d.board))throw {code:400};if(Buffer.byteLength(JSON.stringify(d))>MAX)throw {code:413};
       await db.updateRow({databaseId:DB,tableId:TABLE,rowId:id,data:rowData(d),transactionId:tx.$id});
-      if(opReceiptId){quota.count++;await db.updateRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id),data:rowData(quota),transactionId:tx.$id});const receipt={kind:'room-op-receipt',roomId:id,opId:b.opId,expires:d.expires};await db.createRow({databaseId:DB,tableId:TABLE,rowId:opReceiptId,data:rowData(receipt),permissions:[],transactionId:tx.$id})}
+      if(opReceiptId&&!alreadyApplied){await db.updateRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id),data:rowData(quota),transactionId:tx.$id});const receipt={kind:'room-op-receipt',roomId:id,opId:b.opId,expires:d.expires};await db.createRow({databaseId:DB,tableId:TABLE,rowId:opReceiptId,data:rowData(receipt),permissions:[],transactionId:tx.$id})}
       await db.updateTransaction({transactionId:tx.$id,commit:true});
       if(b.changes.length)await histSnap(db,id,d.board,d.expires,false).catch(()=>{});
       const {owner,ops,createReceiptId,...publicData}=d;return reply({...publicData,syncProtocol:'room-ops-v1',ack:op.ack,rebased:op.rebased});
@@ -240,12 +242,20 @@ export function createHandler({dbFactory=createAppwriteDb,QueryApi=Query,env=pro
     }});
    }
    if(req.method==='DELETE'&&path[0]==='owner'){
-    const db=await getDb(),tx=await db.createTransaction({ttl:60});
-    try{
-     const d=await read(id,tx.$id);if(req.bodyJson?.owner!==d.owner){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'Not authorized'},403)}
-     for(const rowId of [id,'p'+id.slice(0,31),HID(id),roomOpQuotaRowId(id),d.createReceiptId].filter(Boolean))await db.deleteRow({databaseId:DB,tableId:TABLE,rowId,transactionId:tx.$id}).catch(e=>{if(e.code!==404)throw e});
-     await db.updateTransaction({transactionId:tx.$id,commit:true});return reply({ok:true});
-    }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});throw e}
+    if(!/^[a-f0-9]{32}$/.test(id||''))throw {code:404};
+    const db=await getDb();return await withLock(db,id,async()=>{
+     const tx=await db.createTransaction({ttl:60});
+     try{
+      const d=await read(id,tx.$id);if(req.bodyJson?.owner!==d.owner){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'Not authorized'},403)}
+      let receiptIds=[];if(d.kind==='room'){
+       let quota;try{quota=JSON.parse((await db.getRow({databaseId:DB,tableId:TABLE,rowId:roomOpQuotaRowId(id),transactionId:tx.$id})).payload)}catch(e){if(e.code!==404)throw e;await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_ledger_incomplete',message:'The room receipt ledger is unavailable; the room was not deleted.'},409)}
+       receiptIds=quota.receiptIds;if(quota.kind!=='room-op-quota'||quota.roomId!==id||!Number.isSafeInteger(quota.count)||quota.count<0||!Array.isArray(receiptIds)||receiptIds.length!==quota.count||receiptIds.some(rowId=>typeof rowId!=='string'||!/^o[a-f0-9]{31}$/.test(rowId))||new Set(receiptIds).size!==receiptIds.length){await db.updateTransaction({transactionId:tx.$id,rollback:true});return reply({error:'room_receipt_ledger_incomplete',message:'The room receipt ledger is incomplete; the room was not deleted.'},409)}
+      }
+      for(let i=0;i<receiptIds.length;i+=100)await db.deleteRows({databaseId:DB,tableId:TABLE,queries:[QueryApi.equal('$id',receiptIds.slice(i,i+100))],transactionId:tx.$id});
+      for(const rowId of [id,'p'+id.slice(0,31),HID(id),roomOpQuotaRowId(id),d.createReceiptId].filter(Boolean))await db.deleteRow({databaseId:DB,tableId:TABLE,rowId,transactionId:tx.$id}).catch(e=>{if(e.code!==404)throw e});
+      await db.updateTransaction({transactionId:tx.$id,commit:true});return reply({ok:true});
+     }catch(e){await db.updateTransaction({transactionId:tx.$id,rollback:true}).catch(()=>{});throw e}
+    });
    }
    return reply({error:'Not found'},404);
   }catch(e){

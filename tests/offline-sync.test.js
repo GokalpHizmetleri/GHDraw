@@ -50,7 +50,7 @@ const source=[
   extract('cloudRebase','cloudMerge'),
   extract('cloudProtocolCompatible','blockCloudProtocol'),
   serLine,
-  'globalThis.api={validCloudChange,cloudCheckpointCanResume,cloudJoinCanContinue,localBoardRecord,parseLocalBoardRecord,localBoardBackupLimits,localBoardBackupUsage,localBoardBackupKeys,writeLocalBoardBackup,localBoardBackupEntries,hasLocalBoardBackups,deleteLocalBoardBackup,preserveLocalBoardBeforeCloudJoin,restoreLocalBoardRecord,restoreCloudSnapshot,load,dash,clampBoardCamera,recoverBoardCamera,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudBoardHasUncheckpointedChanges,cloudApplyChanges,cloudRebase,ser};'
+  'globalThis.api={validCloudChange,cloudCheckpointUnsafeKey,cloudCheckpointIsUnsafe,markCloudCheckpointUnsafe,clearCloudCheckpointUnsafe,cloudCheckpointCanResume,cloudJoinCanContinue,localBoardRecord,parseLocalBoardRecord,localBoardBackupLimits,localBoardBackupUsage,localBoardBackupKeys,writeLocalBoardBackup,localBoardBackupEntries,hasLocalBoardBackups,deleteLocalBoardBackup,preserveLocalBoardBeforeCloudJoin,restoreLocalBoardRecord,restoreCloudSnapshot,load,dash,clampBoardCamera,recoverBoardCamera,cloudSelectRejoinBoard,cloudProtocolCompatible,cloudDiff,cloudBoardHasUncheckpointedChanges,cloudApplyChanges,cloudRebase,ser};'
 ].join('\n');
 const storage=new Map();
 const mockLocalStorage={getItem:key=>storage.has(key)?storage.get(key):null,setItem:(key,value)=>storage.set(key,String(value)),removeItem:key=>storage.delete(key),key:index=>[...storage.keys()][index]??null,get length(){return storage.size}};
@@ -280,6 +280,8 @@ test('offline join without a room checkpoint exits before loading an IndexedDB s
   assert.equal(cloudJoinCanContinue(false,{base:null}),false);
   assert.equal(cloudJoinCanContinue(false,cached),true);
   assert.equal(cloudCheckpointCanResume({...cached,inflight:{opId:'a'.repeat(32),baseRev:0,changes:[{t:'mystery'}]}}),false,'unknown persisted changes cannot be replayed or sent');
+  assert.equal(cloudCheckpointCanResume({...cached,inflight:0}),false,'a malformed scalar outbox is not treated as an empty queue');
+  assert.equal(cloudCheckpointCanResume({...cached,inflight:false}),false,'a false-valued corrupt outbox is rejected');
   assert.equal(cloudJoinCanContinue(true,null),true);
 
   const start=html.indexOf('async function cloudJoin(id,host=false,createdHere=false){');
@@ -287,6 +289,22 @@ test('offline join without a room checkpoint exits before loading an IndexedDB s
   const guard=join.indexOf('if(!cloudJoinCanContinue(navigator.onLine,cachedReady?cached:null))');
   assert.ok(guard>=0&&guard<join.indexOf('cloudLocalSnapshot(id)'), 'checkpointless offline exit precedes snapshot loading');
   assert.ok(guard<join.indexOf('restoreCloudSnapshot({board:safeLocal},id)'), 'checkpointless offline exit precedes board mutation');
+});
+
+test('online cloudJoin preserves and refuses to overwrite any unvalidated persisted outbox',async()=>{
+  const sourceStart=html.indexOf('async function cloudJoin(id,host=false,createdHere=false){'),sourceEnd=html.indexOf("\naddEventListener('offline'",sourceStart),joinSource=html.slice(sourceStart,sourceEnd);
+  assert.ok(sourceStart>=0&&sourceEnd>sourceStart,'missing cloudJoin source');
+  const cases=[
+    {id:'room-1',rev:0,base,inflight:{opId:'ab'.repeat(16),baseRev:0,changes:[{t:'mystery'}]}},
+    {id:'other-room',rev:0,base,inflight:{opId:'cd'.repeat(16),baseRev:0,changes:[{t:'put',pid:'p1',e:recordElement('kept-outbox')}]}}
+  ];
+  for(const cached of cases){
+    const events=[],calls={room:0,checkpointRead:0,checkpointWrite:0};
+    const ctx={cloudProtocolBlocked:false,cloudReceiptQuotaBlocked:false,cloudProtocolVerified:false,preserveLocalBoardBeforeCloudJoin:()=>true,buildMenu:()=>{},cloudCheckpoint:async()=>{calls.checkpointRead++;return cached},cloudCheckpointIsUnsafe:()=>false,cloudCheckpointCanResume,setSyncBadge:state=>events.push('badge:'+state),toast:message=>events.push('toast:'+message),L2:tr=>tr,cloudRequest:async()=>{calls.room++;return{}},saveCloudCheckpoint:async()=>{calls.checkpointWrite++;return true}};
+    vm.runInNewContext(joinSource+';globalThis.runCloudJoin=cloudJoin;',ctx);
+    const before=json(cached.inflight);await ctx.runCloudJoin('room-1');
+    assert.equal(calls.checkpointRead,1);assert.equal(calls.room,0,'a bad durable outbox never reaches the network');assert.equal(calls.checkpointWrite,0,'cloudJoin cannot replace the rejected outbox with an empty checkpoint');assert.deepEqual(json(cached.inflight),before,'the original outbox remains untouched');assert.ok(events.includes('badge:storage'));assert.ok(events.some(event=>event.startsWith('toast:')&&event.includes('outbox korunuyor')));
+  }
 });
 
 test('offline room snapshots reject null elements before render and remeasure legacy text metrics',()=>{
@@ -411,7 +429,7 @@ function cloudSyncHarness(overrides={}){
  const context={structuredClone,cloudProtocolBlocked:false,cloudReceiptQuotaBlocked:false,cloudProtocolVerified:false,cloudRoom:{id:'sync-room',expires:0},cloudBase:structuredClone(base),cloudRev:0,cloudInflight:null,cloudBusy:false,cloudPending:false,document:{hidden:false},navigator:{onLine:true},drag:false,editing:null,
   cloudBoard:()=>structuredClone(current),cloudDiff:()=>structuredClone(changes),cloudApplyChanges:board=>structuredClone(board),newCloudOpId:()=>'durable-operation-1',cloudCheckpoint:async()=>null,cloudLocalSnapshot:async()=>null,saveCloudCheckpoint:async()=>true,
   cloudRequest:async(path,body)=>{events.push(body?'post':'probe');calls.push({path,body});return body?{...room,rev:1,ack:body.opId}:{...room}},cloudProtocolCompatible:(d,op=null)=>!!d&&d.kind==='room'&&d.syncProtocol==='room-ops-v1'&&Number.isSafeInteger(d.rev)&&(!op||d.ack===op.opId),
-  blockCloudProtocol:()=>{throw new Error('unexpected protocol block')},cloudMerge:()=>{},setSyncBadge:state=>events.push('badge:'+state),L2:(_tr,en)=>en,toast:message=>events.push('toast:'+message),$:()=>({title:''}),clearInterval:()=>{},liveStop:()=>{},cloudTimer:0};
+  blockCloudProtocol:()=>{throw new Error('unexpected protocol block')},cloudMerge:()=>{},setSyncBadge:state=>events.push('badge:'+state),L2:(_tr,en)=>en,toast:message=>events.push('toast:'+message),$:()=>({title:''}),clearInterval:()=>{},clearCloudCheckpointUnsafe:()=>events.push('checkpoint-marker-cleared'),liveStop:()=>{},cloudTimer:0};
  Object.assign(context,overrides);const start=html.indexOf('async function cloudSync(){'),end=html.indexOf('\nfunction activateOfflineCloud(',start);assert.ok(start>=0&&end>start,'missing cloudSync');
  vm.runInNewContext(html.slice(start,end)+';globalThis.runCloudSync=cloudSync;',context);return{context,calls,events,run:context.runCloudSync};
 }
@@ -458,4 +476,30 @@ test('receipt quota rejection keeps the durable outbox and pauses automatic retr
   });
   await h.run();assert.equal(posts,1);assert.equal(h.context.cloudReceiptQuotaBlocked,true);assert.equal(h.context.cloudPending,true);assert.equal(h.context.cloudInflight.opId,'durable-operation-1','the rejected operation stays available for safe recovery');assert.ok(events.includes('timer-cleared'));assert.ok(events.includes('live-stopped'));assert.ok(h.events.includes('badge:quota'));
   await h.run();assert.equal(posts,1,'a quota-blocked room does not automatically retry and burn reads');
+});
+
+function cloudHistoryRestoreHarness({inflight=null}={}){
+  let current=structuredClone(base);const saved=[],events=[],restored=structuredClone(base);restored.p[0].e[0].x=1;const response={kind:'room',syncProtocol:'room-ops-v1',board:restored,rev:8,expires:Date.now()+60000};
+  const hctx={structuredClone,localStorage:mockLocalStorage,cloudRoom:{id:'history-room',expires:Date.now()+60000},cloudBusy:false,cloudInflight:inflight?structuredClone(inflight):null,cloudBase:structuredClone(base),cloudRev:7,cloudPending:!!inflight,confirm:()=>true,L2:(_tr,en)=>en,markCloudCheckpointUnsafe:context.api.markCloudCheckpointUnsafe,clearCloudCheckpointUnsafe:context.api.clearCloudCheckpointUnsafe,cloudRequest:async()=>response,cloudBoard:()=>structuredClone(current),cloudMerge:(d,sent)=>{events.push({kind:'merge',sent:structuredClone(sent)});hctx.cloudBase=structuredClone(d.board);hctx.cloudRev=d.rev;current=structuredClone(d.board);hctx.cloudPending=false},saveCloudCheckpoint:async(id,board,rev,expires,op,local)=>{saved.push({id,base:structuredClone(board),rev,expires,inflight:op&&structuredClone(op),local:structuredClone(local)});return true},hist:[],hidx:0,snap:()=>JSON.stringify(current),syncUI:()=>events.push({kind:'sync-ui'}),closeModal:()=>events.push({kind:'closed'}),toast:message=>events.push({kind:'toast',message}),setSyncBadge:state=>events.push({kind:'badge',state})};
+  const start=html.indexOf('async function histRestoreCloud(ts){'),end=html.indexOf("\ndocument.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')histSnap(false,true)})",start);assert.ok(start>=0&&end>start,'missing cloud history restore');
+  vm.runInNewContext(html.slice(start,end)+';globalThis.runHistoryRestore=histRestoreCloud;',hctx);return{hctx,saved,events,restored,response,run:hctx.runHistoryRestore,current:()=>structuredClone(current)};
+}
+
+test('cloud history restore checkpoints its new base/revision before a reload can rebase over peer changes',async()=>{
+  storage.clear();const h=cloudHistoryRestoreHarness();await h.run(123);
+  assert.equal(h.saved.length,1);assert.equal(h.saved[0].id,'history-room');assert.equal(h.saved[0].rev,8);assert.deepEqual(json(h.saved[0].base),json(h.restored));assert.deepEqual(json(h.saved[0].local),json(h.restored));assert.equal(h.saved[0].inflight,null);assert.equal(context.api.cloudCheckpointIsUnsafe('history-room'),false,'a durably saved restore clears the fail-closed marker');
+  const peer=structuredClone(h.restored);peer.p[0].e[0].x=2;
+  const stale=cloudRebase(peer,base,h.restored),safe=cloudRebase(peer,h.saved[0].base,h.restored);
+  assert.equal(stale.board.p[0].e[0].x,1,'the old checkpoint reproduces the reported collaborator overwrite');assert.equal(safe.board.p[0].e[0].x,2,'the persisted restore checkpoint preserves the collaborator’s newer edit');
+});
+
+test('cloud history restore preserves an in-flight outbox and marks its prior revision as detached',async()=>{
+  storage.clear();const op={opId:'ab'.repeat(16),baseRev:7,changes:[{t:'put',pid:'p1',e:recordElement('pending-shape','ellipse')}]},h=cloudHistoryRestoreHarness({inflight:op});await h.run(123);const cached={id:'history-room',base:h.saved[0].base,rev:h.saved[0].rev,expires:h.saved[0].expires,inflight:h.saved[0].inflight};
+  assert.equal(h.saved.length,1);assert.equal(cached.inflight.opId,op.opId);assert.equal(cached.inflight.baseRev,op.baseRev);assert.deepEqual(json(cached.inflight.changes),json(op.changes));assert.equal(cached.inflight.restoreDetached,true);assert.equal(cloudCheckpointCanResume(cached),true,'the preserved outbox remains safely resumable after the restore revision advances');assert.equal(h.hctx.cloudInflight.opId,op.opId);assert.equal(h.hctx.cloudPending,true);
+});
+
+test('detached history-restore outbox retries its original opId without deriving a stale sent board',async()=>{
+  const op={opId:'cd'.repeat(16),baseRev:0,changes:[{t:'put',pid:'p1',e:recordElement('detached-shape','ellipse')}],restoreDetached:true},peer={kind:'room',syncProtocol:'room-ops-v1',board:structuredClone(base),rev:9,expires:Date.now()+60000};let sentSeen=null,posted=null;
+  const h=cloudSyncHarness({cloudBase:structuredClone(base),cloudRev:8,cloudInflight:op,cloudProtocolVerified:false,cloudRequest:async(_path,body)=>{if(body){posted=body;return{...peer,ack:body.opId,rev:10}}return peer},cloudMerge:(_d,sent)=>{sentSeen=structuredClone(sent)}});await h.run();
+  assert.equal(posted.opId,op.opId);assert.equal(posted.baseRev,op.baseRev);assert.deepEqual(json(posted.changes),json(op.changes));assert.deepEqual(json(sentSeen),json(local),'a restored outbox uses the current durable board as its sync comparison point');assert.equal(h.context.cloudInflight,null);
 });

@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 import {Client,Query,TablesDB} from 'node-appwrite';
 import {createAppwriteDb,createHandler,ROOM_OP_RECEIPT_LIMIT} from './main.js';
 
-const Q={limit:n=>`limit:${n}`,orderAsc:key=>`orderAsc:${key}`,cursorAfter:id=>`cursorAfter:${id}`,select:fields=>`select:${fields.join(',')}`};
+const Q={limit:n=>`limit:${n}`,orderAsc:key=>`orderAsc:${key}`,cursorAfter:id=>`cursorAfter:${id}`,select:fields=>`select:${fields.join(',')}`,equal:(key,values)=>`equal:${key}:${JSON.stringify(Array.isArray(values)?values:[values])}`};
 const DB='ghdraw',TABLE='boards';
 const board=()=>({p:[{id:'page-1',n:'Page 1',e:[{id:'shape-1',type:'rect'}]}]});
 const rowData=data=>({payload:JSON.stringify(data),expiresAt:new Date(data.expires).toISOString()});
@@ -19,17 +19,19 @@ const err=code=>Object.assign(new Error('mock database error'),{code});
  await tables.getRow({databaseId:DB,tableId:TABLE,rowId:'row-test',transactionId:'tx-test'});
  await tables.updateRow({databaseId:DB,tableId:TABLE,rowId:'row-test',data:{payload:'{}'},transactionId:'tx-test'});
  await tables.deleteRow({databaseId:DB,tableId:TABLE,rowId:'row-test',transactionId:'tx-test'});
+ await tables.deleteRows({databaseId:DB,tableId:TABLE,queries:[Query.equal('$id',['row-test'])],transactionId:'tx-test'});
  await tables.listRows({databaseId:DB,tableId:TABLE,queries:[Query.orderAsc('$id'),Query.limit(100),Query.cursorAfter('row-test'),Query.select(['$id','expiresAt'])]});
  await tables.createTransaction({ttl:60});
  await tables.updateTransaction({transactionId:'tx-test',commit:true});
- assert.equal(calls.length,7);assert.ok(calls.every(call=>call.path.includes('/tablesdb/')));assert.ok(calls.every(call=>!call.path.includes('/databases/')));
+ assert.equal(calls.length,8);assert.ok(calls.every(call=>call.path.includes('/tablesdb/')));assert.ok(calls.every(call=>!call.path.includes('/databases/')));
  assert.equal(calls[0].path,'/v1/tablesdb/ghdraw/tables/boards/rows');assert.equal(calls[0].payload.data.payload,'{}');assert.deepEqual(calls[0].payload.permissions,[]);assert.equal(calls[0].payload.transactionId,'tx-test');
+ assert.equal(calls[4].method,'delete');assert.equal(calls[4].path,'/v1/tablesdb/ghdraw/tables/boards/rows');assert.equal(calls[4].payload.transactionId,'tx-test');assert.ok(calls[4].payload.queries[0].includes('row-test'));
  assert.ok(calls.some(call=>call.path.endsWith('/rows/row-test')));assert.ok(calls.some(call=>call.path==='/v1/tablesdb/transactions'));
  assert.ok(calls.some(call=>call.path==='/v1/tablesdb/transactions/tx-test'));
  });
 
 class MemoryTablesDB{
- constructor(seed=[]){this.rows=new Map(seed);this.transactions=new Map();this.nextTx=0;this.calls=[];this.tablePermissions=[];this.failDeleteOnceId=null;this.beforeTxCommit=null}
+ constructor(seed=[]){this.rows=new Map(seed);this.transactions=new Map();this.nextTx=0;this.calls=[];this.tablePermissions=[];this.failDeleteOnceId=null;this.failDeleteRowsAt=0;this.beforeTxCommit=null}
  #map(transactionId){if(!transactionId)return this.rows;const tx=this.transactions.get(transactionId);if(!tx)throw err(404);return tx.rows}
  async createTransaction(){const $id=`tx-${++this.nextTx}`,copy=()=>new Map([...this.rows].map(([id,row])=>[id,structuredClone(row)]));this.transactions.set($id,{rows:copy(),original:copy()});return {$id}}
  async updateTransaction({transactionId,commit=false}){
@@ -45,6 +47,7 @@ class MemoryTablesDB{
  async createRow({rowId,data,permissions=[],transactionId}){this.calls.push({op:'createRow',rowId,permissions:structuredClone(permissions)});const rows=this.#map(transactionId);if(rows.has(rowId))throw err(409);const row={$id:rowId,...structuredClone(data),$permissions:structuredClone(permissions)};rows.set(rowId,row);return structuredClone(row)}
  async updateRow({rowId,data,permissions,transactionId}){this.calls.push({op:'updateRow',rowId});const rows=this.#map(transactionId);if(!rows.has(rowId))throw err(404);const old=rows.get(rowId);const row={...old,...structuredClone(data),$id:rowId};if(permissions!==undefined)row.$permissions=structuredClone(permissions);rows.set(rowId,row);return structuredClone(row)}
  async deleteRow({rowId,transactionId}){this.calls.push({op:'deleteRow',rowId});if(this.failDeleteOnceId===rowId){this.failDeleteOnceId=null;throw err(500)}const rows=this.#map(transactionId);if(!rows.has(rowId))throw err(404);rows.delete(rowId);return {}}
+ async deleteRows({queries=[],transactionId}){this.calls.push({op:'deleteRows',queries:structuredClone(queries)});const batch=this.calls.filter(call=>call.op==='deleteRows').length;if(this.failDeleteRowsAt===batch){this.failDeleteRowsAt=0;throw err(500)}const rows=this.#map(transactionId);for(const q of queries){if(!q.startsWith('equal:$id:'))continue;for(const id of JSON.parse(q.slice('equal:$id:'.length)))rows.delete(id)}return{}}
  async listRows({databaseId,tableId,queries=[]}){
   assert.equal(databaseId,DB);assert.equal(tableId,TABLE);this.calls.push({op:'listRows',queries:[...queries]});let limit=25,cursor=null,select=null,order=null;
   for(const q of queries){if(q.startsWith('limit:'))limit=Number(q.slice(6));else if(q.startsWith('cursorAfter:'))cursor=q.slice(12);else if(q.startsWith('select:'))select=q.slice(7).split(',');else if(q.startsWith('orderAsc:'))order=q.slice(9)}
@@ -96,6 +99,11 @@ test('deployment timeout is explicitly shorter than the lock lease',()=>{
  assert.ok(Number.isFinite(leaseMs)&&Number.isFinite(timeoutSeconds));assert.ok(timeoutSeconds*1000<leaseMs,`Function timeout ${timeoutSeconds}s must be shorter than ${leaseMs}ms lock lease`);
 });
 
+test('room receipt cap fits a Free-plan owner-delete transaction with 100-row bulk requests',()=>{
+ const freeRowsPerBulk=100,freeTransactionOperations=100,fixedDeleteRows=5,bulkDeleteOperations=Math.ceil(ROOM_OP_RECEIPT_LIMIT/freeRowsPerBulk);
+ assert.equal(ROOM_OP_RECEIPT_LIMIT,9400);assert.ok(bulkDeleteOperations+fixedDeleteRows<=freeTransactionOperations,`${bulkDeleteOperations} bulk deletes plus ${fixedDeleteRows} fixed deletes must fit in ${freeTransactionOperations} staged operations`);
+});
+
 test('OPTIONS and health are available without database credentials or a DB connection',async()=>{
  const fx=fixture();const preflight=await fx.call({method:'OPTIONS',path:'/create'});assert.equal(preflight.status,204);assert.equal(preflight.headers['Access-Control-Allow-Origin'],'https://ghdraw.vercel.app');
  const health=await fx.call({method:'GET',path:'/health'});assert.deepEqual(health.body,{ok:true});assert.equal(fx.factories,0);
@@ -136,7 +144,7 @@ test('share-create retries with one request ID return the same private receipt a
 test('anonymous room creation and reads expose the sync protocol but never owner or operation secrets',async()=>{
  const fx=fixture(),createdResponse=await fx.call({method:'POST',path:'/create',body:{kind:'room',board:board(),requestId:'b'.repeat(32)}}),created=createdResponse.body;
  assert.equal(createdResponse.status,201);const room=await fx.call({method:'GET',path:`/room/${created.id}`});assert.equal(room.status,200);assert.equal(room.body.syncProtocol,'room-ops-v1');assert.equal(room.body.rev,0);assert.equal('owner' in room.body,false);assert.equal('ops' in room.body,false);assert.equal('createReceiptId' in room.body,false);assert.equal('opReceiptCount' in room.body,false);assert.deepEqual(fx.db.rows.get(created.id).$permissions,[]);
- const quota=JSON.parse(fx.db.rows.get(roomQuotaRowId(created.id)).payload);assert.deepEqual({kind:quota.kind,roomId:quota.roomId,count:quota.count},{kind:'room-op-quota',roomId:created.id,count:0});assert.deepEqual(fx.db.rows.get(roomQuotaRowId(created.id)).$permissions,[]);
+ const quota=JSON.parse(fx.db.rows.get(roomQuotaRowId(created.id)).payload);assert.deepEqual({kind:quota.kind,roomId:quota.roomId,count:quota.count,receiptIds:quota.receiptIds},{kind:'room-op-quota',roomId:created.id,count:0,receiptIds:[]});assert.deepEqual(fx.db.rows.get(roomQuotaRowId(created.id)).$permissions,[]);
 });
 
 test('room operation ACKs, duplicate retries and stale-base rebase survive TablesDB transactions',async()=>{
@@ -145,7 +153,7 @@ test('room operation ACKs, duplicate retries and stale-base rebase survive Table
  const receiptEntry=[...fx.db.rows].find(([rowId,row])=>rowId.startsWith('o')&&JSON.parse(row.payload).opId==='11111111111111111111111111111111');assert.ok(receiptEntry,'an operation receipt is stored separately from the room board');assert.deepEqual(receiptEntry[1].$permissions,[]);assert.equal(JSON.parse(receiptEntry[1].payload).roomId,created.id);
  const retry=await update(fx,created.id);assert.equal(retry.status,200);assert.equal(retry.body.duplicate,true);assert.equal(retry.body.rev,1);
  const second=await update(fx,created.id,{opId:'22222222222222222222222222222222',baseRev:0,shapeId:'shape-3'});assert.equal(second.status,200);assert.equal(second.body.rebased,true);assert.equal(second.body.rev,2);
- assert.deepEqual(JSON.parse(fx.db.rows.get(created.id).payload).ops,[],'new operation IDs never grow the room row');assert.equal(JSON.parse(fx.db.rows.get(roomQuotaRowId(created.id)).payload).count,2,'each unique operation increments its separate private quota row exactly once');
+ assert.deepEqual(JSON.parse(fx.db.rows.get(created.id).payload).ops,[],'new operation IDs never grow the room row');const quota=JSON.parse(fx.db.rows.get(roomQuotaRowId(created.id)).payload);assert.equal(quota.count,2,'each unique operation increments its separate private quota row exactly once');assert.equal(quota.receiptIds.length,2,'the private quota row indexes every receipt for safe owner deletion');
  const room=await fx.call({method:'GET',path:`/room/${created.id}`});assert.deepEqual(room.body.board.p[0].e.map(e=>e.id),['shape-1','shape-2','shape-3']);
 });
 
@@ -156,14 +164,14 @@ test('room remains writable and deletable after 300 changes; old lost-ACK retrie
   assert.equal(response.status,200,`revision ${i+1} should remain writable`);
  }
  const root=JSON.parse(fx.db.rows.get(created.id).payload),receiptRows=[...fx.db.rows].filter(([rowId,row])=>rowId.startsWith('o')&&JSON.parse(row.payload).roomId===created.id);
- assert.equal(root.rev,301);assert.deepEqual(root.ops,[]);assert.ok(Buffer.byteLength(fx.db.rows.get(created.id).payload)<100000,'room payload remains bounded independently of operation count');assert.equal(receiptRows.length,301);assert.equal(JSON.parse(fx.db.rows.get(roomQuotaRowId(created.id)).payload).count,301);assert.ok(receiptRows.every(([,row])=>row.$permissions.length===0));
+ assert.equal(root.rev,301);assert.deepEqual(root.ops,[]);assert.ok(Buffer.byteLength(fx.db.rows.get(created.id).payload)<100000,'room payload remains bounded independently of operation count');assert.equal(receiptRows.length,301);const quota=JSON.parse(fx.db.rows.get(roomQuotaRowId(created.id)).payload);assert.equal(quota.count,301);assert.equal(quota.receiptIds.length,301);assert.ok(receiptRows.every(([,row])=>row.$permissions.length===0));
  const retry=await update(fx,created.id,{opId:firstId,baseRev:0,shapeId:'should-not-reappear'});assert.equal(retry.status,200);assert.equal(retry.body.duplicate,true);assert.equal(retry.body.rev,301);
  const deletion=await fx.call({method:'POST',path:`/room/${created.id}`,body:{opId:'e'.repeat(32),baseRev:301,changes:[{t:'del',pid:'page-1',eid:'shape-doomed'}]}});assert.equal(deletion.status,200);assert.equal(deletion.body.rev,302);
  const final=await fx.call({method:'GET',path:`/room/${created.id}`});assert.ok(!final.body.board.p[0].e.some(e=>e.id==='shape-doomed'));
 });
 
 test('receipt quota boundary rejects new operations without mutation while duplicate retries keep their ACK',async()=>{
- const fx=fixture(),created=await createShare(fx,'room'),counterId=roomQuotaRowId(created.id),counter=JSON.parse(fx.db.rows.get(counterId).payload);counter.count=ROOM_OP_RECEIPT_LIMIT-1;fx.db.rows.get(counterId).payload=JSON.stringify(counter);
+ const fx=fixture(),created=await createShare(fx,'room'),counterId=roomQuotaRowId(created.id),counter=JSON.parse(fx.db.rows.get(counterId).payload);counter.count=ROOM_OP_RECEIPT_LIMIT-1;counter.receiptIds=Array.from({length:counter.count},(_,i)=>'o'+(i+1).toString(16).padStart(31,'0'));fx.db.rows.get(counterId).payload=JSON.stringify(counter);
  const submit=(opId,baseRev)=>fx.call({method:'POST',path:`/room/${created.id}`,body:{opId,baseRev,changes:[{t:'rename',pid:'page-1',n:'Page 1'}]}});
  const acceptedId='a'.repeat(32),accepted=await submit(acceptedId,0);assert.equal(accepted.status,200,'the final available receipt slot is accepted');assert.equal(accepted.body.rev,1);assert.equal(JSON.parse(fx.db.rows.get(counterId).payload).count,ROOM_OP_RECEIPT_LIMIT);
  const before=fx.db.rows.get(created.id).payload,counterBefore=fx.db.rows.get(counterId).payload,rejectedId='b'.repeat(32),rejected=await submit(rejectedId,1);
@@ -177,8 +185,19 @@ test('a room without a trusted quota row rejects new operations but still ACKs k
  const fresh=await update(fx,created.id,{opId:'b'.repeat(32),baseRev:1,shapeId:'unmetered-shape'});assert.equal(fresh.status,409);assert.equal(fresh.body.error,'room_receipt_limit');assert.equal(fx.db.rows.get(created.id).payload,before,'legacy room without counter cannot accept unmetered mutation');
 });
 
+test('non-empty room changes require a valid operation ID before any mutation',async()=>{
+ const fx=fixture(),created=await createShare(fx,'room'),before=fx.db.rows.get(created.id).payload;
+ for(const body of [{baseRev:0,changes:[{t:'rename',pid:'page-1',n:'No ID'}]},{opId:'not-a-safe-id',baseRev:0,changes:[{t:'rename',pid:'page-1',n:'Bad ID'}]}]){const result=await fx.call({method:'POST',path:`/room/${created.id}`,body});assert.equal(result.status,400);assert.equal(fx.db.rows.get(created.id).payload,before);assert.equal(JSON.parse(fx.db.rows.get(roomQuotaRowId(created.id)).payload).count,0)}
+ assert.equal([...fx.db.rows.keys()].some(rowId=>rowId.startsWith('o')),false,'invalid writes create no receipts');
+});
+
+test('legacy d.ops retries return their ACK before a missing quota counter can block them',async()=>{
+ const fx=fixture(),created=await createShare(fx,'room'),opId='f'.repeat(32),roomRow=fx.db.rows.get(created.id),legacy=JSON.parse(roomRow.payload);legacy.rev=17;legacy.ops=[opId];roomRow.payload=JSON.stringify(legacy);fx.db.rows.delete(roomQuotaRowId(created.id));const before=roomRow.payload;
+ const retry=await update(fx,created.id,{opId,baseRev:0,shapeId:'must-not-apply-again'});assert.equal(retry.status,200);assert.equal(retry.body.duplicate,true);assert.equal(retry.body.ack,opId);assert.equal(retry.body.rev,17);assert.equal(roomRow.payload,before,'the legacy duplicate does not mutate board or revision');
+});
+
 test('concurrent new operations serialize on the final room receipt slot',async()=>{
- const fx=fixture(),created=await createShare(fx,'room'),counterId=roomQuotaRowId(created.id),counter=JSON.parse(fx.db.rows.get(counterId).payload);counter.count=ROOM_OP_RECEIPT_LIMIT-1;fx.db.rows.get(counterId).payload=JSON.stringify(counter);
+ const fx=fixture(),created=await createShare(fx,'room'),counterId=roomQuotaRowId(created.id),counter=JSON.parse(fx.db.rows.get(counterId).payload);counter.count=ROOM_OP_RECEIPT_LIMIT-1;counter.receiptIds=Array.from({length:counter.count},(_,i)=>'o'+(i+1).toString(16).padStart(31,'0'));fx.db.rows.get(counterId).payload=JSON.stringify(counter);
  const submit=opId=>fx.call({method:'POST',path:`/room/${created.id}`,body:{opId,baseRev:0,changes:[{t:'rename',pid:'page-1',n:'Page 1'}]}});
  const responses=await Promise.all([submit('c'.repeat(32)),submit('d'.repeat(32))]);assert.deepEqual(responses.map(r=>r.status).sort(),[200,409]);assert.equal(JSON.parse(fx.db.rows.get(counterId).payload).count,ROOM_OP_RECEIPT_LIMIT);assert.equal(JSON.parse(fx.db.rows.get(created.id).payload).rev,1);
  const receipts=[...fx.db.rows].filter(([rowId,row])=>rowId.startsWith('o')&&JSON.parse(row.payload).roomId===created.id);assert.equal(receipts.length,1,'only the winning operation creates a receipt in the last slot');
@@ -207,14 +226,23 @@ test('history endpoint exports a version and restores it without losing revision
  const historyRow=fx.db.rows.get('h'+created.id.slice(0,31));assert.ok(historyRow);assert.deepEqual(historyRow.$permissions,[]);
 });
 
-test('owner deletion is token-protected; per-operation receipts remain private until room expiry',async()=>{
+test('owner deletion is token-protected and removes every indexed operation receipt',async()=>{
  const fx=fixture(),created=(await fx.call({method:'POST',path:'/create',body:{kind:'room',board:board(),requestId:'e'.repeat(32)}})).body;
  await fx.call({method:'POST',path:`/live/${created.id}`,body:{cid:'client01'}});
  await fx.call({method:'POST',path:`/hist/${created.id}`,body:{op:'save'}});
  await update(fx,created.id,{opId:'d'.repeat(32)});const opReceipt=[...fx.db.rows].find(([rowId,row])=>rowId.startsWith('o')&&JSON.parse(row.payload).roomId===created.id)?.[0];assert.ok(opReceipt);
  const root=JSON.parse(fx.db.rows.get(created.id).payload),receiptId=root.createReceiptId;
  const denied=await fx.call({method:'DELETE',path:`/owner/${created.id}`,body:{owner:'wrong'}});assert.equal(denied.status,403);assert.ok(fx.db.rows.has(created.id));
- const removed=await fx.call({method:'DELETE',path:`/owner/${created.id}`,body:{owner:created.owner}});assert.deepEqual(removed.body,{ok:true});assert.equal(fx.db.rows.has(created.id),false);assert.equal(fx.db.rows.has('p'+created.id.slice(0,31)),false);assert.equal(fx.db.rows.has('h'+created.id.slice(0,31)),false);assert.equal(fx.db.rows.has(roomQuotaRowId(created.id)),false);assert.equal(fx.db.rows.has(receiptId),false);assert.ok(fx.db.rows.has(opReceipt),'hashed private op receipt is not exposed or prematurely pruned; it expires automatically with the room');
+ const removed=await fx.call({method:'DELETE',path:`/owner/${created.id}`,body:{owner:created.owner}});assert.deepEqual(removed.body,{ok:true});assert.equal(fx.db.rows.has(created.id),false);assert.equal(fx.db.rows.has('p'+created.id.slice(0,31)),false);assert.equal(fx.db.rows.has('h'+created.id.slice(0,31)),false);assert.equal(fx.db.rows.has(roomQuotaRowId(created.id)),false);assert.equal(fx.db.rows.has(receiptId),false);assert.equal(fx.db.rows.has(opReceipt),false,'operation receipts are removed atomically with the deleted room');
+});
+
+test('owner deletion removes receipt IDs in bounded batches and rolls back on an incomplete ledger',async()=>{
+ const fx=fixture(),created=await createShare(fx,'room'),quotaId=roomQuotaRowId(created.id),row=fx.db.rows.get(quotaId),quota=JSON.parse(row.payload),ids=Array.from({length:205},(_,i)=>'o'+(i+1).toString(16).padStart(31,'0')),expires=JSON.parse(fx.db.rows.get(created.id).payload).expires;
+ quota.count=ids.length;quota.receiptIds=ids;row.payload=JSON.stringify(quota);for(const [i,opReceiptId] of ids.entries()){const data={kind:'room-op-receipt',roomId:created.id,opId:i.toString(16).padStart(32,'0'),expires};fx.db.rows.set(opReceiptId,{$id:opReceiptId,...rowData(data),$permissions:[]})}
+ const removed=await fx.call({method:'DELETE',path:`/owner/${created.id}`,body:{owner:created.owner}});assert.equal(removed.status,200);assert.ok(ids.every(id=>!fx.db.rows.has(id)));assert.equal(fx.db.calls.filter(call=>call.op==='deleteRows').length,3,'205 IDs are removed through bounded 100-ID queries');
+ const failing=fixture(),failingRoom=await createShare(failing,'room'),failingRow=failing.db.rows.get(roomQuotaRowId(failingRoom.id)),failingQuota=JSON.parse(failingRow.payload),failingIds=Array.from({length:205},(_,i)=>'o'+(i+1000).toString(16).padStart(31,'0')),failingExpiry=JSON.parse(failing.db.rows.get(failingRoom.id).payload).expires;failingQuota.count=failingIds.length;failingQuota.receiptIds=failingIds;failingRow.payload=JSON.stringify(failingQuota);for(const [i,opReceiptId] of failingIds.entries())failing.db.rows.set(opReceiptId,{$id:opReceiptId,...rowData({kind:'room-op-receipt',roomId:failingRoom.id,opId:i.toString(16).padStart(32,'0'),expires:failingExpiry}),$permissions:[]});failing.db.failDeleteRowsAt=2;
+ const failed=await failing.call({method:'DELETE',path:`/owner/${failingRoom.id}`,body:{owner:failingRoom.owner}});assert.equal(failed.status,500);assert.ok(failing.db.rows.has(failingRoom.id));assert.ok(failingIds.every(id=>failing.db.rows.has(id)),'a failed later batch rolls back all earlier staged receipt deletes');
+ const bad=fixture(),room=await createShare(bad,'room'),badQuota=bad.db.rows.get(roomQuotaRowId(room.id));badQuota.payload=JSON.stringify({...JSON.parse(badQuota.payload),count:1,receiptIds:[]});const rejected=await bad.call({method:'DELETE',path:`/owner/${room.id}`,body:{owner:room.owner}});assert.equal(rejected.status,409);assert.equal(rejected.body.error,'room_receipt_ledger_incomplete');assert.ok(bad.db.rows.has(room.id),'an incomplete ledger never deletes a room while leaving receipts behind');
 });
 
 test('expired share reads return 410 and remove the expired row',async()=>{
