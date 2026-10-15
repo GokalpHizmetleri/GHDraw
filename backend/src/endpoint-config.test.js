@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {mkdtemp, readFile, rm, stat} from 'node:fs/promises';
+import {spawnSync} from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -8,6 +10,7 @@ import {buildSite, LEGACY_CLOUD_ENDPOINT, PRODUCTION_ENDPOINT_ENV, TEST_CLOUD_EN
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const PRODUCTION_FIXTURE = 'https://ghdraw-production-fixture.fra.appwrite.run';
+const VERCEL_CONFIG = JSON.parse(readFileSync(path.join(ROOT, 'vercel.json'), 'utf8'));
 
 async function temporaryDirectory(t) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'ghdraw-build-config-'));
@@ -20,6 +23,15 @@ async function expectConfiguredEndpoint(directory, expected) {
   assert.ok(html.includes(`window.GHDRAW_CLOUD_ENDPOINT=${JSON.stringify(expected)};`));
   assert.ok(!html.includes('GHDRAW_CLOUD_ENDPOINT_CONFIG'), 'build marker must be replaced');
   await stat(path.join(directory, 'backend', 'shared', 'board-element-contract.js'));
+}
+
+function runVercelBuild(outDir, {vercelEnv, productionEndpoint} = {}) {
+  const env = {...process.env, VERCEL_ENV: vercelEnv};
+  delete env[PRODUCTION_ENDPOINT_ENV];
+  if (productionEndpoint !== undefined) env[PRODUCTION_ENDPOINT_ENV] = productionEndpoint;
+  const [runtime, script] = VERCEL_CONFIG.buildCommand.split(' ');
+  assert.equal(runtime, 'node');
+  return spawnSync(process.execPath, [path.join(ROOT, script), '--out-dir', outDir], {cwd: ROOT, env, encoding: 'utf8'});
 }
 
 test('test build explicitly selects the provisioned test Function, independent of production env', async t => {
@@ -66,4 +78,32 @@ test('production build rejects non-Appwrite, insecure, credentialed, or path-bea
   ]) {
     await assert.rejects(buildSite({target: 'production', outDir: path.join(temp, `invalid-${Buffer.from(invalid).toString('hex').slice(0, 12)}`), env: {[PRODUCTION_ENDPOINT_ENV]: invalid}, root: ROOT}), /must be an HTTPS Appwrite Function origin/);
   }
+});
+
+test('Vercel build config produces real preview/production artifacts and fails closed without the production endpoint', async t => {
+  assert.equal(VERCEL_CONFIG.buildCommand, 'node scripts/build-vercel.mjs');
+  assert.equal(VERCEL_CONFIG.outputDirectory, 'dist/vercel');
+  const temp = await temporaryDirectory(t);
+
+  const previewDir = path.join(temp, 'vercel-preview');
+  const preview = runVercelBuild(previewDir, {vercelEnv: 'preview', productionEndpoint: PRODUCTION_FIXTURE});
+  assert.equal(preview.status, 0, preview.stderr);
+  await expectConfiguredEndpoint(previewDir, TEST_CLOUD_ENDPOINT);
+
+  const missingProductionDir = path.join(temp, 'vercel-production-missing');
+  const missingProduction = runVercelBuild(missingProductionDir, {vercelEnv: 'production'});
+  assert.notEqual(missingProduction.status, 0);
+  assert.match(missingProduction.stderr, /requires GHDRAW_CLOUD_PRODUCTION_ENDPOINT/);
+  await assert.rejects(stat(missingProductionDir), error => error.code === 'ENOENT');
+
+  const productionDir = path.join(temp, 'vercel-production-fixture');
+  const production = runVercelBuild(productionDir, {vercelEnv: 'production', productionEndpoint: PRODUCTION_FIXTURE});
+  assert.equal(production.status, 0, production.stderr);
+  await expectConfiguredEndpoint(productionDir, PRODUCTION_FIXTURE);
+
+  const unknownDir = path.join(temp, 'vercel-unknown-environment');
+  const unknown = runVercelBuild(unknownDir, {vercelEnv: 'staging'});
+  assert.notEqual(unknown.status, 0);
+  assert.match(unknown.stderr, /Unsupported or missing VERCEL_ENV/);
+  await assert.rejects(stat(unknownDir), error => error.code === 'ENOENT');
 });

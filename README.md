@@ -1,6 +1,6 @@
 # GHDraw
 
-A hand-drawn style whiteboard for the browser, inspired by Excalidraw. No frontend build step. Local drawing works in the browser; expiring links and collaboration use a small Appwrite backend.
+A hand-drawn style whiteboard for the browser, inspired by Excalidraw. The source page works offline without a build; cloud sharing and AI require an explicit build target that injects the correct Appwrite Function endpoint.
 
 <p align="center"><img src="logo.svg" alt="GHDraw" width="320"></p>
 
@@ -33,7 +33,7 @@ Watch short demos on the [GHDraw YouTube channel](https://www.youtube.com/@GHDra
 - Sticky notes, comment pins, live cursors and chat, board history, installable app (see New in v10)
 - Export to PNG (2x) or animated PNG, animated GIF, MP4 / video, PDF (all pages), SVG (vector), each with a progress bar; save and open `.ghdraw` files
 - Autosave to `localStorage`; shared rooms also keep a durable local snapshot and retryable sync outbox in IndexedDB
-- Zero build: vanilla JS with `index.html` and a small versioned shared element contract. Works from `file://`, any static host, or Vercel
+- Offline drawing uses vanilla JS and works directly from `file://`. Cloud and AI requests are disabled in the unbuilt source; deployable cloud builds must select an explicit endpoint target.
 
 > The fonts load from Google Fonts, so the font picker needs an internet connection. Without it, text falls back to a system font.
 
@@ -65,27 +65,44 @@ Watch short demos on the [GHDraw YouTube channel](https://www.youtube.com/@GHDra
 
 ## Run locally
 
-Clone the repo and open `index.html` in your browser. That's it.
+Clone the repo and open `index.html` for offline/local drawing. The unbuilt source intentionally has no cloud endpoint. To exercise cloud features against the test Function, build the test target and serve that output over HTTP:
 
 ```bash
 git clone https://github.com/GokalpHizmetleri/GHDraw.git
 cd GHDraw
-open index.html   # or just double-click the file
+open index.html   # offline/local drawing only
+node scripts/build.mjs --target test
+python3 -m http.server 8080 --directory dist/test
 ```
 
-## Deploy to Vercel
+## Build and deploy to Vercel
 
-The repo is a plain static site, so Vercel deploys it with zero configuration:
+Cloud-enabled builds must use the endpoint build script; publishing the repository root or raw `index.html` leaves cloud and AI features disabled.
+
+For a local test artifact:
+
+```bash
+node scripts/build.mjs --target test
+```
+
+This writes `dist/test/` and always selects the isolated test Function. A production artifact requires the **actual newly provisioned production Function URL**:
+
+```bash
+GHDRAW_CLOUD_PRODUCTION_ENDPOINT="https://<function>.<region>.appwrite.run" node scripts/build.mjs --target production
+```
+
+The production build fails before writing output if the variable is missing or invalid, or if it points to the test or retired Function. Do not replace the placeholder with a guessed URL. No production Function URL is currently provisioned for this rollout.
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/GokalpHizmetleri/GHDraw)
 
-Or manually:
+The repository's [`vercel.json`](vercel.json) runs `node scripts/build-vercel.mjs` and publishes only `dist/vercel/`:
 
-1. Go to [vercel.com/new](https://vercel.com/new) and import this repository.
-2. Leave every setting at its default (no framework preset, no build command).
-3. Click **Deploy**. Vercel serves `index.html` at the root.
+- On **Production**, Vercel's `VERCEL_ENV=production` selects the production build and requires `GHDRAW_CLOUD_PRODUCTION_ENDPOINT` in the Vercel project's **Production** environment.
+- On **Preview** and **Development**, the wrapper explicitly selects the test endpoint; it ignores the production endpoint variable.
+- Ensure Vercel system environment variables are available to the build so `VERCEL_ENV` is present. Missing or unknown values fail closed.
+- Do not override the build command or output directory to publish the repository root. Production deployments remain blocked until the new Function exists, its endpoint is set, and the release preflight—including scheduled cleanup evidence—passes.
 
-Every push to `main` after that redeploys automatically.
+For details on endpoint selection and the cleanup release gates, see [backend/DEPLOYMENT.md](backend/DEPLOYMENT.md).
 
 ## How it works
 
